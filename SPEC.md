@@ -1,0 +1,245 @@
+# Spec: oc-html MVP (local HTML viewer)
+
+Source of intent: `docs/intent/mvp.md`.
+
+## Objective
+
+Build `html <file>`, a command that renders a local HTML file as readable text on an OpenComputers screen.
+
+- User: GT:NH (Minecraft 1.7.10) players on OpenComputers with Lua 5.3.
+- Why: no public script does this. The MVP proves the idea and is the base for remote browsing.
+- Principle: simple but robust. Any input is allowed. When the input breaks a limit, the program detects it early and stops with a clear message. It never crashes with a traceback and never leaves the screen in a bad state.
+
+### User stories
+
+1. As a player, I run `html ./page.html` and see the page text with headings, paragraphs and links shown clearly.
+2. As a player, I scroll through a page that is longer than the screen.
+3. As a player, I press `q`, confirm, and the viewer exits cleanly.
+4. As a player, I open a broken or very large file and get either a usable render or a clear error message.
+
+### Scope of the MVP
+
+In scope:
+- Local files only.
+- Forgiving parsing of any HTML, including broken markup.
+- Text rendering with block structure, emphasis and visible links.
+- Scrolling viewer with a status line.
+- Quit confirmation.
+
+Out of scope (later roadmap):
+- Remote fetching, following links, tabs, shell tab-out, downloads, sessions (save and resume).
+- CSS, JS, images.
+- Correct layout of tables, lists, forms, `<input>` and `<button>`. These render as plain text and must not break anything.
+
+## Tech Stack
+
+- Lua 5.3 on OpenComputers, OpenOS.
+- OpenOS libraries only: `component`, `computer`, `term`, `event`, `keyboard`, `unicode`, `filesystem`, `serialization`, `shell`.
+- No other dependencies. The Data Card is optional and is not used in the MVP.
+- Lua 5.3 in a Docker container for the automated tests. Tests replace OpenOS libraries with small shims.
+
+## Commands
+
+In game:
+```
+html <file>          render a local HTML file
+html --help          show usage
+html                 (no arguments) show usage. Later: start a new session
+```
+
+On the host (from the project root, Docker Desktop running):
+```
+docker build -t oc-html-test tests/docker      build the test image (once, or after a Dockerfile change)
+pwsh tests/docker/test.ps1                     run all unit and corpus tests
+pwsh tests/docker/test.ps1 fuzz 1000           run 1000 fuzz documents through the pipeline
+```
+
+Inside the container, the script runs `lua5.3 tests/run.lua` and `lua5.3 tests/fuzz.lua <n>`.
+
+## Project Structure
+
+```
+bin/html.lua            entry point: argument parsing, error boundary, screen restore
+lib/html/guard.lua      yield timing and memory checks, shared by all stages
+lib/html/entities.lua   named and numeric entity decoding
+lib/html/tokenizer.lua  streaming, forgiving tokenizer (reads the file in chunks)
+lib/html/layout.lua     turns tokens into wrapped, styled lines (no DOM tree)
+lib/html/viewer.lua     screen drawing, scrolling, keys, quit prompt
+tests/run.lua           desktop test runner
+tests/shim/             desktop replacements for OpenOS libraries
+tests/cases/            small hand-written HTML files with expected output
+tests/real/             saved real-world pages
+tests/fuzz.lua          random and mutated HTML generator
+tests/docker/Dockerfile test image: alpine:3.20 with the lua5.3 package only
+tests/docker/test.ps1   runs the tests in the container with the sandbox flags
+docs/intent/mvp.md      confirmed statement of intent
+SPEC.md                 this file
+```
+
+Modules load only when needed. A stage releases its data when the next stage no longer needs it.
+
+## Design
+
+### Pipeline
+
+1. `bin/html.lua` checks arguments and the file. It runs the rest inside `xpcall`.
+2. `tokenizer` reads the file in chunks and produces tokens one at a time: start tag, end tag, text, comment, doctype.
+3. `layout` consumes tokens, keeps a small stack of open elements, and appends finished lines. A line is a list of runs. A run is text plus a style (normal, heading, emphasis, link, preformatted).
+4. `viewer` draws the lines and handles keys.
+
+The tokenizer and layout never call `component`. They take `guard` as their only link to the machine.
+
+### Parsing rules
+
+- Never raise an error on bad markup.
+- Unclosed tags close at the end of the document or when a parent closes.
+- A stray end tag with no matching open tag is ignored.
+- Unknown tags are treated as inline. Their content is kept.
+- Comments, doctype, CDATA and processing instructions are skipped.
+- Attribute values may be quoted or unquoted. Broken attributes are dropped.
+- Text is treated as UTF-8. An invalid byte becomes `?`.
+- Entities: the common named entities (`&amp; &lt; &gt; &quot; &apos; &nbsp; &copy; &reg; &mdash; &ndash; &hellip;` and similar) and numeric `&#N;` and `&#xN;`. An unknown entity stays as written.
+
+### Element handling
+
+| Elements | Rendering |
+|---|---|
+| `script style template svg math iframe object noscript` | Dropped with all content |
+| `head` | Dropped, but `title` text goes to the status line |
+| `h1`-`h6` | Own block with a blank line before and after, heading color |
+| `p div section article main header footer nav aside blockquote` | Block break |
+| `br` | Line break |
+| `hr` | A full-width line of `─` |
+| `b strong i em u mark` | Emphasis color |
+| `a` with `href` | Link color. Not clickable in the MVP |
+| `pre` | Whitespace kept, long lines wrapped |
+| `code` | Kept as inline text |
+| `img` | `[img: <alt>]`, or `[img]` when there is no alt text |
+| `li` | Block break with a `- ` prefix |
+| `table tr td th ul ol dl form input button select textarea` | Block breaks only, content as plain text |
+| Any other tag | Inline, content kept |
+
+Whitespace collapses to one space outside `pre`. Lines wrap at word boundaries to the screen width. Width uses `unicode.wlen` so wide characters fit.
+
+### Viewer
+
+- The last screen row is a status line: page title (or file name), scroll position in percent, and a key hint.
+- Keys: Up/Down one line, PgUp/PgDn one screen, Home/End to the start and end, `q` to quit.
+- `q` shows a prompt: quit or cancel.
+- Only changed rows are redrawn.
+- Colors: tier 3 and tier 2 use colors for headings, links and emphasis. Tier 1 (monochrome) uses plain text.
+- On exit (normal or error) the screen colors are restored and the cursor goes below the output.
+
+### Limits and graceful failure
+
+There are no fixed size caps. The program measures and stops before damage happens.
+
+- `guard.tick()` is called in every loop of the tokenizer and layout. It yields with `os.sleep(0)` when more than a set time has passed since the last yield. The default is 1 second, well below the 5 second OpenOS timeout.
+- `guard.tick()` also checks `computer.freeMemory()`. Below a reserve value, it raises a controlled error: "page too large for available memory (rendered N lines before stopping)". The reserve is a named constant, measured and tuned in game.
+- Before parsing, `bin/html.lua` compares the file size with free memory. If the file clearly cannot fit, it stops before reading.
+- Controlled errors are tables with a `reason` field. `bin/html.lua` prints only the reason. Unexpected errors print one line with the reason and write the full traceback to `/tmp/html-error.log`.
+- Ctrl+C (interrupted) exits cleanly and restores the screen.
+
+## Code Style
+
+- Two-space indent. All variables are `local`. No globals.
+- Each module returns a table `M`.
+- Library functions return values. Only `guard` raises controlled errors. Only `bin/html.lua` prints errors.
+- Names: `snake_case` for functions and variables, `UPPER_CASE` for constants.
+- Comments explain only related information, such as why a limit exists.
+
+```lua
+local computer = require("computer")
+
+local M = {}
+
+-- OpenOS kills a program that runs for 5 s without yielding.
+local YIELD_INTERVAL = 1
+local MEMORY_RESERVE = 32 * 1024
+
+local last_yield = computer.uptime()
+
+function M.tick(progress)
+  if computer.uptime() - last_yield > YIELD_INTERVAL then
+    os.sleep(0)
+    last_yield = computer.uptime()
+  end
+  if computer.freeMemory() < MEMORY_RESERVE then
+    error({ reason = "page too large for available memory", progress = progress }, 0)
+  end
+end
+
+return M
+```
+
+## Testing Strategy
+
+- All automated tests run in Docker. Shims in `tests/shim/` replace `computer`, `unicode` and other OpenOS libraries. The `computer` shim can simulate low memory.
+- Unit tests: tokenizer (each parsing rule), entities, layout (each row of the element table, wrapping, whitespace).
+- Corpus tests: each file in `tests/cases/` has an expected text output. Each file in `tests/real/` must render without an error and with more than zero lines.
+- Fuzz tests: `tests/fuzz.lua` generates random tag soup and mutates files from the corpus (cuts, duplicated tags, random bytes). Every document must finish with lines or a controlled error. Any other error fails the run and saves the input to `tests/fuzz-failures/`.
+- In-game checks (manual, on a tier 3 and a tier 2 machine): the real-world pages, scrolling, quit prompt, resume, the low-memory error and the screen restore after an error.
+
+### Sandbox
+
+Two layers protect the host.
+
+Container (`tests/docker/test.ps1` passes these flags):
+- `--rm --network none --read-only`
+- `--cap-drop ALL --security-opt no-new-privileges --user 1000:1000`
+- `--memory 256m --pids-limit 64`
+- The repository is mounted read-only at `/src`. Only `tests/fuzz-failures/` is mounted writable.
+
+Lua environment (`tests/run.lua` and `tests/fuzz.lua`):
+- Modules load with `loadfile(path, "t", env)`. Binary chunks are refused.
+- `env` has no `os.execute`, `io.popen`, `os.remove`, `os.rename`, `os.exit`, `load` of binary chunks, or `debug`.
+- `io.open` in `env` opens files for reading only, and only under `tests/`.
+
+## Boundaries
+
+- Always:
+  - Keep `tokenizer` and `layout` free of `component` calls.
+  - Run `pwsh tests/docker/test.ps1` and a fuzz run before calling a task done.
+  - Restore the screen on every exit path.
+  - Add a failing input to the tests when a bug is found.
+- Ask first:
+  - Add any library outside OpenOS.
+  - Move an item from "out of scope" into the MVP.
+- Never:
+  - Assume input is valid HTML or valid UTF-8.
+  - Read the whole file into memory before checking its size.
+  - Require the Data Card or an Internet Card for the MVP.
+  - Show a raw traceback on the screen.
+  - Run test code on the host outside the container.
+  - Remove a sandbox flag or widen the Lua environment without asking.
+
+## Success Criteria
+
+1. `pwsh tests/docker/test.ps1` passes all unit and corpus tests.
+2. `pwsh tests/docker/test.ps1 fuzz 1000` finishes with zero uncontrolled errors.
+3. With the low-memory shim, a large page stops with the controlled memory message.
+4. In game on tier 3: three saved real-world pages render with readable headings, paragraphs and links, and scroll with all listed keys.
+5. In game: a large page (about 1 MB) does not hit "too long without yielding". It either renders or stops with the controlled memory message.
+6. In game: `q` shows the prompt. Cancel returns to the page. Quit exits cleanly.
+7. In game on tier 2 and tier 1: the page renders with the reduced palette or plain text.
+8. After any error, the screen colors are normal and the shell prompt is usable.
+
+## Later: sessions (not in the MVP)
+
+Agreed design, to be specified after the MVP:
+- Each session has an 8-digit lowercase hex ID, for example `4cb2faad`.
+- `html` with no arguments starts a new session.
+- `html -r <id>` resumes that session. `html -r` resumes the last session.
+- The stored content and the storage location are decided when this feature is specified.
+
+## Decisions
+
+- Saved state is not in the MVP.
+- The project uses git.
+- OCEmu is deprecated. Do not use it.
+- Automated tests run in Docker with the sandbox in "Testing Strategy".
+- The default branch is `master`.
+
+## Open Questions
+
+None.
