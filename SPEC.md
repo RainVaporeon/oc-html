@@ -43,6 +43,7 @@ Out of scope (later roadmap):
 In game:
 ```
 html <file>          render a local HTML file
+html --no-rescale <file>   keep the current screen resolution
 html --help          show usage
 html                 (no arguments) show usage. Later: start a new session
 ```
@@ -73,6 +74,7 @@ tests/fuzz.lua          random and mutated HTML generator
 tests/docker/Dockerfile test image: alpine:3.20 with the lua5.3 package only
 tests/docker/test.ps1   runs the tests in the container with the sandbox flags
 docs/intent/mvp.md      confirmed statement of intent
+docs/probe/             in-game probe outputs and FACTS.md (measured machine facts)
 SPEC.md                 this file
 ```
 
@@ -83,8 +85,11 @@ Modules load only when needed. A stage releases its data when the next stage no 
 ### Pipeline
 
 1. `bin/html.lua` checks arguments and the file. It runs the rest inside `xpcall`.
-2. `tokenizer` reads the file in chunks and produces tokens one at a time: start tag, end tag, text, comment, doctype.
-3. `layout` consumes tokens, keeps a small stack of open elements, and appends finished lines. A line is a list of runs. A run is text plus a style (normal, heading, emphasis, link, preformatted).
+2. `tokenizer` reads the file with `io` in 4096-byte chunks and produces tokens one at a time: start tag, end tag, text, comment, doctype. It is built on plain `string.find` and `string.byte`. It never runs `gsub` or `gmatch` over large strings (measured: `gsub` 94 KB/s, plain `find` 6338 KB/s).
+3. `layout` consumes tokens, keeps a small stack of open elements, and appends finished lines. A line is one string with inline style control bytes (measured: 80 bytes per line; a table of styled pieces used 322).
+   - Bytes 0x01 to 0x05 select a style: normal, heading, emphasis, link, preformatted. A style lasts until the next style byte.
+   - Text never contains these bytes, because cleaning removes control bytes first (see "Text cleaning").
+   - Style bytes never count toward the line width.
 4. `viewer` draws the lines and handles keys.
 
 The tokenizer and layout never call `component`. They take `guard` as their only link to the machine.
@@ -97,7 +102,7 @@ The tokenizer and layout never call `component`. They take `guard` as their only
 - Unknown tags are treated as inline. Their content is kept.
 - Comments, doctype, CDATA and processing instructions are skipped.
 - Attribute values may be quoted or unquoted. Broken attributes are dropped.
-- Text is treated as UTF-8. An invalid byte becomes `?`.
+- Text is treated as UTF-8 and is cleaned before any `unicode.*` call (see "Text cleaning").
 - Entities: the common named entities (`&amp; &lt; &gt; &quot; &apos; &nbsp; &copy; &reg; &mdash; &ndash; &hellip;` and similar) and numeric `&#N;` and `&#xN;`. An unknown entity stays as written.
 
 ### Element handling
@@ -119,25 +124,43 @@ The tokenizer and layout never call `component`. They take `guard` as their only
 | `table tr td th ul ol dl form input button select textarea` | Block breaks only, content as plain text |
 | Any other tag | Inline, content kept |
 
-Whitespace collapses to one space outside `pre`. Lines wrap at word boundaries to the screen width. Width uses `unicode.wlen` so wide characters fit.
+Whitespace collapses to one space outside `pre`. Lines wrap at word boundaries to the screen width. Width uses `unicode.wlen` on the cleaned text so wide characters fit.
+
+### Text cleaning
+
+`unicode.*` never throws on bad bytes. It turns them into U+FFFD and can count a wrong width. `utf8.len` accepts encoded surrogates. So the program cleans all text before any `unicode.*` call:
+
+- Invalid sequences, truncated sequences, overlong forms and encoded surrogates (U+D800 to U+DFFF) become `?`.
+- Zero-width characters U+200B, U+200C, U+200D and U+FEFF are removed. (`unicode.wlen` counts U+200B as width 2.)
+- Control bytes below 0x20 are removed, except tab and newline. `\r` is removed.
+- Decoded entities pass through the same rules.
 
 ### Viewer
 
 - The last screen row is a status line: page title (or file name), scroll position in percent, and a key hint.
 - Keys: Up/Down one line, PgUp/PgDn one screen, Home/End to the start and end, `q` to quit.
 - `q` shows a prompt: quit or cancel.
-- Only changed rows are redrawn.
-- Colors: tier 3 and tier 2 use colors for headings, links and emphasis. Tier 1 (monochrome) uses plain text.
+- On start, the viewer sets the resolution to `gpu.maxResolution()` if the current resolution is different. `--no-rescale` skips this.
+- The viewer then reads the size with `gpu.getResolution()`.
+- On every exit path, the viewer restores the resolution it found at start.
+- Measured: t3 had 120x60 on a GPU with a 160x50 maximum. This was a user-set resolution.
+- Colors depend on `gpu.getDepth()`. Depth 8 and 4 use colors for headings, links and emphasis, given as RGB values. Depth 1 uses plain text. Palette indices are not used.
+- The viewer caches the current foreground and background. It calls `setForeground` and `setBackground` only on a change (measured: a call costs as much as a `fill`, also with the same color).
+- Scrolling moves the screen content with `gpu.copy` and draws only the new rows. A jump (PgUp, PgDn, Home, End) redraws the screen.
+- One `gpu.set` call draws one same-style piece of a line. A call costs the same for 1 or 160 characters.
 - On exit (normal or error) the screen colors are restored and the cursor goes below the output.
 
 ### Limits and graceful failure
 
 There are no fixed size caps. The program measures and stops before damage happens.
 
-- `guard.tick()` is called in every loop of the tokenizer and layout. It yields with `os.sleep(0)` when more than a set time has passed since the last yield. The default is 1 second, well below the 5 second OpenOS timeout.
-- `guard.tick()` also checks `computer.freeMemory()`. Below a reserve value, it raises a controlled error: "page too large for available memory (rendered N lines before stopping)". The reserve is a named constant, measured and tuned in game.
+- `guard.tick()` is called in every loop of the tokenizer and layout. It measures time with `os.clock()`, which has sub-millisecond steps (`computer.uptime()` moves in 50 ms steps). It yields with `os.sleep(0)` when more than `YIELD_INTERVAL` (1 s) has passed since the last yield. This is well below the 5 second OpenOS timeout.
+- `guard.tick()` also checks `computer.freeMemory()` against `MEMORY_RESERVE` (128 KB). A reading can be up to about 200 KB too low, because garbage is not collected yet. Below the reserve, the guard yields a few times, reads `freeMemory()` again and uses the highest reading. Only when that reading is still below the reserve does it raise the controlled error "html: page too large for available memory (rendered N lines before stopping)".
+- The program never calls `collectgarbage`. OpenComputers removes it on purpose.
 - Before parsing, `bin/html.lua` compares the file size with free memory. If the file clearly cannot fit, it stops before reading.
-- Controlled errors are tables with a `reason` field. `bin/html.lua` prints only the reason. Unexpected errors print one line with the reason and write the full traceback to `/tmp/html-error.log`.
+- Controlled errors are strings with the prefix `html: `, raised with `error("html: <reason>", 0)`. `bin/html.lua` prints such a message as it is. Any other error value is unexpected: `bin/html.lua` prints one line and writes the full traceback to `/tmp/html-error.log`. This design does not depend on how error tables pass through `pcall` and `xpcall` (see `docs/probe/FACTS.md`, run t3), This is simpler than error tables.
+- `/tmp` is only 64 KB. `/tmp/html-error.log` is capped at 8 KB. When the log would grow past the cap, the oldest content is dropped and the newest is kept.
+- `bin/html.lua` takes the traceback function as a parameter, because the test sandbox removes `debug`. In game it gets `debug.traceback`.
 - Ctrl+C (interrupted) exits cleanly and restores the screen.
 
 ## Code Style
@@ -155,17 +178,33 @@ local M = {}
 
 -- OpenOS kills a program that runs for 5 s without yielding.
 local YIELD_INTERVAL = 1
-local MEMORY_RESERVE = 32 * 1024
+local MEMORY_RESERVE = 128 * 1024
+-- freeMemory() can read up to about 200 KB low until garbage is collected.
+local SETTLE_TRIES = 3
 
-local last_yield = computer.uptime()
+local last_yield = os.clock()
 
-function M.tick(progress)
-  if computer.uptime() - last_yield > YIELD_INTERVAL then
-    os.sleep(0)
-    last_yield = computer.uptime()
+local function yield()
+  os.sleep(0)
+  last_yield = os.clock()
+end
+
+local function settled_free()
+  local best = computer.freeMemory()
+  for _ = 1, SETTLE_TRIES do
+    yield()
+    best = math.max(best, computer.freeMemory())
   end
-  if computer.freeMemory() < MEMORY_RESERVE then
-    error({ reason = "page too large for available memory", progress = progress }, 0)
+  return best
+end
+
+function M.tick(lines)
+  if os.clock() - last_yield > YIELD_INTERVAL then
+    yield()
+  end
+  if computer.freeMemory() < MEMORY_RESERVE and settled_free() < MEMORY_RESERVE then
+    error("html: page too large for available memory (rendered "
+      .. lines .. " lines before stopping)", 0)
   end
 end
 
@@ -174,11 +213,13 @@ return M
 
 ## Testing Strategy
 
-- All automated tests run in Docker. Shims in `tests/shim/` replace `computer`, `unicode` and other OpenOS libraries. The `computer` shim can simulate low memory.
+- All automated tests run in Docker. Shims in `tests/shim/` replace `computer`, `unicode` and other OpenOS libraries. The `computer` shim can simulate low memory and `freeMemory()` jitter.
+- The shims copy the measured behavior in `docs/probe/FACTS.md` exactly, including the `unicode.*` results for invalid bytes, surrogates and U+200B.
+- The sandbox env has no `collectgarbage`, like the game.
 - Unit tests: tokenizer (each parsing rule), entities, layout (each row of the element table, wrapping, whitespace).
 - Corpus tests: each file in `tests/cases/` has an expected text output. Each file in `tests/real/` must render without an error and with more than zero lines.
 - Fuzz tests: `tests/fuzz.lua` generates random tag soup and mutates files from the corpus (cuts, duplicated tags, random bytes). Every document must finish with lines or a controlled error. Any other error fails the run and saves the input to `tests/fuzz-failures/`.
-- In-game checks (manual, on a tier 3 and a tier 2 machine): the real-world pages, scrolling, quit prompt, resume, the low-memory error and the screen restore after an error.
+- In-game checks (manual, on a depth-8, a depth-4 and a depth-1 screen): the real-world pages, scrolling, quit prompt, resume, the low-memory error and the screen restore after an error.
 
 ### Sandbox
 
@@ -219,10 +260,10 @@ Lua environment (`tests/run.lua` and `tests/fuzz.lua`):
 2. `pwsh tests/docker/test.ps1 fuzz 1000` finishes with zero uncontrolled errors.
 3. With the low-memory shim, a large page stops with the controlled memory message.
 4. In game on tier 3: three saved real-world pages render with readable headings, paragraphs and links, and scroll with all listed keys.
-5. In game: a large page (about 1 MB) does not hit "too long without yielding". It either renders or stops with the controlled memory message.
+5. In game: a page of about 1 MB does not hit "too long without yielding". It either renders or stops with the controlled memory message. Expect about 10 to 25 s on a 2 MiB machine.
 6. In game: `q` shows the prompt. Cancel returns to the page. Quit exits cleanly.
-7. In game on tier 2 and tier 1: the page renders with the reduced palette or plain text.
-8. After any error, the screen colors are normal and the shell prompt is usable.
+7. In game on a depth-4 and a depth-1 screen: the page renders with the reduced colors or plain text.
+8. After any error, the screen colors are normal and the shell prompt is usable, and the original resolution is restored.
 
 ## Later: sessions (not in the MVP)
 
@@ -239,6 +280,7 @@ Agreed design, to be specified after the MVP:
 - OCEmu is deprecated. Do not use it.
 - Automated tests run in Docker with the sandbox in "Testing Strategy".
 - The default branch is `master`.
+- Ground-truth machine facts are in `docs/probe/FACTS.md`.
 
 ## Open Questions
 
