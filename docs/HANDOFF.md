@@ -1,6 +1,6 @@
 # Handoff: oc-html
 
-Date: 2026-11-14. Branch: `master` (the only branch). Last release: 0.2.0a.
+Date: 2026-11-15. Branch: `master` (the only branch). Last release: 0.3.0a.
 
 ## Purpose
 
@@ -8,18 +8,19 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
 
 ## Current state
 
-- Release: 0.2.0a (`releases/0.2.0a/`, `releases/latest` points to it). It adds remote fetching: `html http(s)://...` streams the response into the renderer. Remote fetching is implemented and not yet verified in game.
+- Release: 0.3.0a (`releases/0.3.0a/`, `releases/latest` points to it, built from commit 8e15ec6). It adds the loading screen (the TUI opens at once and shows the phases and a byte count), the error popup, the rendering rules of 2026-11-14, the URL check before the TUI (`lib/html/url.lua`) and `tools/netprobe.lua`. 0.2.0a added remote fetching: `html http(s)://...` streams the response into the renderer. Remote fetching and the loading screen are implemented and not yet verified in game.
+- Changes since 0.2.0a: the TUI opens at once with the loading status and a byte count (Ctrl+C exits, `q` asks while loading goes on); an error popup with `[OK]` for an error page whose body breaks off; misnested inline tags keep their styles, the exact list of tags that close `p`, `option` is a block break, a `<` with no `>` shows as text, `pre` drops its first newline, a leading `br` gives no blank line, the widest line is width minus 1; `--width` is limited to 2 up to the GPU maximum (160 with no screen); `--stats` and `--stats-out` are removed; `html: file not found` for a missing file; the installer prints `; old files kept` only after writing starts; an invalid URL is a usage error before the TUI opens; new tool `tools/netprobe.lua`.
 - Older releases are frozen. 0.1.0a has a broken installer (OpenOS `file:close()` returns no values on success). 0.1.1a fixes it. 0.1.1a is the last local-only release.
 - Works: everything in 0.1.1a (tokenizer, entities, UTF-8 cleaning, layout, viewer, `--print`, `--width`, `--no-rescale`, guard v2, Ctrl+C, error log, one-file installer), plus `lib/html/fetch.lua` (internet card client, HTTP status handling, redirects, limits).
-- Verified in the container: `pwsh tests/docker/test.ps1` gives 140 passed, 0 failed, 0 skipped. `fuzz 1000` with seed 1794677367 gives 0 failures. The tests use a fake internet card in `tests/shim/internet.lua`.
+- Verified in the container: `pwsh tests/docker/test.ps1` gives 182 passed, 0 failed, 0 skipped. `fuzz 1000` gives 0 failures. A static check with `luac5.3 -p` and `luac5.3 -l` on `bin/`, `lib/` and `tools/` found no syntax error and no global outside the standard Lua names. The tests use a fake internet card in `tests/shim/internet.lua`.
 - Verified in game: the probes (`docs/probe/`), the tracer bullet and memory runs up to 0.0.4a, the 0.1.0a viewer and exit paths, and `html --print` on the pages in `tests/real/` (2026-11-14).
-- Not verified in game: all remote fetching, `docs/ingame/mvp.md` sections 4 and 6, a low-RAM machine, and the 0.1.1a installer.
+- Not verified in game: all remote fetching, the loading screen, the 0.3.0a installer and upgrade, `docs/ingame/mvp.md` sections 4 and 6, and a low-RAM machine. The 0.3.0a checklist is `docs/ingame/0.3.0a.md`.
 - Risks in the fetch code. The fake card follows assumptions that no in-game measurement has confirmed yet.
   - N1: the exact methods of the internet component, the request handle and the `headers` type are unknown.
   - N3: it is unknown whether `response()` gives a value before the first `read`. The wait order in `fetch.open` depends on it.
   - N10: it is unknown whether the card gives the body of a 404 or 500 response. Java raises on these statuses. The code covers both cases, but decision D2 needs the real answer.
   - Full list: `docs/netprobe-plan.md` (N1 to N15).
-- The spec rules decided on 2026-11-14 are in the code, except two: the loading screen (`spec/loading.md`) and the move of the stats to probe2 (`spec/probe.md`). `--stats` and `--stats-out` are removed from `html`.
+- The spec rules decided on 2026-11-14 are in the code, except the move of the stats to probe2 (`spec/probe.md`, low priority). `--stats` and `--stats-out` are removed from `html`.
 - `VERSION` in `lib/html/fetch.lua` is a constant. Update it by hand before each release. A release script run does not change it.
 
 ## Repository map
@@ -28,9 +29,9 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
 - `SPEC.md`: the spec index (objective, scope, tech stack, component table, global rules, code style, boundaries).
 - `spec/`: the normative rules, one file per component (`cli`, `pipeline`, `loading`, `tokenizer`, `text`, `layout`, `viewer`, `guard`, `errors`, `url`, `fetch`, `probe`, `installer`, `release`, `testing`). Informative content is in `docs/` (see "Moved spec content").
 - `bin/html.lua`: entry point (arguments, error boundary, screen restore).
-- `lib/html/`: `fetch.lua` (internet card client), `guard.lua` (yields, memory), `tokenizer.lua`, `entities.lua`, `text.lua` (UTF-8 cleaning), `layout.lua` (styled lines), `viewer.lua` (screen, keys).
+- `lib/html/`: `url.lua` (URL parsing, loads during the argument checks), `fetch.lua` (internet card client), `guard.lua` (yields, memory), `tokenizer.lua`, `entities.lua`, `text.lua` (UTF-8 cleaning), `layout.lua` (styled lines), `viewer.lua` (screen, keys).
 - `tests/`: `run.lua` (sandboxed runner), `*_test.lua` (unit tests), `shim/` (OpenOS fakes, including a fake internet card), `cases/` (HTML with expected text), `real/` (saved real pages), `pages/large.html` (about 1 MB, generated), `fuzz.lua` and `fuzz-corpus/`, `docker/` (Dockerfile and `test.ps1`).
-- `tools/`: `release.ps1` (makes a release), `mkinstall.lua` and `installer.lua` (one-file installer), `genpage.lua` (makes `tests/pages/large.html`), `probe.lua`, `probe2.lua`, `memprobe.lua` (in-game measurement scripts, not released).
+- `tools/`: `release.ps1` (makes a release), `mkinstall.lua` and `installer.lua` (one-file installer), `genpage.lua` (makes `tests/pages/large.html`), `probe.lua`, `probe2.lua`, `memprobe.lua`, `netprobe.lua` (in-game measurement scripts, not released).
 - `releases/`: frozen release folders and the `latest` symlink.
 - `docs/intent/mvp.md`: the confirmed MVP intent. `docs/probe/`: probe outputs and `FACTS.md` (measured machine facts). `docs/ingame/`: in-game checklists and results.
 - `tasks/todo.md`: roadmap after the MVP. `tasks/archive/`: the finished MVP plan and task list.
@@ -51,7 +52,7 @@ On 2026-11-14, `SPEC.md` was cut down to its normative rules. The informative pa
 - Build the test image once: `docker build -t oc-html-test tests/docker`.
 - All tests: `pwsh tests/docker/test.ps1`. There is no skipped test.
 - Fuzz: `pwsh tests/docker/test.ps1 fuzz 1000 [SEED]`. Failures go to `tests/fuzz-failures/` (ignored). Turn each new failure into a unit test.
-- Release: commit `bin/`, `lib/` and the installer tools first, then `pwsh tools/release.ps1 <version>` (for example `0.2.1a`). It runs the tests, copies the files, writes `files.txt`, `release.tar.gz` and `html-install.lua`, and updates `releases/latest` in the index. Then commit the new folder and `releases/latest`.
+- Release: commit `bin/`, `lib/` and the installer tools first, then `pwsh tools/release.ps1 <version>` (for example `0.3.1a`). It runs the tests, copies the files, writes `files.txt`, `release.tar.gz` and `html-install.lua`, and updates `releases/latest` in the index. Then commit the new folder and `releases/latest`.
 - Test code runs only in the container (sandbox flags in `spec/testing.md` "Sandbox"). Do not run it on the host.
 
 ## Pitfalls
@@ -75,7 +76,7 @@ On 2026-11-14, `SPEC.md` was cut down to its normative rules. The informative pa
 
 ## Next step
 
-Write `tools/netprobe.lua` (`docs/netprobe-plan.md` "Probe script plan") and collect N1 to N15 in game. Record the results in `docs/probe/FACTS.md`. Then fix the fetch code where the measurements differ from the assumptions, and run the in-game checks for remote pages.
+Run the in-game checklist `docs/ingame/0.3.0a.md`, including `tools/netprobe.lua` (`docs/ingame/netprobe.md`), and copy the reports to `datacollection/`. Record N1 to N15 in `docs/probe/FACTS.md`. Then fix the fetch code where the measurements differ from the assumptions. The default `--base` of netprobe is not pushed yet, so its page gives a 404 until the push.
 
 ## Open questions for the user
 
