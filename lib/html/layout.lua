@@ -13,12 +13,31 @@ local byte, find, sub, rep, gsub = string.byte, string.find, string.sub,
   string.rep, string.gsub
 local concat = table.concat
 local tick = guard.tick
+local note_tables = guard.note_tables
 
 M.NORMAL = "\1"
 M.HEADING = "\2"
 M.EMPHASIS = "\3"
 M.LINK = "\4"
 M.PRE = "\5"
+
+-- Link and anchor limits (spec/layout.md "Links and anchors").
+local HREF_MAX = 2048
+local ID_MAX = 256
+local DELTA_MAX = 65535
+local COL_MAX = 255
+local TABLES_MIN = 1024
+
+-- FNV-1a over the bytes, masked to 40 bits. The 64-bit product wraps, and
+-- the low 40 bits do not depend on the higher bits.
+function M.hash40(s)
+  local h = 0xcbf29ce484222325
+  for i = 1, #s do
+    h = (h ~ byte(s, i)) * 0x100000001b3
+  end
+  return h & 0xFFFFFFFFFF
+end
+local hash40 = M.hash40
 
 -- Open elements above this depth are not kept (see push_open).
 M.MAX_DEPTH = 256
@@ -91,6 +110,9 @@ local PRE_BREAK = "[\t\n]"
 --   count()                                  number of finished lines
 --   finish()                                 ends the input, returns lines
 --   title()                                  the document title, or nil
+--   links()                                  link spans, hrefs, link count
+--   anchors()                                anchor entries, anchor count
+--   base()                                   the raw <base href>, or nil
 -- lines holds the finished lines while push runs.
 function M.new(width)
   if width < 1 then
@@ -103,6 +125,16 @@ function M.new(width)
   -- Pieces of a word that is not placed yet, with their styles and widths.
   -- A word can span text tokens and inline tags.
   local word, wst, wwd, nw, ww = {}, {}, {}, 0, 0
+  -- The link key of each pending piece (0: no link), the key in effect for
+  -- new text (see sokey) and the key of the last placed word.
+  local wkey, ckey, lastkey = {}, 0, 0
+  -- Links: one packed span and one href per entry. ent[key] holds the href
+  -- (or false) until the first piece of the link is placed, then the index
+  -- of its entry. nkey counts the keys.
+  local spans, hrefs, nl, ent, nkey = {}, {}, 0, {}, 0
+  -- Anchors, and the table capacity last reported to the guard.
+  local anc, na, tcap = {}, 0, TABLES_MIN
+  local base_href
   -- True when white space came after the last placed word.
   local space = false
   -- True when the pending word continues a word that was placed early
@@ -114,6 +146,9 @@ function M.new(width)
   -- The open elements: name, style inside, pre flag inside, and the style
   -- the element sets itself (false when it takes the style of its parent).
   local sname, sstyle, spre, sown, sd = {}, {}, {}, {}, 0
+  -- Per open element: the link key it starts (0 when none) and the key in
+  -- effect inside it.
+  local sokey, skey = {}, {}
   local style, in_pre = M.NORMAL, false
   -- Stack index of the outermost dropped element, or 0.
   local drop_at = 0
@@ -140,8 +175,47 @@ function M.new(width)
     has_word = false
   end
 
-  -- Adds s (not empty) of w columns in style st to the current line.
-  local function place(s, st, w)
+  -- Tells the guard when a table passes a power of two.
+  local function grow(count)
+    if count > tcap then
+      repeat
+        tcap = tcap * 2
+      until tcap >= count
+      note_tables(tcap)
+    end
+  end
+
+  -- Adds columns c1 to c2 of the current line to the link of key.
+  local function link_piece(key, c1, c2)
+    if c2 > COL_MAX then
+      c2 = COL_MAX
+      if c1 > COL_MAX then
+        c1 = COL_MAX
+      end
+    end
+    local line = n + 1
+    local e = ent[key]
+    if type(e) ~= "number" then
+      nl = nl + 1
+      spans[nl] = (line << 32) | (c1 << 24) | c2
+      hrefs[nl] = e
+      ent[key] = nl
+      grow(2 * nl)
+      return
+    end
+    local span = spans[e]
+    local delta = line - (span >> 32)
+    if delta <= DELTA_MAX then
+      spans[e] = (span & ~0xFFFFFF) | (delta << 8) | c2
+    end
+  end
+
+  -- Adds s (not empty) of w columns in style st to the current line. key is
+  -- the link key of s, or 0.
+  local function place(s, st, w, key)
+    if key ~= 0 then
+      link_piece(key, cur_w + 1, cur_w + w)
+    end
     if np == 0 then
       parts[1], parts[2] = st, s
       np, lstyle = 2, st
@@ -159,7 +233,7 @@ function M.new(width)
 
   -- Places s (not empty) at character boundaries. It fills the current line
   -- and goes on in new lines. A wide character never straddles the width.
-  local function split(s, st)
+  local function split(s, st, key)
     local len = #s
     if not find(s, NON_ASCII) then
       local i = 1
@@ -173,7 +247,7 @@ function M.new(width)
         if j > len then
           j = len
         end
-        place(sub(s, i, j), st, j - i + 1)
+        place(sub(s, i, j), st, j - i + 1, key)
         i = j + 1
       end
       return
@@ -187,7 +261,7 @@ function M.new(width)
       local cw = b < 0x80 and 1 or wlen(sub(s, i, i + size - 1))
       if cur_w + w + cw > width and cur_w + w > 0 then
         if i > from then
-          place(sub(s, from, i - 1), st, w)
+          place(sub(s, from, i - 1), st, w, key)
         end
         end_line()
         from, w = i, 0
@@ -196,7 +270,7 @@ function M.new(width)
       i = i + size
     end
     if from <= len then
-      place(sub(s, from), st, w)
+      place(sub(s, from), st, w, key)
     end
   end
 
@@ -208,6 +282,11 @@ function M.new(width)
       return
     end
     local gap = (space and has_word and not cont) and 1 or 0
+    -- The gap space is part of a link only when both sides are.
+    local gkey = wkey[1]
+    if gkey ~= lastkey then
+      gkey = 0
+    end
     space = false
     if cur_w + gap + ww > width and has_word and not cont then
       end_line()
@@ -215,20 +294,21 @@ function M.new(width)
     end
     if cur_w + gap + ww <= width then
       if gap == 1 then
-        place(" ", lstyle, 1)
+        place(" ", lstyle, 1, gkey)
       end
       for i = 1, nw do
-        place(word[i], wst[i], wwd[i])
+        place(word[i], wst[i], wwd[i], wkey[i])
       end
     else
       for i = 1, nw do
         if cur_w + wwd[i] <= width then
-          place(word[i], wst[i], wwd[i])
+          place(word[i], wst[i], wwd[i], wkey[i])
         else
-          split(word[i], wst[i])
+          split(word[i], wst[i], wkey[i])
         end
       end
     end
+    lastkey = wkey[nw]
     nw, ww = 0, 0
     has_word = true
     cont = partial or false
@@ -237,7 +317,7 @@ function M.new(width)
   local function add_piece(s, ascii)
     local w = ascii and #s or unicode.wlen(s)
     nw = nw + 1
-    word[nw], wst[nw], wwd[nw] = s, style, w
+    word[nw], wst[nw], wwd[nw], wkey[nw] = s, style, w, ckey
     ww = ww + w
     -- A word wider than the width is split now, so it stays small.
     if ww > width then
@@ -282,7 +362,7 @@ function M.new(width)
       local j = find(s, PRE_BREAK, i)
       local stop = j and j - 1 or len
       if stop >= i then
-        split(sub(s, i, stop), style)
+        split(sub(s, i, stop), style, ckey)
       end
       if not j then
         return
@@ -297,7 +377,7 @@ function M.new(width)
         if cur_w + sp > width then
           sp = width - cur_w
         end
-        place(rep(" ", sp), style, sp)
+        place(rep(" ", sp), style, sp, ckey)
       end
       i = j + 1
     end
@@ -383,11 +463,12 @@ function M.new(width)
   local function close_top()
     local name = sname[sd]
     sname[sd], sstyle[sd], spre[sd], sown[sd] = nil, nil, nil, nil
+    sokey[sd], skey[sd] = nil, nil
     sd = sd - 1
     if sd > 0 then
-      style, in_pre = sstyle[sd], spre[sd]
+      style, in_pre, ckey = sstyle[sd], spre[sd], skey[sd]
     else
-      style, in_pre = M.NORMAL, false
+      style, in_pre, ckey = M.NORMAL, false, 0
     end
     if title_at > sd then
       title_at = 0
@@ -432,7 +513,7 @@ function M.new(width)
   -- its start rule still applies, but its style, pre and drop rules do not.
   -- A dropped element is the exception outside a dropped part: it closes
   -- the innermost element to make room, so its content stays hidden.
-  local function push_open(name, st, pre, own)
+  local function push_open(name, st, pre, own, okey)
     if sd >= M.MAX_DEPTH then
       if drop_at > 0 or not DROP[name] then
         return false
@@ -441,6 +522,10 @@ function M.new(width)
     end
     sd = sd + 1
     sname[sd], sstyle[sd], spre[sd], sown[sd] = name, st, pre, own or false
+    if okey then
+      ckey = okey
+    end
+    sokey[sd], skey[sd] = okey or 0, ckey
     style, in_pre = st, pre
     return true
   end
@@ -450,19 +535,67 @@ function M.new(width)
   -- new parents, as browsers do for a misnested inline end tag.
   local function remove_at(i)
     for k = i, sd - 1 do
-      sname[k], sown[k] = sname[k + 1], sown[k + 1]
+      sname[k], sown[k], sokey[k] = sname[k + 1], sown[k + 1], sokey[k + 1]
     end
     sname[sd], sstyle[sd], spre[sd], sown[sd] = nil, nil, nil, nil
+    sokey[sd], skey[sd] = nil, nil
     sd = sd - 1
     for k = i, sd do
-      local pst, ppre = M.NORMAL, false
+      local pst, ppre, pkey = M.NORMAL, false, 0
       if k > 1 then
-        pst, ppre = sstyle[k - 1], spre[k - 1]
+        pst, ppre, pkey = sstyle[k - 1], spre[k - 1], skey[k - 1]
       end
       sstyle[k] = sown[k] or pst
       spre[k] = ppre or sname[k] == "pre"
+      skey[k] = sokey[k] ~= 0 and sokey[k] or pkey
     end
-    style, in_pre = sstyle[sd], spre[sd]
+    style, in_pre, ckey = sstyle[sd], spre[sd], skey[sd]
+  end
+
+  -- Makes a fresh link key for an href. The href is trimmed of ASCII white
+  -- space. One over HREF_MAX bytes is stored as false.
+  local function new_link(href)
+    if type(href) ~= "string" then
+      href = ""
+    end
+    local b, e = find(href, "[^ \t\n\r\f\v]"), #href
+    if not b then
+      href = ""
+    else
+      while find(sub(href, e, e), "[ \t\n\r\f\v]") do
+        e = e - 1
+      end
+      if b > 1 or e < #href then
+        href = sub(href, b, e)
+      end
+    end
+    nkey = nkey + 1
+    ent[nkey] = #href <= HREF_MAX and href or false
+    return nkey
+  end
+
+  -- Records the id of an element, and the name of an a, as anchors at the
+  -- first line of the element.
+  local function note_anchors(name, attrs)
+    local id, nm = attrs.id, name == "a" and attrs.name
+    if not id and not nm then
+      return
+    end
+    local line = n + 1
+    if line > 0xFFFFFF then
+      line = 0xFFFFFF
+    end
+    for k = 1, 2 do
+      local v = id
+      if k == 2 then
+        v = nm
+      end
+      if type(v) == "string" and v ~= "" and #v <= ID_MAX then
+        na = na + 1
+        anc[na] = (hash40(v) << 24) | line
+        grow(na)
+      end
+    end
   end
 
   local function start_tag(name, attrs, self_closing)
@@ -478,6 +611,10 @@ function M.new(width)
       end
     end
     if drop_at > 0 then
+      if name == "base" and not base_href and attrs
+          and sname[drop_at] == "head" and type(attrs.href) == "string" then
+        base_href = attrs.href
+      end
       -- A title in head is the document title. A title in svg is not.
       if not void and push_open(name, style, in_pre) and name == "title"
           and sname[drop_at] == "head" and title_buf and title_at == 0 then
@@ -504,6 +641,7 @@ function M.new(width)
     ---@type string|false
     local own = false
     local pre = in_pre
+    local okey
     if HEADING[name] then
       block()
       blank()
@@ -513,6 +651,7 @@ function M.new(width)
     elseif name == "a" then
       if attrs and attrs.href then
         own = M.LINK
+        okey = new_link(attrs.href)
       end
     elseif name == "br" then
       commit()
@@ -539,7 +678,7 @@ function M.new(width)
     elseif name == "li" then
       block()
       if width > 2 then
-        place("- ", style, 2)
+        place("- ", style, 2, 0)
       end
     elseif name == "pre" then
       block()
@@ -547,8 +686,11 @@ function M.new(width)
     elseif BLOCK[name] then
       block()
     end
+    if attrs then
+      note_anchors(name, attrs)
+    end
     if not void then
-      push_open(name, own or style, pre, own)
+      push_open(name, own or style, pre, own, okey)
       if name == "pre" then
         pre_first = true
       end
@@ -604,12 +746,37 @@ function M.new(width)
     return title_text
   end
 
+  -- The link spans, their hrefs and the number of links.
+  function self.links()
+    return spans, hrefs, nl
+  end
+
+  -- The anchor entries and their number.
+  function self.anchors()
+    return anc, na
+  end
+
+  -- The first <base href> in head, raw, or nil.
+  function self.base()
+    return base_href
+  end
+
   function self.finish()
     close_to(1)
     block()
     while n > 0 and lines[n] == "" do
       lines[n] = nil
       n = n - 1
+    end
+    -- An anchor on an element at the end can point past the last line. Its
+    -- line is the last line then. Entries are in line order.
+    local last = n > 0 and n or 1
+    for i = na, 1, -1 do
+      local a = anc[i]
+      if (a & 0xFFFFFF) <= last then
+        break
+      end
+      anc[i] = (a & ~0xFFFFFF) | last
     end
     return lines
   end

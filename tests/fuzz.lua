@@ -706,7 +706,7 @@ local function render(input, width, chunk, traceback)
       end
       push(kind, value, attrs, self_closing)
     end
-    return lay.finish()
+    return lay.finish(), lay
   end, handler)
 end
 
@@ -796,6 +796,83 @@ function M.check_lines(lines, width)
   return nil
 end
 
+-- Returns nil when the links and anchors of lay lie inside lines, or a
+-- message. A span has from_line <= to_line <= #lines, and its columns lie in
+-- the cell width of their lines. An anchor line is at most max(#lines, 1).
+function M.check_page(lines, lay, width)
+  local spans, hrefs, count = lay.links()
+  local anc, na = lay.anchors()
+  local base = lay.base()
+  if type(count) ~= "number" or type(na) ~= "number" then
+    return "link or anchor count is not a number"
+  end
+  if base ~= nil and type(base) ~= "string" then
+    return "base is " .. type(base)
+  end
+  local function cells(i)
+    return math.min(unicode.wlen((gsub(lines[i], "[-]", ""))), 255)
+  end
+  for i = 1, count do
+    local span = spans[i]
+    local from_line = span >> 32
+    local from_col = (span >> 24) & 0xFF
+    local to_line = from_line + ((span >> 8) & 0xFFFF)
+    local to_col = span & 0xFF
+    local where = "link " .. i .. " (" .. from_line .. ":" .. from_col
+      .. " to " .. to_line .. ":" .. to_col .. ") of " .. #lines .. " lines"
+    if from_line < 1 or to_line > #lines then
+      return where .. " is outside the lines"
+    end
+    if from_col < 1 or to_col < 1 or from_col > cells(from_line)
+        or to_col > cells(to_line) then
+      return where .. " has a column outside its line"
+    end
+    if to_line == from_line and to_col < from_col then
+      return where .. " ends before it starts"
+    end
+    local href = hrefs[i]
+    if href ~= false and type(href) ~= "string" then
+      return where .. " has a href of type " .. type(href)
+    end
+    if href and #href > 2048 then
+      return where .. " has a href over 2048 bytes"
+    end
+  end
+  for i = 1, na do
+    local line = anc[i] & 0xFFFFFF
+    if line < 1 or line > math.max(#lines, 1) then
+      return "anchor " .. i .. " line " .. line .. " is outside " .. #lines
+        .. " lines"
+    end
+  end
+  return nil
+end
+
+-- Returns true when two layouts hold the same links, anchors and base.
+local function same_page(a, b)
+  local sa, ha, ca = a.links()
+  local sb, hb, cb = b.links()
+  if ca ~= cb or a.base() ~= b.base() then
+    return false
+  end
+  for i = 1, ca do
+    if sa[i] ~= sb[i] or ha[i] ~= hb[i] then
+      return false
+    end
+  end
+  local aa, na = a.anchors()
+  local ab, nb = b.anchors()
+  if na ~= nb then
+    return false
+  end
+  for i = 1, na do
+    if aa[i] ~= ab[i] then
+      return false
+    end
+  end
+  return true
+end
+
 local function same_lines(a, b)
   if #a ~= #b then
     return false, "line count " .. #a .. " (chunked) ~= " .. #b
@@ -814,8 +891,8 @@ end
 -- and the lines, or "controlled" for an allowed controlled error, or "fail"
 -- and a message.
 function M.check(input, width, chunk, traceback)
-  local ok1, r1 = render(input, width, chunk, traceback)
-  local ok2, r2 = render(input, width, #input + 1, traceback)
+  local ok1, r1, lay1 = render(input, width, chunk, traceback)
+  local ok2, r2, lay2 = render(input, width, #input + 1, traceback)
   if not ok1 and not is_controlled(r1) then
     return "fail", "chunked run: " .. tostring(r1)
   end
@@ -834,9 +911,12 @@ function M.check(input, width, chunk, traceback)
   if not same then
     return "fail", "chunked and single output differ: " .. why
   end
-  local bad = M.check_lines(r2, width)
+  local bad = M.check_lines(r2, width) or M.check_page(r2, lay2, width)
   if bad then
     return "fail", bad
+  end
+  if not same_page(lay1, lay2) then
+    return "fail", "chunked and single links, anchors or base differ"
   end
   return nil, nil, r2
 end
@@ -955,7 +1035,7 @@ function M.check_card(input, width, r, plain, traceback)
       return interrupt_after ~= nil and waits > interrupt_after
     end,
   }
-  local resp
+  local resp, page_bad
   local ok, result = xpcall(function()
     local why
     resp, why = fetch.open(CARD_URL, links, {})
@@ -985,7 +1065,9 @@ function M.check_card(input, width, r, plain, traceback)
       end
       lay.push(kind, value, attrs, self_closing)
     end
-    return lay.finish()
+    local lines = lay.finish()
+    page_bad = M.check_page(lines, lay, width)
+    return lines
   end, function(e)
     if type(e) == "string" and sub(e, 1, 6) == "html: " then
       return e
@@ -1011,7 +1093,7 @@ function M.check_card(input, width, r, plain, traceback)
     end
     return "fail", prefix .. tostring(result)
   end
-  local bad = M.check_lines(result, width)
+  local bad = M.check_lines(result, width) or page_bad
   if bad then
     return "fail", prefix .. bad
   end

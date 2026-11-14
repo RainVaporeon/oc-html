@@ -307,6 +307,58 @@ t.cases(T, "reserve", RESERVE_ROWS, function(lines)
   return math.floor(guard.reserve())
 end)
 
+-- The link and anchor tables of the layout (spec/guard.md "Memory reserve").
+-- c = max(c_lines, c_tables). A row is { name, { lines = n, notes = {...} },
+-- reserve }. lines is the line count given to tick(). notes are the counts
+-- given to note_tables(), in order.
+local TABLE_ROWS = {
+  { "no notes", { lines = 1000, notes = {} }, RESERVE },
+  { "small table capacity stays under the base",
+    { lines = 1000, notes = { 2048, 4096, 8192 } }, RESERVE },
+  { "16384 table slots", { lines = 1000, notes = { 16384 } },
+    math.floor(32 * 16384 / 1.8) },
+  { "a count between powers rounds up", { lines = 1000, notes = { 9000 } },
+    math.floor(32 * 16384 / 1.8) },
+  { "the larger table wins over fewer lines",
+    { lines = 20000, notes = { 65536 } }, math.floor(32 * 65536 / 1.8) },
+  { "more lines win over a smaller table",
+    { lines = 40000, notes = { 16384 } }, math.floor(32 * 65536 / 1.8) },
+  { "a smaller note does not lower the reserve",
+    { lines = 1000, notes = { 32768, 16384 } }, math.floor(32 * 32768 / 1.8) },
+  { "a note before the lines", { lines = 20000, notes = { 8192 } },
+    math.floor(32 * 32768 / 1.8) },
+}
+
+t.cases(T, "reserve_tables", TABLE_ROWS, function(input)
+  local guard = setup()
+  computer.test.set_free(20000000)
+  for _, count in ipairs(input.notes) do
+    guard.note_tables(count)
+  end
+  guard.tick(input.lines)
+  return math.floor(guard.reserve())
+end)
+
+function T.note_tables_raises_the_reserve_at_once_and_reset_clears_it()
+  local guard = setup()
+  guard.note_tables(16384)
+  t.eq(math.floor(guard.reserve()), math.floor(32 * 16384 / 1.8))
+  guard.reset()
+  t.eq(guard.reserve(), RESERVE)
+end
+
+function T.a_raised_table_reserve_stops_the_render()
+  local guard = setup()
+  guard.note_tables(65536)
+  -- 32 * 65536 / 1.8 is about 1.16 M. Free memory of 1 M is under it.
+  computer.test.set_free(1000000)
+  t.raises(function()
+    for i = 1, 100 do
+      guard.tick(i)
+    end
+  end, "page too large")
+end
+
 -- Guard v2 runs with the saw-tooth model of tests/shim/computer.lua.
 
 -- Measured in 0.0.3a: free memory after GC before a render, and the fixed

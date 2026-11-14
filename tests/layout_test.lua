@@ -471,6 +471,220 @@ local function line_diff(expected, actual)
   end
 end
 
+-- "Links and anchors". A link row expects a list of { from_line, from_col,
+-- to_line, to_col, href }. Columns are 1-based cells and to_col is the last
+-- cell of the link.
+local function link_list(input, size)
+  local html, width = input_of(input)
+  -- A page of 65000 lines needs more memory than the shim has by default.
+  local computer = require("computer")
+  computer.test.set_free(1e9)
+  local lines, lay = render(html, width, size)
+  computer.test.reset()
+  local spans, hrefs, count = lay.links()
+  local out = {}
+  for i = 1, count do
+    local span = spans[i]
+    local from_line = span >> 32
+    out[i] = { from_line, (span >> 24) & 0xFF,
+      from_line + ((span >> 8) & 0xFFFF), span & 0xFF, hrefs[i] }
+    t.ok(from_line + ((span >> 8) & 0xFFFF) <= #lines,
+      "link " .. i .. " ends past the last line")
+  end
+  t.eq(#spans, count)
+  return out
+end
+
+local LONG_HREF = string.rep("x", 2049)
+local LINK_ROWS = {
+  { "plain link", "<a href=x>foo</a>", { { 1, 1, 1, 3, "x" } } },
+  { "link after text", "hello <a href=x>foo</a>", { { 1, 7, 1, 9, "x" } } },
+  { "link wraps to the next line",
+    { "<a href=u>aaaa bbbb cccc</a>", width = 10 }, { { 1, 1, 2, 4, "u" } } },
+  { "the gap space at a wrap is not in the link",
+    { "<a href=u>aaaa bbbb</a> cccc", width = 9 }, { { 1, 1, 1, 9, "u" } } },
+  { "link text on the second line only",
+    { "aaaa bbbb <a href=u>cccc dd</a>", width = 10 },
+    { { 2, 1, 2, 7, "u" } } },
+  { "a link inside a word", "foo<a href=x>bar</a>", { { 1, 4, 1, 6, "x" } } },
+  { "a link before the rest of a word", "<a href=x>foo</a>bar",
+    { { 1, 1, 1, 3, "x" } } },
+  { "style inside a link", "<a href=x>a<b>b</b>c</a>d",
+    { { 1, 1, 1, 3, "x" } } },
+  { "the gap space inside a link belongs to it", "<a href=x>ab cd</a>",
+    { { 1, 1, 1, 5, "x" } } },
+  { "the gap space around a link does not", "a <a href=x>b</a> c",
+    { { 1, 3, 1, 3, "x" } } },
+  { "white space inside the link edges", "a<a href=x> b </a>c",
+    { { 1, 3, 1, 3, "x" } } },
+  { "empty link has no entry", "<a href=x></a>y", {} },
+  { "white space only link has no entry", "a<a href=x> \n </a>b", {} },
+  { "img inside a link", "<a href=x><img alt=cat></a>",
+    { { 1, 1, 1, 10, "x" } } },
+  { "img without alt inside a link", "<a href=x><img></a>",
+    { { 1, 1, 1, 5, "x" } } },
+  { "link in pre with a tab", "<pre><a href=x>a\tb</a></pre>",
+    { { 1, 1, 1, 9, "x" } } },
+  { "link in pre over two lines", "<pre>q<a href=x>ab\ncd</a>z</pre>",
+    { { 1, 2, 2, 2, "x" } } },
+  { "a without href has no entry", "<a name=x>foo</a>", {} },
+  { "two adjacent links with the same href",
+    "<a href=x>ab</a><a href=x>cd</a>",
+    { { 1, 1, 1, 2, "x" }, { 1, 3, 1, 4, "x" } } },
+  { "two links with a space between", "<a href=x>ab</a> <a href=x>cd</a>",
+    { { 1, 1, 1, 2, "x" }, { 1, 4, 1, 5, "x" } } },
+  { "link in script has no entry", "<script><a href=x>foo</a></script>y", {} },
+  { "link in svg has no entry", "<svg><a href=x>foo</a></svg>y", {} },
+  { "link in head has no entry", "<head><a href=x>foo</a></head>y", {} },
+  { "unclosed a at a block end", "<p><a href=x>foo</p>bar",
+    { { 1, 1, 1, 3, "x" } } },
+  { "unclosed a at the end", "<a href=x>foo", { { 1, 1, 1, 3, "x" } } },
+  { "text after a block end is not in the link", "<div><a href=x>a</div>b",
+    { { 1, 1, 1, 1, "x" } } },
+  { "misnested a then b", "<a href=x>a<b>b</a>c</b>d",
+    { { 1, 1, 1, 2, "x" } } },
+  { "misnested b then a", "<b>a<a href=x>b</b>c</a>d",
+    { { 1, 2, 1, 3, "x" } } },
+  { "a link inside a link ends at its own end tag",
+    "<a href=x>a<a href=y>b</a>c</a>d",
+    { { 1, 1, 1, 3, "x" }, { 1, 2, 1, 2, "y" } } },
+  { "wide characters", "<a href=x>\xE4\xB8\xAD\xE6\x96\x87</a>",
+    { { 1, 1, 1, 4, "x" } } },
+  { "wide characters after text", "ab<a href=x>\xE4\xB8\xAD</a>",
+    { { 1, 3, 1, 4, "x" } } },
+  { "wide characters that wrap",
+    { "ab<a href=x>\xE4\xB8\xAD\xE6\x96\x87\xE5\xAD\x97</a>", width = 5 },
+    { { 1, 3, 2, 4, "x" } } },
+  { "long word split in a link", { "<a href=x>abcdefghij</a>", width = 5 },
+    { { 1, 1, 2, 5, "x" } } },
+  { "long word split after text",
+    { "ab <a href=x>cdefghijkl</a>", width = 5 }, { { 2, 1, 3, 5, "x" } } },
+  { "link text of three lines", { "<a href=x>abcdefghijkl</a>", width = 5 },
+    { { 1, 1, 3, 2, "x" } } },
+  { "href over 2048 bytes is false",
+    "<a href=" .. LONG_HREF .. ">foo</a>", { { 1, 1, 1, 3, false } } },
+  { "href of 2048 bytes is kept",
+    "<a href=" .. LONG_HREF:sub(2) .. ">foo</a>",
+    { { 1, 1, 1, 3, LONG_HREF:sub(2) } } },
+  { "href is trimmed", "<a href=' \t x/y \n'>foo</a>",
+    { { 1, 1, 1, 3, "x/y" } } },
+  { "href of white space only", "<a href='  '>foo</a>",
+    { { 1, 1, 1, 3, "" } } },
+  { "href with an empty value", "<a href=''>foo</a>", { { 1, 1, 1, 3, "" } } },
+  { "li prefix is not in the link", "<li><a href=x>a</a></li>",
+    { { 1, 3, 1, 3, "x" } } },
+  { "link spans several block lines", "<a href=x>a<br>b</a>",
+    { { 1, 1, 2, 1, "x" } } },
+  { "the line delta stops at 65535",
+    "<a href=x>" .. string.rep("a<br>", 65540) .. "</a>",
+    { { 1, 1, 65536, 1, "x" } }, sizes = { WHOLE } },
+}
+t.cases(T, "links", LINK_ROWS, link_list, { sizes = SIZES })
+
+-- Anchors: a row expects a list of { line, hash40(id) }.
+local function anchor_list(input, size)
+  local html, width = input_of(input)
+  local lines, lay = render(html, width, size)
+  local anc, count = lay.anchors()
+  local out = {}
+  for i = 1, count do
+    out[i] = { anc[i] & 0xFFFFFF, anc[i] >> 24 }
+    t.ok((anc[i] & 0xFFFFFF) <= math.max(#lines, 1), "anchor line past the end")
+  end
+  t.eq(#anc, count)
+  return out
+end
+
+local hash40 = layout.hash40
+local ANCHOR_ROWS = {
+  { "id on the first element", "<p id=a>x</p>", { { 1, hash40("a") } } },
+  { "id on h2 gives the heading line", "<p>a</p><h2 id=top>T</h2>",
+    { { 3, hash40("top") } } },
+  { "name on a", "x<br><a name=foo>y</a>", { { 2, hash40("foo") } } },
+  { "name on a link", "x<a name=foo href=u>y</a>", { { 1, hash40("foo") } } },
+  { "name on another element is not an anchor", "<p name=foo>x</p>", {} },
+  { "id and name on one a", "<a id=i name=n>x</a>",
+    { { 1, hash40("i") }, { 1, hash40("n") } } },
+  { "duplicate ids are all kept", "<p id=a>1</p><p id=a>2</p>",
+    { { 1, hash40("a") }, { 2, hash40("a") } } },
+  { "id in head is ignored",
+    "<head id=h><title id=t>T</title><meta id=m></head><p id=p>x</p>",
+    { { 1, hash40("p") } } },
+  { "id in script and svg is ignored",
+    "<svg id=s><a id=q>x</a></svg><script id=c></script><i id=k>y</i>",
+    { { 1, hash40("k") } } },
+  { "id on a void element", "x<br id=b>y", { { 2, hash40("b") } } },
+  { "id on a nested element", "<div>a</div><div><span id=s>b</span></div>",
+    { { 2, hash40("s") } } },
+  { "id of 256 bytes is kept", "<p id=" .. string.rep("x", 256) .. ">a</p>",
+    { { 1, hash40(string.rep("x", 256)) } } },
+  { "id over 256 bytes is skipped",
+    "<p id=" .. string.rep("x", 257) .. ">a</p>", {} },
+  { "empty id is skipped", "<p id=''>a</p>", {} },
+  { "an anchor past the last line points at the last line",
+    "<p>a</p><p>b</p><p id=e></p>", { { 2, hash40("e") } } },
+  { "an anchor on an empty page points at line 1", "<p id=e></p>",
+    { { 1, hash40("e") } } },
+}
+t.cases(T, "anchors", ANCHOR_ROWS, anchor_list, { sizes = SIZES })
+
+local HASH_ROWS = {
+  { "empty string", "", 0xe484222325 },
+  { "FNV-1a 64 of a, low 40 bits", "a", 0x4c8601ec8c },
+  { "FNV-1a 64 of foobar, low 40 bits", "foobar", 0x71f73967e8 },
+}
+t.cases(T, "hash40", HASH_ROWS, function(s)
+  return layout.hash40(s)
+end)
+
+-- Base: a row expects the raw href or nil.
+local BASE_ROWS = {
+  { "first base", "<head><base href=/a/></head>x", "/a/" },
+  { "second base ignored", "<head><base href=/a/><base href=/b/></head>x",
+    "/a/" },
+  { "base without href does not count",
+    "<head><base target=t><base href=/b/></head>x", "/b/" },
+  { "base in body ignored", "<body><base href=/x/>y", nil },
+  { "base after head ignored", "<head></head><base href=/x/>y", nil },
+  { "base in svg ignored", "<svg><base href=/x/></svg>y", nil },
+  { "base is kept raw", "<head><base href=' /a/ '></head>", " /a/ " },
+  { "no base", "<head></head>x", nil },
+}
+t.cases(T, "base", BASE_ROWS, function(input, size)
+  local _, lay = render(input, WIDTH, size)
+  return lay.base()
+end, { sizes = SIZES })
+
+-- The layout tells the guard when its link or anchor arrays pass a power
+-- of two (spec/guard.md "Memory reserve").
+function T.many_links_raise_the_guard_reserve()
+  local guard = require("html.guard")
+  guard.reset()
+  local _, lay = render(string.rep("<a href=x>a</a> ", 4100), WIDTH)
+  local _, _, count = lay.links()
+  t.eq(count, 4100)
+  t.eq(math.floor(guard.reserve()), math.floor(32 * 16384 / 1.8))
+  guard.reset()
+end
+
+function T.many_anchors_raise_the_guard_reserve()
+  local guard = require("html.guard")
+  guard.reset()
+  local _, lay = render(string.rep("<i id=a></i>", 8200), WIDTH)
+  local _, count = lay.anchors()
+  t.eq(count, 8200)
+  t.eq(math.floor(guard.reserve()), math.floor(32 * 16384 / 1.8))
+  guard.reset()
+end
+
+function T.few_links_keep_the_guard_reserve()
+  local guard = require("html.guard")
+  guard.reset()
+  local before = guard.reserve()
+  render(string.rep("<a href=x>a</a> ", 500), WIDTH)
+  t.eq(guard.reserve(), before)
+end
+
 function T.cases_match_expected_text()
   local failures = {}
   -- A case needs tests/cases/<name>.html and tests/cases/<name>.txt.

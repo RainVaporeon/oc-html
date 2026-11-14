@@ -16,7 +16,9 @@ local RAM_SCALE = 1.8
 -- 32 * c / RAM_SCALE free units at once. On large.html free memory hit 0 at
 -- the 8192 to 16384 doubling. So the effective reserve is
 -- max(MEMORY_RESERVE, 32 * c / RAM_SCALE), where c is the smallest power of
--- two >= the line count, at least TABLE_SLOTS_MIN.
+-- two >= the line count, at least TABLE_SLOTS_MIN. The link and anchor
+-- arrays of the layout double the same way. The layout reports their
+-- capacity with note_tables(), and c is the larger of the two capacities.
 local SLOT_DOUBLING = 32 / RAM_SCALE
 local TABLE_SLOTS_MIN = 1024
 -- A raw freeMemory() reading can be up to about 1.3 MB too low (measured),
@@ -64,6 +66,7 @@ local line_cost = LINE_COST_START
 local cost_measured = false
 -- The table capacity c for the last line count and the effective reserve.
 local slots = TABLE_SLOTS_MIN
+local tables = TABLE_SLOTS_MIN
 local reserve = math.max(MEMORY_RESERVE, SLOT_DOUBLING * slots)
 
 local function trace_add(free, mark)
@@ -174,7 +177,7 @@ function M.reset()
   gc_line, gc_free = nil, nil
   line_cost = LINE_COST_START
   cost_measured = false
-  slots = TABLE_SLOTS_MIN
+  slots, tables = TABLE_SLOTS_MIN, TABLE_SLOTS_MIN
   reserve = math.max(MEMORY_RESERVE, SLOT_DOUBLING * slots)
 end
 
@@ -182,6 +185,20 @@ end
 -- true, tick() raises "html: interrupted". nil removes the check.
 function M.set_interrupt_check(fn)
   interrupted = fn
+end
+
+-- The layout calls this when its link or anchor arrays pass a power of
+-- two. count is the larger of 2 * link count and anchor count, or their
+-- capacity. The guard rounds it up to a power of two, at least 1024.
+function M.note_tables(count)
+  local c = TABLE_SLOTS_MIN
+  while c < count do
+    c = c * 2
+  end
+  if c > tables then
+    tables = c
+    reserve = math.max(MEMORY_RESERVE, SLOT_DOUBLING * math.max(slots, tables))
+  end
 end
 
 -- The effective reserve for the current line count. See SLOT_DOUBLING.
@@ -275,7 +292,8 @@ function M.tick(lines)
       repeat
         slots = slots * 2
       until slots >= lines
-      reserve = math.max(MEMORY_RESERVE, SLOT_DOUBLING * slots)
+      reserve = math.max(MEMORY_RESERVE,
+        SLOT_DOUBLING * math.max(slots, tables))
     end
   end
   local free = read_free()
