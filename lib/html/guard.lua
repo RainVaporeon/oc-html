@@ -24,6 +24,10 @@ local function settled_free()
   return best
 end
 
+-- The highest free memory reading over a few yields. The stats output
+-- uses it, because a single reading can be about 200 KB too low.
+M.settled_free = settled_free
+
 -- Starts the yield timer again. Tests call this after they set the clock.
 function M.reset()
   last_yield = os.clock()

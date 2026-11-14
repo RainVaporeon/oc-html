@@ -72,12 +72,12 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 **Description:** Make the thinnest end-to-end path. A minimal tokenizer (tags and text only), a minimal layout (paragraph breaks and wrapping), and `bin/html.lua` that prints lines to stdout inside `xpcall`. Use it in game to confirm the numbers in `docs/probe/FACTS.md` on the real pipeline.
 
 **Acceptance criteria:**
-- [ ] `tests/cases/basic.html` prints the expected text in the container.
+- [x] `tests/cases/basic.html` prints the expected text in the container.
 - [ ] In game on tier 3: `html basic.html` prints the text. A test page of about 100 KB finishes without a yield error.
 - [ ] The free memory before and after, and the render time, are recorded in `tasks/plan.md` under a new "Measurements" section and compared with `docs/probe/FACTS.md`.
 
 **Verification:**
-- [ ] Tests pass: `pwsh tests/docker/test.ps1`
+- [x] Tests pass: `pwsh tests/docker/test.ps1`
 - [ ] Manual check (user, in game): run the two pages and report the numbers.
 
 **Dependencies:** Task 2
@@ -121,7 +121,7 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 - [x] The named entities in SPEC.md, `&#N;` and `&#xN;` decode correctly. Unknown entities stay as written.
 - [x] Out-of-range and surrogate code points become `?`.
 - [x] Invalid sequences, truncated sequences, overlong forms and encoded surrogates become `?`. Valid multibyte text is unchanged.
-- [x] U+200B, U+200C, U+200D and U+FEFF are removed.
+- [x] U+00AD, U+200B, U+200C, U+200D, U+200E, U+200F and U+FEFF are removed.
 - [x] Control bytes below 0x20 are removed, except tab and newline. `\r` is removed.
 - [x] Every probe test string in `docs/probe/FACTS.md` (ascii, é, box, CJK, Japanese, emoji, combining, lone 0x80, truncated, overlong, surrogate, U+200B) has a test.
 

@@ -245,6 +245,18 @@ local function build_env()
     return real_dump(function() return 1 end)
   end
 
+  -- Loads bin/<name>.lua as a text chunk in the env, without running it.
+  function test_api.load_bin(name)
+    if type(name) ~= "string" or not name:match("^[%w_]+$") then
+      error("load_bin: bad name " .. escape(name), 2)
+    end
+    local chunk, err = real_loadfile("bin/" .. name .. ".lua", "t", env)
+    if not chunk then
+      error(err, 0)
+    end
+    return chunk
+  end
+
   test_api.in_docker = in_docker
 
   -- Tries a real write outside the env and removes the file on success.

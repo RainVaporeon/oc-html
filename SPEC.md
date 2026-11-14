@@ -42,8 +42,12 @@ Out of scope (later roadmap):
 
 In game:
 ```
-html <file>          render a local HTML file
+html [--width n] [--stats] [--no-rescale] <file>
+                     render a local HTML file
 html --no-rescale <file>   keep the current screen resolution
+html --width n <file>      output width for stdout mode; use it to compare with test files
+html --stats <file>        print file size, line count, CPU and wall time, and settled free
+                           memory before and after, to stderr
 html --help          show usage
 html                 (no arguments) show usage. Later: start a new session
 ```
@@ -77,6 +81,9 @@ tests/docker/Dockerfile test image: alpine:3.20 with the lua5.3 package only
 tests/docker/test.ps1   runs the tests in the container with the sandbox flags
 docs/intent/mvp.md      confirmed statement of intent
 docs/probe/             in-game probe outputs and FACTS.md (measured machine facts)
+docs/ingame/            in-game test steps, one file per task
+types/openos.lua        LuaLS type stubs for OpenOS
+.luarc.json             LuaLS settings (Lua 5.3, loads types/)
 SPEC.md                 this file
 ```
 
@@ -92,6 +99,7 @@ Modules load only when needed. A stage releases its data when the next stage no 
    - Bytes 0x01 to 0x05 select a style: normal, heading, emphasis, link, preformatted. A style lasts until the next style byte.
    - Text never contains these bytes, because cleaning removes control bytes first (see "Text cleaning").
    - Style bytes never count toward the line width.
+   - Every non-empty line starts with its style byte. An empty line is "".
 4. `viewer` draws the lines and handles keys.
 
 The tokenizer and layout never call `component`. They take `guard` as their only link to the machine.
@@ -99,6 +107,7 @@ The tokenizer and layout never call `component`. They take `guard` as their only
 ### Parsing rules
 
 - Never raise an error on bad markup.
+- A "<" with no ">" within `MAX_TAG` (16384) bytes becomes text. This bounds the buffer.
 - Unclosed tags close at the end of the document or when a parent closes.
 - A stray end tag with no matching open tag is ignored.
 - Unknown tags are treated as inline. Their content is kept.
@@ -163,7 +172,7 @@ Whitespace collapses to one space outside `pre`. Lines wrap at word boundaries t
 
 There are no fixed size caps. The program measures and stops before damage happens.
 
-- `guard.tick()` is called in every loop of the tokenizer and layout. It measures time with `os.clock()`, which has sub-millisecond steps (`computer.uptime()` moves in 50 ms steps). It yields with `os.sleep(0)` when more than `YIELD_INTERVAL` (1 s) has passed since the last yield. This is well below the 5 second OpenOS timeout. `guard.reset()` restarts the yield timer, and the tests use it.
+- `guard.tick()` is called in every loop of the tokenizer and layout. It measures time with `os.clock()`, which has sub-millisecond steps (`computer.uptime()` moves in 50 ms steps). It yields with `os.sleep(0)` when more than `YIELD_INTERVAL` (1 s) has passed since the last yield. This is well below the 5 second OpenOS timeout. `guard.reset()` restarts the yield timer, and the tests use it. `guard.settled_free()` is public. It yields a few times and returns the highest `freeMemory()` reading.
 - `guard.tick()` also checks `computer.freeMemory()` against `MEMORY_RESERVE` (128 KB). A reading can be up to about 200 KB too low, because garbage is not collected yet. Below the reserve, the guard yields a few times, reads `freeMemory()` again and uses the highest reading. Only when that reading is still below the reserve does it raise the controlled error "html: page too large for available memory (rendered N lines before stopping)".
 - The program never calls `collectgarbage`. OpenComputers removes it on purpose.
 - Before parsing, `bin/html.lua` compares the file size with free memory. If the file clearly cannot fit, it stops before reading.
@@ -222,6 +231,8 @@ return M
 
 ## Testing Strategy
 
+- Errors and `--stats` output go to stderr.
+- The runner helper `t.load_bin(name)` loads `bin/<name>.lua` as a text chunk in the same sandbox env. `bin/html.lua` returns its module table when its first argument is a table, so tests can call `M.main(argv, deps)`.
 - All automated tests run in Docker. Shims in `tests/shim/` replace `computer`, `unicode` and other OpenOS libraries. The `computer` shim can simulate low memory and `freeMemory()` jitter.
 - The shims copy the measured behavior in `docs/probe/FACTS.md` exactly, including the `unicode.*` results for invalid bytes, surrogates and U+200B.
 - The sandbox env has no `collectgarbage`, like the game.
