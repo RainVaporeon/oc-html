@@ -134,11 +134,13 @@ local function escape(s)
 end
 
 -- The page shown for an error status when the body cannot be shown.
+-- The title is the phrase only: the status line has the code already.
 local function short_page(code, message, url)
   local head = escape("HTTP " .. code .. (message ~= "" and (" " .. message)
     or ""))
-  return "<title>" .. head .. "</title><h1>" .. head .. "</h1><p>"
-    .. escape(url) .. "</p>"
+  local title = message ~= "" and ("<title>" .. escape(message) .. "</title>")
+    or ""
+  return title .. "<h1>" .. head .. "</h1><p>" .. escape(url) .. "</p>"
 end
 
 -- Waits for the connection and the status line. Returns true, code, message
@@ -343,9 +345,6 @@ local function make_response(h, u, code, message, headers, links, info,
         use_short()
         return resp.read()
       end
-    elseif s == nil and why ~= nil and why ~= INTERRUPTED then
-      resp.read_error = why
-      return nil
     end
     return s, why
   end
@@ -361,7 +360,7 @@ end
 -- info is filled as the request goes: url, redirects, status, started and
 -- ended (clock values).
 -- Returns a response (status, message, is_error, length, content_type,
--- final_url, redirects, bytes, read_error, read(), close(), fetch_time()),
+-- final_url, redirects, bytes, read(), close(), fetch_time()),
 -- or nil and a controlled message. A 4xx or 5xx status that the card reports
 -- as a connect failure returns a response too: its body is the short page,
 -- and it has notice (the print mode line) and popup (the viewer text).
@@ -410,7 +409,7 @@ function M.open(url, links, info)
         local tail = phrase ~= "" and (" " .. phrase) or ""
         local resp = make_response(h, u, status, phrase, {}, links, info,
           true)
-        resp.popup = "[HTTP " .. status .. "]" .. tail
+        resp.popup = "[HTTP " .. status .. "]" .. tail .. "\n" .. u.url
         resp.notice = "html: HTTP " .. status .. tail .. ": " .. u.url
         return resp
       end

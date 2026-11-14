@@ -631,7 +631,6 @@ scenarios("url_errors", {
 
 local PART = page_script("<p>part</p>", { code = 500, message = "Err",
   read_error = "reset" })
-local NOTICE = "html: HTTP 500 Err: " .. URL
 local READ_ERROR = "html: read error: reset"
 
 scenarios("error_status", {
@@ -647,17 +646,16 @@ scenarios("error_status", {
     { args = { "--print", URL }, card = { default = { code = 503,
       message = "Unavailable", body = {} } } },
     { code = 0, err = { "html: HTTP 503 Unavailable: " .. URL }, out = 3 } },
-  { "print, partial body: the text, then the error line, exit 0",
+  { "print, broken body: no stdout, one stderr line, exit 1",
     { args = { "--print", URL }, card = { default = PART } },
-    { code = 0, err = { NOTICE, READ_ERROR }, out = 1,
-      events = { "err", "out", "err" }, clean = true } },
-  { "viewer, partial body: the error goes to the popup, not to stderr",
+    { code = 1, err = { READ_ERROR }, out = 0, clean = true } },
+  { "viewer without a frame, broken body: one stderr line, exit 1",
     { args = { URL }, card = { default = PART } },
-    { code = 0, err = {}, views = 1, error_opt = READ_ERROR,
-      events = { "view" }, clean = true } },
-  { "viewer, partial body, guessed URL: the popup line names the argument",
-    { args = { "example.com" }, deps = no_local, card = { default = PART } },
-    { code = 0, err = {}, views = 1, error_opt = READ_ERROR .. SUFFIX } },
+    { code = 1, err = { READ_ERROR }, views = 0, clean = true } },
+  { "broken body, guessed URL: the line names the argument",
+    { args = { "--print", "example.com" }, deps = no_local,
+      card = { default = PART } },
+    { code = 1, err = { READ_ERROR .. SUFFIX }, out = 0 } },
   { "print, status from a connect failure: the short page, then one line",
     { args = { "--print", URL }, card = { default = { connect_error =
       internet.reason_404(URL) } } },
@@ -672,20 +670,19 @@ scenarios("error_status", {
       internet.reason_status(500, URL) } } },
     { code = 0, err = { NO_GPU_LINE, "html: HTTP 500 Internal Server Error: "
       .. URL }, out = 3, views = 0 } },
-  { "viewer without a frame: the popup text is [HTTP 404] Not Found",
+  { "viewer without a frame: the popup text is two lines",
     { args = { URL }, card = { default = { connect_error =
       internet.reason_404(URL) } } },
-    { code = 0, err = {}, views = 1, error_opt = "[HTTP 404] Not Found",
+    { code = 0, err = {}, views = 1, error_opt = "[HTTP 404] Not Found\n" .. URL,
       clean = true } },
   { "print, connection error: stderr and exit 1 as before",
     { args = { "--print", URL }, card = { default = { connect_error =
       "Connection reset" } } },
     { code = 1, err = { "html: cannot connect: " .. URL
       .. ": Connection reset" }, out = 0, clean = true } },
-  { "no screen, partial body: print the text, then the error line",
+  { "no screen, broken body: no stdout, only the error line",
     { args = { URL }, gpu = false, card = { default = PART } },
-    { code = 0, err = { NO_GPU_LINE, NOTICE, READ_ERROR }, out = 1, views = 0,
-      events = { "err", "err", "out", "err" } } },
+    { code = 1, err = { NO_GPU_LINE, READ_ERROR }, out = 0, views = 0 } },
 })
 
 -- Arguments without a scheme (spec/url.md) -------------------------------------
@@ -1052,6 +1049,8 @@ local function observe(rec)
     popup_memory = rec.shown ~= nil and (rec.shown.opts.error or ""):find(
       "^html: page too large for available memory") ~= nil,
     shown_lines = rec.shown and #rec.shown.lines or false,
+    popup_last = rec.shown and (rec.shown.opts.error or ""):match(
+      "([^\n]*)$") or false,
     page_lines = page_lines(rec),
     last_kb = last,
     kb_rising = rising,
@@ -1241,7 +1240,7 @@ framed_cases("loading_quit_prompt", {
 })
 
 -- "Exit": the screen is restored before the error line on the error paths
--- that end the session (the unexpected error, the file read error).
+-- that end the session (the unexpected error).
 framed_cases("loading_error_exits", {
   { "unexpected error in the render: restore, then one line",
     { text = BIG, step = 0.01,
@@ -1252,19 +1251,12 @@ framed_cases("loading_error_exits", {
       end },
     { code = 1, marks = { "restore", "err" },
       err = { "html: unexpected error: boom" } } },
-  { "read error of a file: restore, then one line",
-    { text = BIG, deps = { open = function()
-        local f = fake_file(BIG)
-        f.read = function() return nil, "disk gone" end
-        return f
-      end } },
-    { code = 1, marks = { "restore", "err" },
-      err = { "html: read error: disk gone" } } },
 })
 
 -- "Errors after the frame": a fetch error or a memory stop does not end the
--- session. The viewer shows a popup over an empty page (over the lines so far
--- for a memory stop). After OK, q and y quit with code 0. No stderr line.
+-- session. The viewer shows a popup over an empty page: a broken page is not
+-- rendered, so no line of it shows (spec/loading.md). After OK, q and y quit
+-- with code 0. No stderr line.
 local OK_QUIT = { KEY_ENTER, KEY_Q, KEY_Y }
 local function kept(url, text, extra)
   local e = { code = 0, err = {}, marks = { "restore" }, shown = true,
@@ -1275,7 +1267,8 @@ local function kept(url, text, extra)
   end
   return e
 end
-local CONNECT_ERR = "html: cannot connect: " .. URL .. ": "
+local RELOAD = "\nReload to try again."
+local CONNECT_ERR ="html: cannot connect: " .. URL .. ": "
 framed_cases("loading_errors_keep_the_session", {
   { "cannot connect",
     { args = { URL }, show = OK_QUIT,
@@ -1293,7 +1286,28 @@ framed_cases("loading_errors_keep_the_session", {
   { "read error in a 200 body",
     { args = { URL }, show = OK_QUIT,
       card = { default = served(PAGE, 10, { read_error = "reset" }) } },
-    kept(URL, "html: read error: reset") },
+    kept(URL, "html: read error: reset" .. RELOAD,
+      { popup_last = "Reload to try again." }) },
+  { "read error in a 200 body, a guessed URL: the popup names the argument",
+    { args = { "example.com" }, show = OK_QUIT, deps = { exists = no },
+      card = { default = served(PAGE, 10, { read_error = "reset" }) } },
+    kept("http://example.com", "html: read error: reset (no local file named "
+      .. "example.com)" .. RELOAD) },
+  { "timeout in the body: an empty page and the popup",
+    { args = { URL }, show = OK_QUIT, step = 0.5,
+      card = { default = served(PAGE, 10, { endless = true }) } },
+    { code = 0, err = {}, shown = true, shown_lines = 0,
+      title = "[error] " .. URL, popup_last = "Reload to try again.",
+      handles_closed = true } },
+  { "read error of a local file after the frame: a popup, exit 0",
+    { text = BIG, show = OK_QUIT, deps = { open = function()
+        local f = fake_file(BIG)
+        f.read = function() return nil, "disk gone" end
+        return f
+      end } },
+    { code = 0, err = {}, marks = { "restore" }, shown = true,
+      shown_lines = 0, popup = "html: read error: disk gone" .. RELOAD,
+      title = "[error] page.html" } },
   { "too many open connections",
     { args = { URL }, show = OK_QUIT, card = { limit = 0,
       default = served(PAGE, 10) } },
@@ -1311,13 +1325,14 @@ framed_cases("loading_errors_keep_the_session", {
       { headers = { ["Content-Type"] = { "text/html" },
         ["Content-Length"] = { "99999999" } } }) } },
     { code = 0, err = {}, shown = true, popup_memory = true,
-      title = "[error] " .. URL, shown_lines = 0, handles_closed = true } },
+      title = "[error] " .. URL, shown_lines = 0, handles_closed = true,
+      popup_last = "Reload to try again." } },
   { "a guessed URL names the argument in the popup",
     { args = { "example.com" }, show = OK_QUIT, deps = { exists = no },
       card = { default = { connect_error = "refused" } } },
     kept("example.com", "html: cannot connect: http://example.com: refused "
       .. "(no local file named example.com)") },
-  { "memory stop after the first screen: a popup over the lines so far",
+  { "memory stop after the first screen: an empty page and a popup",
     { text = BIG, step = 0.01, show = OK_QUIT,
       on_read = function(n)
         if n == 4 then
@@ -1325,7 +1340,8 @@ framed_cases("loading_errors_keep_the_session", {
         end
       end },
     { code = 0, err = {}, marks = { "restore" }, early_draw = true,
-      shown = true, popup_memory = true, title = "[error] page.html" } },
+      shown = true, popup_memory = true, title = "[error] page.html",
+      shown_lines = 0, popup_last = "Reload to try again." } },
   { "Ctrl+C in the popup exits with 130",
     { args = { URL }, show = { KEY_CTRL_C },
       card = { default = { connect_error = "refused" } } },
@@ -1341,22 +1357,23 @@ framed_cases("loading_errors_keep_the_session", {
 })
 
 -- "HTTP error status": the card reports it as a connect failure. The short
--- page shows with a popup "[HTTP <code>] <phrase>".
+-- page shows with a popup of two lines: "[HTTP <code>] <phrase>" and the URL.
+-- The status line holds the code once.
 local function http_row(name, reason, code_text, popup, extra)
   local e = { code = 0, err = {}, shown = true, popup = popup,
-    title = "[HTTP " .. code_text .. "] HTTP " .. code_text
-      .. (extra and extra.phrase and (" " .. extra.phrase) or ""),
+    title = "[HTTP " .. code_text .. "] " .. (extra and extra.phrase or URL),
+    popup_last = URL,
     handles_closed = true }
   return { name, { args = { URL }, show = OK_QUIT,
     card = { default = { connect_error = reason } } }, e }
 end
 framed_cases("loading_http_status_popup", {
   http_row("404: the reason is the URL", internet.reason_404(URL), "404",
-    "[HTTP 404] Not Found", { phrase = "Not Found" }),
+    "[HTTP 404] Not Found\n" .. URL, { phrase = "Not Found" }),
   http_row("500: the Java message", internet.reason_status(500, URL), "500",
-    "[HTTP 500] Internal Server Error", { phrase = "Internal Server Error" }),
+    "[HTTP 500] Internal Server Error\n" .. URL, { phrase = "Internal Server Error" }),
   http_row("unknown code: no phrase", internet.reason_status(418, URL), "418",
-    "[HTTP 418]"),
+    "[HTTP 418]\n" .. URL),
   { "the short page shows the URL",
     { args = { URL }, show = OK_QUIT,
       card = { default = { connect_error = internet.reason_404(URL) } } },

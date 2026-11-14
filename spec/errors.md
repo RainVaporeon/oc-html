@@ -10,7 +10,7 @@ Source: `bin/html.lua`. Index: `SPEC.md`. Exit codes: `SPEC.md` "Global rules".
 
 ## Errors that keep the session
 
-In the viewer, a fetch error after the frame opened and a guard memory stop do not end the program. `bin/html.lua` shows the message in a popup over the page, and the exit code is 0 when the user quits. Ctrl+C still gives 130. Print mode, the no-screen path, and every error before the frame print the line and keep the exit code 1 (`spec/loading.md` "Errors after the frame"). A read error of a local file, an unexpected error and a module load error still end the program with code 1.
+In the viewer, a fetch error after the frame opened and a guard memory stop do not end the program. `bin/html.lua` shows the message in a popup over the page, and the exit code is 0 when the user quits. Ctrl+C still gives 130. Print mode, the no-screen path, and every error before the frame print the line and keep the exit code 1 (`spec/loading.md` "Errors after the frame"). A page that broke off (a read error of a body or of a local file, a timeout in the body, a memory stop) is not rendered: the popup has two lines, the error and `Reload to try again.`, over an empty page. In print mode and with no screen, only the error line prints on stderr and the exit code is 1. An unexpected error and a module load error still end the program with code 1.
 
 ## Error log
 

@@ -62,12 +62,10 @@ The handle closes on every exit path: normal end, controlled error, unexpected e
   - the body is empty,
   - the first `read` fails, or the read times out before the first byte,
   - the content type is not one of the accepted types below.
-  The short page is the document `<title>HTTP <code> <message></title><h1>HTTP <code> <message></h1><p><url></p>`. It goes through the same tokenizer and layout.
+  The short page is the document `<title><message></title><h1>HTTP <code> <message></h1><p><url></p>`. The title is the phrase only, because the status line has `[HTTP <code>]` already. With an empty message there is no `<title>`. It goes through the same tokenizer and layout.
   - In the message and the URL, `&` becomes `&amp;` and `<` becomes `&lt;`, so they show as written.
   - With an empty message, the text is `HTTP <code>`, without a trailing space.
-- Error status with a partial body. A read error or a read timeout after the first byte ends the body. The received part renders.
-  - In the viewer, a popup reports the error line (`spec/viewer.md` "Error popup"). The user closes it and keeps browsing the partial page. The line is not printed on stderr after the exit. The exit code is 0 when the user quits normally.
-  - In print mode or with no screen, the program prints the partial text and then the error line (`html: read error: <reason>` or the read timeout message) on stderr. The exit code is 0 (decision D6).
+- Error status with a body that breaks off. A read error or a read timeout after the first byte makes a broken page, like a 2xx body: no part renders. The viewer shows the popup over an empty page (`spec/loading.md` "Errors after the frame"). Print mode and the no-screen path print only the error line on stderr, and the exit code is 1. The `html: HTTP <code> <message>: <url>` notice prints only when the page is complete.
 - The card gives no error body (N10, measured). See "HTTP error statuses". The rules above for a readable error body stay for a card that gives one. Their tests are marked "not seen in game".
 - `Content-Type` `text/html`, `application/xhtml+xml`, `text/plain` or no `Content-Type`: the body renders. `text/plain` goes through the HTML tokenizer like any text; a stray `<` in it renders as text or as an unknown tag.
   - The media type is compared without case. Parameters after `;` and spaces around the type are ignored. An empty `Content-Type` counts as no `Content-Type`.
@@ -87,7 +85,7 @@ Decision (user, 2026-11-15). `fetch.open` maps the failure back to a status:
 
 A mapped status gives a response, not an error. `fetch.open` closes the handle and returns a response with `status`, `is_error`, the short page as its body (see above), `popup` and `notice`:
 - The reason phrase comes from a table in `fetch.lua`: 400 Bad Request, 401 Unauthorized, 403 Forbidden, 404 Not Found, 405 Method Not Allowed, 408 Request Timeout, 410 Gone, 429 Too Many Requests, 500 Internal Server Error, 501 Not Implemented, 502 Bad Gateway, 503 Service Unavailable, 504 Gateway Timeout. Another code has no phrase.
-- `popup` is `[HTTP <code>] <phrase>` (for example `[HTTP 404] Not Found`), or `[HTTP <code>]` with no phrase. The viewer shows the short page and this popup with an `[OK]` button. The status line shows `[HTTP <code>]`. The exit code is 0 when the user quits.
+- `popup` has two lines: `[HTTP <code>] <phrase>` (for example `[HTTP 404] Not Found`), or `[HTTP <code>]` with no phrase, then the URL. The viewer shows the short page and this popup with an `[OK]` button. The status line shows `[HTTP <code>] <phrase>` and does not repeat the code. The exit code is 0 when the user quits.
 - `notice` is `html: HTTP <code> <phrase>: <url>` (no phrase: `html: HTTP <code>: <url>`). Print mode and the no-screen path print the short page, then this line on stderr, and exit with 0 (decision D6).
 
 ## Errors
@@ -102,7 +100,7 @@ All errors are controlled. Each is one line with the prefix `html: `, exit code 
 | `finishConnect` fails (unknown host, `Connection reset`, TLS error) and the reason is not an HTTP status | `html: cannot connect: <url>: <reason>` |
 | Connect or first response takes longer than `CONNECT_TIMEOUT` | `html: timed out connecting to <url>` |
 | No new data for `READ_TIMEOUT` | `html: timed out reading <url> (<bytes> bytes received)` |
-| `read` returns nil and a reason (2xx status) | `html: read error: <reason>` |
+| `read` returns nil and a reason (any status, after the first byte) | `html: read error: <reason>` |
 | Content type (2xx status) | `html: not an HTML page: <type>` |
 | Ctrl+C | `html: interrupted`, exit code 130 |
 

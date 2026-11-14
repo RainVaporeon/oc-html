@@ -27,12 +27,12 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 
 ## Error popup
 
-- When a remote page with an error status stops reading after the first byte (a read error or a read timeout), the viewer shows the part received. It then shows a popup over the page with the error line (`html: read error: <reason>` or `html: timed out reading ...`).
-- The popup shows the error text and an `[OK]` button under it. Only Enter closes the popup. Esc does not. The viewer ignores all other keys while the popup shows (Ctrl+C still quits at once). The user then keeps browsing the partial page.
+- When a page breaks off after the frame opened (a read error, a read timeout or a memory stop), the viewer shows no part of it. It shows a popup over an empty page with two lines: the error line (`html: read error: <reason>`, `html: timed out reading ...` or the memory message) and `Reload to try again.` (`spec/loading.md` "Errors after the frame").
+- The popup shows the error text and an `[OK]` button under it. Only Enter closes the popup. Esc does not. The viewer ignores all other keys while the popup shows (Ctrl+C still quits at once). After OK the user can scroll the empty page and quit.
 - When the user quits normally, the exit code is 0.
 - Print mode and the no-screen path have no popup. See `spec/fetch.md` "HTTP status and content type".
-- A popup also reports an error after the frame opened (`spec/loading.md` "Errors after the frame"). The page behind it is empty, or holds the lines received before a memory stop. The status line shows `[error]` and the URL. After OK the user can scroll and quit as usual.
-- A status that the card reports as a connect failure (404, 500, ...) shows the short page behind a popup `[HTTP <code>] <phrase>` (for example `[HTTP 404] Not Found`). A code with no known phrase shows `[HTTP <code>]`. The status line shows `[HTTP <code>]` before the title. See `spec/fetch.md` "HTTP error statuses".
+- A popup also reports an error after the frame opened (`spec/loading.md` "Errors after the frame"). The page behind it is empty. The status line shows `[error]` and the URL. After OK the user can scroll and quit as usual.
+- A status that the card reports as a connect failure (404, 500, ...) shows the short page behind a popup of two lines: `[HTTP <code>] <phrase>` and the URL (for example `[HTTP 404] Not Found`, then `http://example.com/`). A code with no known phrase shows `[HTTP <code>]`, then the URL. The status line shows `[HTTP <code>] <phrase>` and does not repeat the code. With no phrase it shows `[HTTP <code>] <url>`. See `spec/fetch.md` "HTTP error statuses".
 
 ## Resolution
 

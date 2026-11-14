@@ -62,6 +62,8 @@ local SIZE_COST_MIN = 0.5
 local LOAD_TICK = 0.25
 -- Exit codes.
 local EXIT_ERROR = 1
+-- The second line of the popup of a broken page.
+local RELOAD_LINE = "Reload to try again."
 local EXIT_USAGE = 2
 local EXIT_INTERRUPTED = 130
 local INTERRUPTED = "html: interrupted"
@@ -293,8 +295,11 @@ end
 -- the viewer. source: read() (a chunk, or nil at the end; it raises on an
 -- error), size (bytes known before reading, or nil), kind ("file" or
 -- "page", for the size message), name (shown without a title), prefix (put
--- before the title, or nil) and tail_error() (optional, the error line of a
--- body that ended at a read error, or nil). width is the output width: the
+-- before the title, or nil), head_line (optional, a line for stderr in print
+-- mode before the text) and tail_error() (optional, a line for the popup or
+-- stderr after the render: the status notice of a connect failure, or nil).
+-- A source that breaks off raises instead: a broken page is not rendered.
+-- width is the output width: the
 -- layout wraps at width - 1 (see spec/cli.md "Output width"). done() is
 -- called when the render ends. ui is optional, for the loading screen:
 -- before_read(lines, count) and show(lines, opts) in place of deps.view.
@@ -325,6 +330,9 @@ local function run(source, opts, deps, width, done, ui)
     return (ui and ui.show or deps.view)(lines, { title = title,
       file = source.name,
       no_rescale = opts.no_rescale, error = tail_error })
+  end
+  if source.head_line then
+    deps.err(source.head_line)
   end
   local out = deps.out
   for i = 1, #lines do
@@ -592,16 +600,17 @@ function M.main(argv, deps)
   -- A fetch error after the frame opened does not end the session: the
   -- viewer shows it in a popup (see spec/loading.md "Errors after the
   -- frame"). kept_error is the text of such an error.
-  local kept_error
-  local function fetch_error(why)
+  -- broken is true when the page broke off after it started to load: the
+  -- popup then says to reload, and no part of the page shows.
+  local kept_error, broken
+  local function fetch_error(why, is_broken)
     if why ~= INTERRUPTED then
       why = why .. suffix
       kept_error = why
+      broken = is_broken
     end
     error(why, 0)
   end
-  -- The finished lines of the render in progress, for a memory stop.
-  local live_lines, live_count = nil, 0
 
   -- The loading screen. The status line shows the phase (see
   -- spec/loading.md). The status text is drawn only when it changes, and the
@@ -662,7 +671,6 @@ function M.main(argv, deps)
   -- the status line changes until the end of the input.
   local ui = {
     before_read = function(lines, count)
-      live_lines, live_count = lines, count
       if not first_drawn and count >= session.rows then
         first_drawn = true
         session.draw_lines(lines, count)
@@ -681,7 +689,9 @@ function M.main(argv, deps)
           -- A plain nil is the end of the input. A nil with a message is an
           -- error.
           if chunk == nil and why then
-            error("html: read error: " .. reason(why), 0)
+            kept_error = "html: read error: " .. reason(why)
+            broken = true
+            error(kept_error, 0)
           end
           if chunk then
             bytes = bytes + #chunk
@@ -706,31 +716,32 @@ function M.main(argv, deps)
     open_file = resp
     name, total = resp.final_url, resp.length
     local status = "HTTP " .. int_text(resp.status)
+    -- A notice, not an error: the body renders (decision D2). It prints
+    -- after the render, so a broken page prints only its error line.
+    local head_line
     if resp.is_error and opts.print and not resp.notice then
-      -- A notice, not an error: the body renders (decision D2).
-      deps.err("html: " .. status .. (resp.message ~= "" and (" "
-        .. resp.message) or "") .. ": " .. resp.final_url)
+      head_line = "html: " .. status .. (resp.message ~= "" and (" "
+        .. resp.message) or "") .. ": " .. resp.final_url
     end
     return {
       read = function()
         local chunk, err = resp.read()
         if chunk == nil and err then
-          fetch_error(err)
+          fetch_error(err, true)
         end
         bytes = resp.bytes
         return chunk
       end,
       size = resp.length, kind = "page", name = resp.final_url,
       prefix = resp.is_error and ("[" .. status .. "] ") or nil,
-      -- An error status ends its body at a read error. The received part
-      -- renders, and the error line follows (popup or stderr).
+      head_line = head_line,
       tail_error = function()
         if resp.notice then
           -- A status from a connect failure: the line in print mode, the
           -- popup in the viewer. The short page has rendered.
           return opts.print and resp.notice or resp.popup
         end
-        return resp.read_error and (resp.read_error .. suffix) or nil
+        return nil
       end,
     }
   end
@@ -769,23 +780,22 @@ function M.main(argv, deps)
       end
     end, session and ui or nil)
   end, handler)
-  -- An error that keeps the session: a fetch error or a memory stop after
-  -- the frame opened. The viewer shows a popup over an empty page, or over
-  -- the lines of a memory stop. Quit then gives code 0.
+  -- An error that keeps the session: a fetch error, a file read error or a
+  -- memory stop after the frame opened. The viewer shows a popup over an
+  -- empty page. A broken page is not rendered: the lines so far are dropped.
+  -- Quit then gives code 0.
   if not ok and session and not opts.print and type(result) == "string"
       and (result == kept_error or find(result,
         "^html: %a+ too large for available memory")) then
     local text = result
-    local lines = {}
-    if result ~= kept_error and live_lines and live_count > 0 then
-      lines = live_lines
-      for i = #lines, live_count + 1, -1 do
-        lines[i] = nil
-      end
+    if result ~= kept_error or broken then
+      text = text .. "\n" .. RELOAD_LINE
     end
+    -- Nothing holds the lines of the failed render now: the popup shows over
+    -- an empty page and the memory is free.
     pcall(close_file)
     pcall(stop_listening)
-    ok, result = xpcall(session.show, handler, lines, {
+    ok, result = xpcall(session.show, handler, {}, {
       title = "[error] " .. name, file = name, error = text,
       no_rescale = opts.no_rescale })
   end

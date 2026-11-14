@@ -43,11 +43,12 @@ Source: `bin/html.lua`, `lib/html/viewer.lua`, `lib/html/guard.lua`. Index: `SPE
 Decision (user, 2026-11-15): the program will get tabs, so an error after the frame opened must not end the session. Reason: `docs/rationale.md` "Errors keep the session".
 
 - Every fetch error after the frame opened shows as a popup with the error text and an `[OK]` button, over an empty page. This covers: cannot connect, timeout, read error, too many open connections, not text/html, too large, no card, HTTP disabled, and a failed redirect. The status line shows the URL and `[error]`.
-- A memory stop by the guard after the frame shows the popup over the lines received so far when there are lines, and over an empty page otherwise. This holds for a local file too.
+- A page that broke off is a broken page, and no part of it renders (`docs/rationale.md` "Broken pages are not rendered"). This covers every incomplete load after the frame: a read error in the body, a timeout in the body, and a memory stop by the guard. It holds for a local file too, and for the body of an error status. The popup shows over an empty page. The program drops the lines received so far before it shows the popup.
+- The popup text of a broken page has two lines: the error line, then `Reload to try again.` There is no reload key yet. Reload comes with link navigation.
 - After OK, the user can scroll and quit with `q` as usual. The exit code is 0 on a normal quit, and nothing prints on stderr.
 - Ctrl+C still exits at once with code 130, also while the popup shows.
-- An HTTP error status (404, 500, ...) is not an error here: the short page shows with the popup `[HTTP <code>] <phrase>` (`spec/fetch.md` "HTTP error statuses").
-- Not covered: the errors before the frame (argument checks, a missing file, a module that cannot load), a read error of a local file, an unexpected error, and print mode and the no-screen path. They keep the stderr line, the screen restore and the exit codes of `spec/errors.md`.
+- An HTTP error status (404, 500, ...) is not an error here: the short page shows with a popup of two lines, `[HTTP <code>] <phrase>` and the URL (`spec/fetch.md` "HTTP error statuses").
+- Not covered: the errors before the frame (argument checks, a missing file, a module that cannot load), an unexpected error, and print mode and the no-screen path. They keep the stderr line, the screen restore and the exit codes of `spec/errors.md`. In print mode and with no screen, a broken page prints no text: only the error line goes to stderr, and the exit code is 1.
 
 ## Exit
 

@@ -641,12 +641,12 @@ end, { sizes = { 1, 3, 4096 } })
 
 -- Error status (spec/fetch.md "HTTP status and content type") ------------------
 
-local function page(head, url)
-  return "<title>" .. head .. "</title><h1>" .. head .. "</h1><p>" .. url
-    .. "</p>"
+local function page(head, url, title)
+  return (title and ("<title>" .. title .. "</title>") or "") .. "<h1>" .. head
+    .. "</h1><p>" .. url .. "</p>"
 end
 
-local NF = page("HTTP 404 Not Found", URL)
+local NF = page("HTTP 404 Not Found", URL, "Not Found")
 
 local function not_found(extra)
   extra.code, extra.message = 404, "Not Found"
@@ -694,32 +694,31 @@ t.cases(T, "error_status_body", {
     { status = 404, text = NF } },
   { "304 is an error status", { script = { code = 304,
     message = "Not Modified", body = {} } },
-    { status = 304, text = page("HTTP 304 Not Modified", URL) } },
+    { status = 304, text = page("HTTP 304 Not Modified", URL,
+      "Not Modified") } },
   { "message and URL escape & and <", { script = { code = 500,
     message = "<b>&" }, url = "http://x.com/?a=1&b=<2>" },
     { status = 500, text = page("HTTP 500 &lt;b>&amp;",
-      "http://x.com/?a=1&amp;b=&lt;2>") } },
+      "http://x.com/?a=1&amp;b=&lt;2>", "&lt;b>&amp;") } },
   { "empty message has no trailing space", { script = { code = 503,
     message = "" } }, { status = 503, text = page("HTTP 503", URL) } },
-  { "read error after the first byte keeps the part", { script = {
-    code = 500, message = "Error", body = { "<p>part" }, read_error = "reset" } },
-    { status = 500, text = "<p>part",
-      read_error = "html: read error: reset" } },
+  { "read error after the first byte: the error comes, no part is kept",
+    { script = { code = 500, message = "Error", body = { "<p>part" },
+      read_error = "reset" } },
+    { status = 500, text = "<p>part", why = "html: read error: reset" } },
   { "read raises after the first byte", { script = { code = 500,
     body = { "<p>part" }, read_raise = "broken" } },
-    { status = 500, text = "<p>part",
-      read_error = "html: read error: broken" } },
-  { "read timeout after the first byte keeps the part", { script = {
+    { status = 500, text = "<p>part", why = "html: read error: broken" } },
+  { "read timeout after the first byte", { script = {
     code = 500, body = { "<p>part" }, endless = true } },
-    { status = 500, text = "<p>part", read_error = "html: timed out reading "
+    { status = 500, text = "<p>part", why = "html: timed out reading "
       .. URL .. " (7 bytes received)" } },
 }, function(input)
   local resp, why, ctl = open(input.script, input.url)
   t.eq(why, nil)
   assert(resp, why)
   local text, rwhy = read_all(resp)
-  local out = { status = resp.status, text = text, why = rwhy,
-    read_error = resp.read_error }
+  local out = { status = resp.status, text = text, why = rwhy }
   finish(resp, ctl)
   return out
 end)
@@ -734,8 +733,10 @@ local RSTATUS = internet.reason_status
 local function mapped(code, phrase)
   local head = "HTTP " .. code .. (phrase ~= "" and (" " .. phrase) or "")
   return { status = code, is_error = true,
-    popup = "[HTTP " .. code .. "]" .. (phrase ~= "" and (" " .. phrase) or ""),
-    notice = "html: " .. head .. ": " .. URL, text = page(head, URL) }
+    popup = "[HTTP " .. code .. "]" .. (phrase ~= "" and (" " .. phrase) or "")
+      .. "\n" .. URL,
+    notice = "html: " .. head .. ": " .. URL,
+    text = page(head, URL, phrase ~= "" and phrase or nil) }
 end
 local function conn(reason)
   return { why = "html: cannot connect: " .. URL .. ": " .. reason }

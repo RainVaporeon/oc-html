@@ -22,7 +22,7 @@ html-install [--prefix <dir>] [--dry-run]
 - `--help` lists the URL forms too.
 - Every usage error (an unknown option, too many arguments, a bad `--width`) prints one line to stderr that ends with ` (see html --help)`, and exits with code 2.
 - A URL argument and an argument without a scheme follow `spec/url.md`.
-- Exit codes for a URL. In the viewer, a fetch error after the frame opened and a memory stop show a popup and keep the session: the exit code is 0 when the user quits (`spec/loading.md` "Errors after the frame"). In print mode, with no screen, and for an error before the frame, the line goes to stderr and the exit codes stay: 1 for an error, 2 for a bad argument, 130 for Ctrl+C. An HTTP error status that `fetch.open` maps (`spec/fetch.md` "HTTP error statuses") exits with 0 in every mode.
+- Exit codes for a URL. In the viewer, a fetch error after the frame opened and a read error of the body, a timeout in the body and a memory stop show a popup and keep the session: the exit code is 0 when the user quits (`spec/loading.md` "Errors after the frame"). In print mode, with no screen, and for an error before the frame, the line goes to stderr, and no part of a broken page prints and the exit codes stay: 1 for an error, 2 for a bad argument, 130 for Ctrl+C. An HTTP error status that `fetch.open` maps (`spec/fetch.md` "HTTP error statuses") exits with 0 in every mode.
 
 ## Home directory
 
@@ -41,7 +41,7 @@ html-install [--prefix <dir>] [--dry-run]
 - The checks before the TUI opens: the arguments, then whether the file exists and is a file (see `spec/loading.md` "Startup").
 - A missing local file gives `html: file not found: <file>`, exit code 1. This is the only message for a missing file, also when the open itself fails because the file is missing.
 - A directory gives `html: not a file: <file>`, exit code 1.
-- A read error on a local file stops with `html: read error: <reason>`, exit code 1. This includes a file that exists but cannot be opened (the reason is the open error, for example `permission denied`).
+- A read error on a local file after the frame opened is a broken page: the viewer shows a popup over an empty page and the exit code is 0 on a normal quit (`spec/loading.md` "Errors after the frame"). In print mode and with no screen, the program prints no text, one line `html: read error: <reason>` goes to stderr, and the exit code is 1. A file that exists but cannot be opened (the reason is the open error, for example `permission denied`) gives the same line and exit code 1 before the frame.
 - An empty file shows an empty page. In `--print` mode, it writes nothing.
 - With no GPU or no screen, the program falls back to print mode and writes one line to stderr. It does not open the TUI.
 

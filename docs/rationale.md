@@ -57,9 +57,16 @@ Decided by the user (2026-11-14). `spec/fetch.md` and `spec/url.md` state each r
 Decided by the user (2026-11-15). Rules: `spec/loading.md` "Errors after the frame".
 
 - The program will support tabs. A tab that fails to load must not end the whole program, so an error after the frame opened shows in a popup and the user stays in the viewer.
-- The rule covers every fetch error after the frame: cannot connect, timeout, read error, too many open connections, not text/html, too large. A memory stop shows the lines received so far.
+- The rule covers every fetch error after the frame: cannot connect, timeout, read error, too many open connections, not text/html, too large. A page that breaks off shows no lines ("Broken pages are not rendered").
 - Print mode, the no-screen path and the errors before the frame keep the stderr line and the exit codes. Without a screen there is no session to keep, and a shell script needs the exit code.
 - Ctrl+C still exits at once with code 130. It is the user's explicit request to leave.
+
+## Broken pages are not rendered
+
+Decided by the user (2026-11-15). Rules: `spec/loading.md` "Errors after the frame". This replaces the rule of 2026-11-14 that rendered the received part of an error-status body.
+
+- A partial page is misleading. The user may read it as the whole page and miss the text that did not arrive. So a page that breaks off (read error, timeout in the body, memory stop) shows an empty page and a popup with the error and `Reload to try again.`. The user reloads instead of reading a part.
+- The same holds for a local file read error and for print mode: no partial text prints, only the error line on stderr, and the exit code is 1 because the output is incomplete.
 
 ## Remote fetching: measurements (netprobe v1)
 
@@ -89,7 +96,6 @@ Decided by the user (2026-11-14). The rules are in the named spec files.
 - A `<` with no `>` (`spec/tokenizer.md` "Broken markup"). The same rule applies at the end of input and at the `MAX_TAG` limit. One rule is simpler, and the user sees all the text of the page, also a cut tag at the end.
 - `pre` drops one newline after the start tag (`spec/layout.md` "Preformatted text"). This matches the HTML standard, so a page shows no extra blank line at the top of a `pre` block.
 - `--width` maximum (`spec/cli.md` "Output width"). A width larger than the screen cannot be shown. 160 is the tier 3 maximum, the largest screen in the game.
-- Error status with a partial body (`spec/viewer.md` "Error popup"). The user keeps the received part of the page and still learns that it is not complete.
 - Installer suffix (`spec/installer.md`). `; old files kept` is true only when the install started to change files. A failed check before the first write changed nothing.
 
 ## Startup and loading screen
