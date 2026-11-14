@@ -77,11 +77,25 @@ function New-ReleaseInstaller($version, $target) {
   $installer = Join-Path $target 'html-install.lua'
   if (Test-Path -LiteralPath $installer) { Fail 'html-install.lua already exists. It is never overwritten.' }
   $tmp = "$installer.tmp"
-  # pwsh 7.4 and later keep the bytes of a native command redirected to a file.
-  Invoke-Sandbox lua5.3 tools/mkinstall.lua $version "releases/$version" > $tmp
+  # pwsh 7.4 and later keep the bytes only when a native command is
+  # redirected directly. Output from a function goes through the pipeline as
+  # text lines and gets CRLF endings, so docker is called here, not
+  # Invoke-Sandbox.
+  $src = $root.Replace('\', '/')
+  docker run --rm --network none --read-only `
+    --cap-drop ALL --security-opt no-new-privileges --user 1000:1000 `
+    --memory 256m --pids-limit 64 `
+    -v "${src}:/src:ro" -w /src oc-html-test `
+    lua5.3 tools/mkinstall.lua $version "releases/$version" > $tmp
   if ($LASTEXITCODE -ne 0) {
     Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
     Fail 'tools/mkinstall.lua failed. No installer made.'
+  }
+  # Lua reads CRLF in a long string as LF, so the checks below would not see
+  # it. The file must have the exact generator bytes.
+  if ([IO.File]::ReadAllBytes($tmp) -contains [byte]13) {
+    Remove-Item -LiteralPath $tmp -Force
+    Fail 'the installer output has a carriage return. No installer made.'
   }
   Move-Item -LiteralPath $tmp $installer
   Invoke-Sandbox luac5.3 -p "releases/$version/html-install.lua"
