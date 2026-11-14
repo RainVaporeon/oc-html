@@ -375,4 +375,17 @@ t.cases(T, "render_before_read", {
       and title == plain_title }
 end)
 
+-- The page table of M.render: link, anchor and base counts, and the types.
+t.cases(T, "render_page", {
+  { "no links, anchors or base", "<p>x</p>", { 0, 0, "nil" } },
+  { "two links, an anchor and a base",
+    "<base href=/b/><h1 id=top>T</h1><a href=a>A</a> <a href=b>B</a>",
+    { 2, 1, "/b/" } },
+  { "base after the links", "<a href=a>A</a><body><base href=/z/>",
+    { 1, 0, "/z/" } },
+}, function(input)
+  local _, _, page = html.render(reader(input, 4096, { reads = 0 }), 20)
+  return { page.links.count, page.anchors.count, tostring(page.base) }
+end)
+
 return T

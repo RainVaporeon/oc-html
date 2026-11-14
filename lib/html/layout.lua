@@ -622,6 +622,12 @@ function M.new(width)
       end
       return
     end
+    -- The first base with an href counts, in head or anywhere else outside
+    -- a dropped part.
+    if name == "base" and not base_href and attrs
+        and type(attrs.href) == "string" then
+      base_href = attrs.href
+    end
     if CLOSES_P[name] then
       close_open(P_SET, P_STOPS)
     end
@@ -756,7 +762,7 @@ function M.new(width)
     return anc, na
   end
 
-  -- The first <base href> in head, raw, or nil.
+  -- The first <base href> outside a dropped part, raw, or nil.
   function self.base()
     return base_href
   end

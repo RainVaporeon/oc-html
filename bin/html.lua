@@ -242,8 +242,10 @@ local function plain(line)
   return line
 end
 
--- Runs the tokenizer and layout over a reader. Returns the lines and the
--- document title or nil. before_read(lines, count) is optional. It runs
+-- Runs the tokenizer and layout over a reader. Returns the lines, the
+-- document title or nil, and page = { links = { span, href, count }, anchors
+-- = { list, count }, base = raw <base href> or nil }. before_read(lines,
+-- count) is optional. It runs
 -- before each read, with the live lines table and the number of finished
 -- lines.
 function M.render(read, width, before_read)
@@ -269,7 +271,14 @@ function M.render(read, width, before_read)
     push(kind, value, attrs, self_closing)
   end
   local lines = lay.finish()
-  return lines, lay.title()
+  local span, href, link_count = lay.links()
+  local anc, anc_count = lay.anchors()
+  local page = {
+    links = { span = span, href = href, count = link_count },
+    anchors = { list = anc, count = anc_count },
+    base = lay.base(),
+  }
+  return lines, lay.title(), page
 end
 
 local NA = "n/a"
@@ -303,7 +312,8 @@ end
 -- layout wraps at width - 1 (see spec/cli.md "Output width"). done() is
 -- called when the render ends. ui is optional, for the loading screen:
 -- before_read(lines, count) and show(lines, opts) in place of deps.view.
--- Returns the viewer result (nil in print mode), the lines and the title.
+-- Returns the viewer result (nil in print mode), the lines, the title and
+-- the page table of M.render.
 local function run(source, opts, deps, width, done, ui)
   local size = source.size
   -- Without a known size there is no check before reading, so no settle.
@@ -317,7 +327,7 @@ local function run(source, opts, deps, width, done, ui)
   end
   -- The lowest free reading starts here, after the settled reading.
   guard.reset()
-  local lines, title = M.render(source.read, width - 1,
+  local lines, title, page = M.render(source.read, width - 1,
     ui and ui.before_read)
   done()
   local tail_error = source.tail_error and source.tail_error()
@@ -331,7 +341,7 @@ local function run(source, opts, deps, width, done, ui)
     local shown = (ui and ui.show or deps.view)(lines, { title = title,
       file = source.name,
       no_rescale = opts.no_rescale, error = tail_error })
-    return shown, lines, title
+    return shown, lines, title, page
   end
   if source.head_line then
     deps.err(source.head_line)
@@ -344,7 +354,7 @@ local function run(source, opts, deps, width, done, ui)
   if tail_error then
     deps.err(tail_error)
   end
-  return nil, lines, title
+  return nil, lines, title, page
 end
 
 -- Returns the file size from deps.size, or from seek.
@@ -466,7 +476,7 @@ end
 -- session opens here when framed, and is stored in ctx.session. The caller
 -- closes it. The listener and the file are closed before this returns.
 -- Returns one of:
---   { ok = true, lines =, title =, result = viewer result or nil }
+--   { ok = true, lines =, title =, page =, result = viewer result or nil }
 --   { error = text, reload = bool, kind = "controlled" or "unexpected" }
 --   { interrupted = true, message = text or nil }
 --   { quit = true, notice = text or nil, reload = bool or nil }
@@ -700,7 +710,7 @@ local function load_page(target, ctx)
     }
   end
 
-  local ok, result, lines, title = xpcall(function()
+  local ok, result, lines, title, page = xpcall(function()
     if framed then
       session = deps.open_screen({ no_rescale = opts.no_rescale,
         status = "Loading " .. name .. "..." })
@@ -752,7 +762,7 @@ local function load_page(target, ctx)
       text = text .. "\n" .. RELOAD_LINE
     end
     popup_text, popup_reload = text, reload and true or false
-    lines, title = nil, nil
+    lines, title, page = nil, nil, nil
     -- Nothing holds the lines of the failed render now: the popup shows over
     -- an empty page and the memory is free.
     pcall(close_file)
@@ -786,7 +796,8 @@ local function load_page(target, ctx)
   elseif result == "interrupted" then
     return { interrupted = true, notice = popup_text, reload = popup_reload }
   end
-  return { ok = true, lines = lines, title = title, result = result }
+  return { ok = true, lines = lines, title = title, page = page,
+    result = result }
 end
 
 M.load_page = load_page

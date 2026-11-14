@@ -103,7 +103,7 @@ Anchors:
 - A hash collision can give a wrong jump. This is accepted.
 
 Base:
-- The first `<base href>` inside `head` is stored raw. Later ones are ignored.
+- The first `<base href>` anywhere in the document is stored raw (the HTML standard: head, body, or before head). Later ones are ignored. A `base` inside a dropped part other than `head` (for example `svg`) does not count. Links resolve when the user follows them, so a base that comes after a link still applies to it.
 
 Release:
 - After a memory stop the page is broken and not rendered, so the layout keeps no link data (`spec/loading.md` "Errors after the frame").
