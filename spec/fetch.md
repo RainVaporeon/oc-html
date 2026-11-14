@@ -43,7 +43,9 @@ The handle closes on every exit path: normal end, controlled error, unexpected e
 
 ## Redirects
 
-- The card follows redirects of the same scheme itself (Java `HttpURLConnection`, measured: a chain of 3 redirects gave one 200 response with `hops=0`). The response has no final URL. The program cannot know where the page came from, so the status line shows the URL that `fetch.open` knows: the URL it requested last. After a card-followed redirect that is the first URL (`redirects` is 0 and `final_url` equals the requested URL). Relative links will have to resolve against that URL (`tasks/todo.md` item 2).
+- The card follows redirects of the same scheme itself (Java `HttpURLConnection`, measured: a chain of 3 redirects gave one 200 response with `hops=0`). The response has no final URL. The program cannot know where the page came from, so the status line shows the URL that `fetch.open` knows: the URL it requested last. After a card-followed redirect that is the first URL (`redirects` is 0 and `final_url` equals the requested URL). Relative links resolve against that URL (`spec/url.md` "Link resolution"). Known limit: after a same-scheme redirect that the card follows, the final URL is unknown, so a relative link can resolve against the requested URL, which is wrong when the redirect changed the directory.
+- A `<base href>` of the page, when present, replaces that URL as the base (`spec/url.md` "Base").
+- One handle is open at most at any time. A navigation load closes its handle on every phase 1 failure and at every end of load (`spec/navigation.md` "During a load").
 - A change of scheme (http to https or back) is not followed by the card. It gives a 302 with an absolute `Location` and an empty body. The rules below apply to that case.
 - When `response()` gives 301, 302, 303, 307 or 308 with a `Location` header, `fetch.open` closes the handle and requests the new URL.
 - `Location` can be an absolute `http(s)://` URL or a path that starts with `/` (joined to the current scheme, host and port). Any other form stops with `html: cannot follow redirect: <location>`.
@@ -67,9 +69,9 @@ The handle closes on every exit path: normal end, controlled error, unexpected e
   - With an empty message, the text is `HTTP <code>`, without a trailing space.
 - Error status with a body that breaks off. A read error or a read timeout after the first byte makes a broken page, like a 2xx body: no part renders. The viewer shows the popup over an empty page (`spec/loading.md` "Errors after the frame"). Print mode and the no-screen path print only the error line on stderr, and the exit code is 1. The `html: HTTP <code> <message>: <url>` notice prints only when the page is complete.
 - The card gives no error body (N10, measured). See "HTTP error statuses". The rules above for a readable error body stay for a card that gives one. Their tests are marked "not seen in game".
-- `Content-Type` `text/html`, `application/xhtml+xml`, `text/plain` or no `Content-Type`: the body renders. `text/plain` goes through the HTML tokenizer like any text; a stray `<` in it renders as text or as an unknown tag.
+- `Content-Type` with any `text/*` type (for example `text/html` or `text/plain`), `application/xhtml+xml`, or no `Content-Type`: the body renders (user decision, 2026-11-15). It goes through the same pipeline; at worst it shows as bare text, and a stray `<` in it renders as text or as an unknown tag.
   - The media type is compared without case. Parameters after `;` and spaces around the type are ignored. An empty `Content-Type` counts as no `Content-Type`.
-- Any other type with a 2xx status stops before the body with `html: not an HTML page: <type>`. Downloads come with roadmap item 4.
+- Any other type with a 2xx status stops before the body with `html: not an HTML page: <type>`. This covers binary types: images, archives and `application/*` other than XHTML. Downloads come with roadmap item 4.
 
 ## HTTP error statuses
 
@@ -92,6 +94,8 @@ A mapped status gives a response, not an error. `fetch.open` closes the handle a
 
 All errors are controlled. Each is one line with the prefix `html: `, exit code 1, unless noted.
 
+`fetch.open` returns nil, the message and a third value `retry`. `retry` is true when a retry may help: a `finishConnect` failure that is not a mapped HTTP status, a `response()` error, a connect timeout, a response timeout, and a failed `card.request` (`too many open connections`). The viewer shows `Reload to try again.` for these (`spec/navigation.md` "Retry line"). `retry` is false for every other error: not an HTML page, compressed response, no internet card, HTTP disabled, and the redirect errors.
+
 | Case | Message |
 |---|---|
 | No internet card | `html: no internet card found (needed for <url>)` |
@@ -101,7 +105,7 @@ All errors are controlled. Each is one line with the prefix `html: `, exit code 
 | Connect or first response takes longer than `CONNECT_TIMEOUT` | `html: timed out connecting to <url>` |
 | No new data for `READ_TIMEOUT` | `html: timed out reading <url> (<bytes> bytes received)` |
 | `read` returns nil and a reason (any status, after the first byte) | `html: read error: <reason>` |
-| Content type (2xx status) | `html: not an HTML page: <type>` |
+| Content type (2xx status): not `text/*`, not XHTML | `html: not an HTML page: <type>` |
 | Ctrl+C | `html: interrupted`, exit code 130 |
 
 - Measured failure texts: `unknown host: <host>: Name or service not known`, `Connection reset`, and `(certificate_expired) PKIX path validation failed: ...`.

@@ -21,7 +21,7 @@ The layout consumes tokens, keeps a small stack of open elements, and appends fi
 | `br` | Line break |
 | `hr` | A line of `─` that fills the layout width |
 | `b strong i em u mark` | Emphasis color |
-| `a` with `href` | Link color. Not clickable in this version |
+| `a` with `href` | Link color, and a link entry (see "Links and anchors") |
 | `pre` | Whitespace kept, long lines wrapped |
 | `code` | Kept as inline text |
 | `img` | `[img: <alt>]`, or `[img]` when there is no alt text or it is empty |
@@ -83,6 +83,31 @@ The layout consumes tokens, keeps a small stack of open elements, and appends fi
 - `pre` drops one newline directly after the start tag, as in the HTML standard. Further newlines are kept.
 - Tabs: the game draws a tab as a 2-cell glyph (measured: `wlen("a\tb")` = 4). Inside `pre`, the layout expands each tab to spaces up to the next 8-column stop before it measures the width. A tab never expands past the width: the expansion stops at the line end. Outside `pre`, the whitespace collapse removes tabs. No tab reaches an output line.
 - Emphasis and links inside `pre` keep the white space.
+
+## Links and anchors
+
+Lines keep their format (`spec/pipeline.md` "Line format"). Link data lives in side arrays that the layout owns. `M.render` returns them as `page` (`spec/pipeline.md` "Render result").
+
+Links:
+- A link is one packed integer: `from_line << 32 | from_col << 24 | (to_line - from_line) << 8 | to_col`. Columns are 1-based cells. `to_col` is the last cell of the link. The line delta is at most 65535: a longer link ends at the cap. A parallel array holds the raw href.
+- The href is trimmed of ASCII white space. An href over 2048 bytes is stored as `false`: the link shows but cannot be followed.
+- Each `a` with `href` gets a fresh link key. Adjacent links with the same href stay separate links.
+- A link entry is created at its first placed piece. An empty link has no entry. A link inside a dropped element has no entry.
+- The gap space between two words belongs to a link only when both sides belong to it.
+- A misnested `a` follows the stack rules above ("The open-element stack").
+
+Anchors:
+- `id` on any element outside a dropped part, and `name` on `a`, make an anchor. The anchor is one packed integer: `(hash40(id) << 24) | line`. `line` is the first line of the element.
+- `hash40` is FNV-1a over the bytes, masked to 40 bits.
+- An id over 256 bytes is skipped. The first anchor of a repeated id wins.
+- A hash collision can give a wrong jump. This is accepted.
+
+Base:
+- The first `<base href>` inside `head` is stored raw. Later ones are ignored.
+
+Release:
+- After a memory stop the page is broken and not rendered, so the layout keeps no link data (`spec/loading.md` "Errors after the frame").
+- The layout tells the guard when the arrays grow past a power of two (`spec/guard.md` "Memory reserve").
 
 ## Title
 

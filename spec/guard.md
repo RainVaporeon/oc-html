@@ -15,6 +15,7 @@ There are no fixed size caps. The program measures and stops before damage happe
 
 - `guard.tick()` also checks `computer.freeMemory()` against the effective reserve, in `freeMemory()` units (real bytes / ramScale, measured ramScale 1.800).
 - The effective reserve is max(`MEMORY_RESERVE`, next_doubling). `MEMORY_RESERVE` is 192 KB. next_doubling = 32 * c / 1.8, where c is the smallest power of two >= the current line count (at least 1024). `guard.reserve()` returns the effective reserve.
+- The link and anchor arrays also double. The layout tells the guard when 2 * link_count or anchor_count crosses a power of two. The doubling term uses c = max(c_lines, c_tables), where c_tables is the smallest power of two >= max(2 * link_count, anchor_count), also at least 1024.
 
 ## Settle
 
@@ -36,6 +37,7 @@ There are no fixed size caps. The program measures and stops before damage happe
 
 - Before parsing, `bin/html.lua` compares the input size with free memory. If the input clearly cannot fit, it stops before reading.
 - The check stops when size x 0.5 (`SIZE_COST_MIN`) is more than the settled free memory.
+- A stop by this check shows no reload line, because a retry gives the same result. A memory stop by `guard.tick()` during the render is a different stop: it makes a broken page with the reload line (`spec/loading.md` "Errors after the frame").
 - The message for a local file is `html: file too large for available memory (<size> bytes, <free> free)`. For a remote page, see `spec/fetch.md` "Memory".
 
 ## Interrupt

@@ -10,7 +10,19 @@ Source: `bin/html.lua`. Index: `SPEC.md`. Exit codes: `SPEC.md` "Global rules".
 
 ## Errors that keep the session
 
-In the viewer, a fetch error after the frame opened and a guard memory stop do not end the program. `bin/html.lua` shows the message in a popup over the page, and the exit code is 0 when the user quits. Ctrl+C still gives 130. Print mode, the no-screen path, and every error before the frame print the line and keep the exit code 1 (`spec/loading.md` "Errors after the frame"). A page that broke off (a read error of a body or of a local file, a timeout in the body, a memory stop) is not rendered: the popup has two lines, the error and `Reload to try again.`, over an empty page. In print mode and with no screen, only the error line prints on stderr and the exit code is 1. An unexpected error and a module load error still end the program with code 1.
+In the viewer, a fetch error after the frame opened and a guard memory stop do not end the program. `bin/html.lua` shows the message in a popup over the page, and the exit code is 0 when the user quits. Ctrl+C still gives 130. Print mode, the no-screen path, and every error before the frame print the line and keep the exit code 1 (`spec/loading.md` "Errors after the frame"). A page that broke off (a read error of a body or of a local file, a timeout in the body, a memory stop during the render) is not rendered: the popup has two lines, the error and `Reload to try again.`, over an empty page. The same reload line shows for the errors that `fetch.open` marks with `retry` (`spec/fetch.md` "Errors"). It does not show for: not an HTML page, compressed response, no internet card, HTTP disabled, too large by the size check before reading (known `Content-Length` or file size), unsupported scheme, and redirect errors. In print mode and with no screen, only the error line prints on stderr and the exit code is 1. An unexpected error and a module load error still end the program with code 1.
+
+## Navigation messages
+
+Messages of link following (`spec/navigation.md`). In the viewer they show as a popup, and the session stays. They are not for print mode.
+
+- `html: file not found: <path>`: a local target that does not exist.
+- `html: not a file: <path>`: a local target that is a directory.
+- `html: unsupported URL scheme: file`: a remote page links to `file:`.
+- `<scheme>: links are not supported`: a link with an unsupported scheme. This is a status-line text, not a popup, until the next key.
+- `[aborted] <target>`: the status line after an abort with no page to go back to (`spec/navigation.md` "Abort").
+- A retry error carries the second popup line `Reload to try again.` (`spec/navigation.md` "Retry line").
+- `link too long`: the status-line text for Enter on a link whose href was over 2048 bytes.
 
 ## Error log
 

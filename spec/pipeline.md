@@ -20,6 +20,12 @@ Source: `bin/html.lua` (`M.render`, `M.run_program`, `M.clear_modules`). Index: 
 - `bin/html.lua` removes every `package.loaded` key that starts with `html.` when the chunk loads, before its first `require`. `M.run_program` runs `main` in `pcall` and removes the keys again on every exit path (normal, error, Ctrl+C), then raises the error again. This loads the current code after an update and frees the module memory after a run.
 - `M.clear_modules(loaded)` does the removal and returns the count. Other keys stay.
 
+## Render result
+
+- `M.render` returns `lines, title, page`. `page` is `{ links, anchors, base }`: the link array and its hrefs, the anchor array, and the raw `<base href>` or nil (`spec/layout.md` "Links and anchors").
+- Print mode ignores `page`.
+- After a memory stop no page exists, so no link data is kept.
+
 ## Line format
 
 A line is one string with inline style control bytes (memory reason: `docs/rationale.md` "Design: Pipeline").

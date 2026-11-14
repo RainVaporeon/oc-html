@@ -64,6 +64,16 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 
 **Goal:** Select a link in the viewer and open its target. Go back to the previous page.
 
+**Spec:** `spec/navigation.md` and the link sections of `spec/layout.md`, `spec/url.md`, `spec/viewer.md` (items 2 and 2a, approved by the user on 2026-11-15).
+
+**Build steps:**
+- [ ] S1: `url.resolve` and `text/*` acceptance (`spec/url.md`, `spec/fetch.md`).
+- [ ] S2: link and anchor recording in layout.
+- [ ] S3: the history module.
+- [ ] S4: viewer keys, cursor, reload, go prompt and the `?` popup.
+- [ ] S5: refactor `bin/html.lua`.
+- [ ] S6: the navigation loop with reload, back, forward, abort and anchors.
+
 **Main files likely touched:** `lib/html/layout.lua` (keep the `href` of each link; today it only sets the link style), `lib/html/viewer.lua` (link selection keys, a back key), `bin/html.lua` (a page-load loop), a new URL resolver module and its tests.
 
 **Dependencies:** 1 (remote fetching). Local relative links can work without it.
@@ -81,7 +91,7 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 
 **Goal:** Show a visible cursor, so the user sees what is selected (a link) or where input goes (a form field).
 
-**Spec:** `SPEC.md` "Scope" (in-scope item "Visible cursor"). A short spec section is still needed.
+**Spec:** `spec/navigation.md` and `spec/viewer.md` (approved by the user on 2026-11-15, built with item 2, step S4).
 
 **Main files likely touched:** `lib/html/viewer.lua` (draw the cursor, move it with the selection keys), `lib/html/layout.lua` (positions of selectable items).
 

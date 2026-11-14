@@ -21,7 +21,8 @@ In scope:
 - Text rendering with block structure, emphasis and visible links.
 - Scrolling viewer with a status line, a loading screen and a quit confirmation.
 - Remote fetching (`spec/fetch.md`, roadmap item 1, approved 2026-11-14).
-- Following links, tabs, shell tab-out, downloads, sessions (save and resume). Planned, see `tasks/todo.md`.
+- Following links and navigation (link selection, back and forward, go to, reload, abort): specified in `spec/navigation.md`, awaiting approval (roadmap items 2 and 2a).
+- Tabs, shell tab-out, downloads, sessions (save and resume). Planned, see `tasks/todo.md`.
 - Images. Planned, see `tasks/todo.md`.
 - Data Card inflate and deflate. Planned, see `tasks/todo.md`.
 - Correct layout of tables, lists, forms, `<input>` and `<button>`. These render as plain text and must not break anything.
@@ -47,10 +48,11 @@ Out of scope:
 | Tokenizer | `spec/tokenizer.md` | `lib/html/tokenizer.lua` |
 | Text cleaning and entities | `spec/text.md` | `lib/html/text.lua`, `lib/html/entities.lua` |
 | Layout | `spec/layout.md` | `lib/html/layout.lua` |
+| Navigation and history | `spec/navigation.md` | `bin/html.lua`, `lib/html/history.lua`, `lib/html/viewer.lua` |
 | Viewer | `spec/viewer.md` | `lib/html/viewer.lua` |
 | Guard: yields and memory limits | `spec/guard.md` | `lib/html/guard.lua`, `bin/html.lua` (size check) |
 | Errors, error log, file writes | `spec/errors.md` | `bin/html.lua` |
-| URL arguments | `spec/url.md` | `lib/html/url.lua`, `bin/html.lua` |
+| URL arguments, link resolution | `spec/url.md` | `lib/html/url.lua`, `bin/html.lua` |
 | Remote fetching | `spec/fetch.md` | `lib/html/fetch.lua`, `bin/html.lua` |
 | Probe render stats | `spec/probe.md` | `tools/probe2.lua`, `lib/html/guard.lua` |
 | Installer | `spec/installer.md` | `tools/installer.lua`, `tools/mkinstall.lua` |
@@ -66,7 +68,8 @@ lib/html/text.lua       UTF-8 cleaning and the chunk split helper
 lib/html/tokenizer.lua  streaming, forgiving tokenizer (reads the input in chunks)
 lib/html/layout.lua     turns tokens into wrapped, styled lines (no DOM tree)
 lib/html/viewer.lua     screen drawing, scrolling, keys, quit prompt
-lib/html/url.lua        URL parsing and the host rule (loads during the argument checks)
+lib/html/url.lua        URL parsing, the host rule and link resolution (loads during the argument checks)
+lib/html/history.lua    navigation history (pure, no page content)
 lib/html/fetch.lua      redirects, the internet card request and the body stream
 ```
 

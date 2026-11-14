@@ -25,7 +25,7 @@ html [options] host[:port][/path][?query]     http is assumed (see "Arguments wi
 - The path is `/` when the URL has none. A query without a path is kept as the path (`http://example.com?q` gives the path `?q`).
 - The URL text keeps the case and form that the user typed (without the fragment). Only the scheme is compared without case.
 - Port and path checks beyond these rules are left to the card. It rejects a bad address with its own message (see `spec/fetch.md` "Errors").
-- The parser is a small pure function in `lib/html/url.lua` (`M.parse_url(s)`). `lib/html/fetch.lua` keeps `parse_url`, `looks_like_host` and `scheme` as aliases. It returns a table (`scheme`, `host`, `port`, `path`, `url` without fragment) or nil and a reason. Roadmap item 2 extends it into a full resolver.
+- The parser is a small pure function in `lib/html/url.lua` (`M.parse_url(s)`). `lib/html/fetch.lua` keeps `parse_url`, `looks_like_host` and `scheme` as aliases. It returns a table (`scheme`, `host`, `port`, `path`, `url` without fragment) or nil and a reason. `M.resolve` (below) adds link resolution.
 
 ## Arguments without a scheme
 
@@ -48,3 +48,23 @@ The argument looks like a host when all of these are true:
 - A guessed `localhost` URL usually fails with the card's blocked-address message (N12). That is the expected result.
 - When `deps.exists` is not given (tests only), an argument without a scheme is always local. (Implementation note 12.)
 - The expected results for a list of arguments: `docs/testing.md` "Remote fetching".
+
+## Link resolution
+
+Source: `lib/html/url.lua` (`M.resolve(base, ref)`). Used by link following (`spec/navigation.md`). Reasons: `docs/rationale.md` "Navigation".
+
+- `M.resolve(base, ref)` is a pure function. It implements a subset of RFC 3986 section 5.2 for `http` and `https`: an empty ref, `#fragment` (same document), `//host`, `/path`, `?query`, a relative path merge, and dot segment removal.
+- The result passes `parse_url`: the 2048-byte limit and the other checks apply. A result that fails gives nil and a reason.
+- Scheme detection: ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":". A ref with another scheme than `http` or `https` (`javascript:`, `mailto:`, `data:`, `ftp:`, `tel:` and others) is unsupported. The status line shows `<scheme>: links are not supported` until the next key (`spec/navigation.md` "Targets"). No popup.
+- A link href is percent-encoded before it resolves: bytes 0x00 to 0x20 and 0x7F to 0xFF become `%XX`. A typed URL stays as typed (the rules of "URL parsing" apply).
+
+### Base
+
+- The base of a page is the `<base href>` when the page has one, else the URL that `fetch.open` knows (`spec/fetch.md` "Redirects").
+- `<base href>` is resolved once against the page URL. A `<base href>` that fails to resolve is ignored.
+
+### Local base
+
+- The base of a local page is the absolute path from `shell.resolve`.
+- A relative ref joins the directory of the base. `/abs` is an absolute path. `%XX` is decoded. A `?query` is dropped. The fragment is kept for anchors.
+- `file:///p` is accepted only from a local page. A remote page that links to `file:` is refused with `html: unsupported URL scheme: file`, as a popup (`spec/errors.md`).
