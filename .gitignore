@@ -1,3 +1,4 @@
 *.un~
 *.swp
 tests/fuzz-failures/
+datacollection/
