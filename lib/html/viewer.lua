@@ -292,6 +292,17 @@ function M.run(lines, opts, deps)
   local old_bg, old_bg_palette = gpu.getBackground()
   local rescaled = false
 
+  local function restore()
+    if rescaled then
+      gpu.setResolution(old_w, old_h)
+    end
+    gpu.setForeground(old_fg, old_fg_palette or nil)
+    gpu.setBackground(old_bg, old_bg_palette or nil)
+    gpu.fill(1, 1, old_w, old_h, " ")
+    term.clear()
+    term.setCursor(1, 1)
+  end
+
   local ok, result = pcall(function()
     if not opts.no_rescale then
       local max_w, max_h = gpu.maxResolution()
@@ -303,16 +314,7 @@ function M.run(lines, opts, deps)
     return view(lines, opts, gpu, deps.pull)
   end)
 
-  local restored, restore_err = pcall(function()
-    if rescaled then
-      gpu.setResolution(old_w, old_h)
-    end
-    gpu.setForeground(old_fg, old_fg_palette or nil)
-    gpu.setBackground(old_bg, old_bg_palette or nil)
-    gpu.fill(1, 1, old_w, old_h, " ")
-    term.clear()
-    term.setCursor(1, 1)
-  end)
+  local restored, restore_err = pcall(restore)
 
   if not ok then
     error(result, 0)

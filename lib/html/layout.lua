@@ -23,6 +23,8 @@ M.PRE = "\5"
 -- Open elements above this depth are not kept (see push_open).
 M.MAX_DEPTH = 256
 
+-- The title buffer takes at most this many bytes of raw text.
+local TITLE_BUF = 1024
 -- The first title text is kept up to this many bytes.
 local TITLE_MAX = 256
 
@@ -100,6 +102,9 @@ function M.new(width)
   local word, wst, wwd, nw, ww = {}, {}, {}, 0, 0
   -- True when white space came after the last placed word.
   local space = false
+  -- True when the pending word continues a word that was placed early
+  -- because it was wider than the width.
+  local cont = false
   -- True when the current line has a word. A prefix such as "- " is not a
   -- word, so white space after it is not kept.
   local has_word = false
@@ -110,6 +115,7 @@ function M.new(width)
   local drop_at = 0
   -- Stack index of the open title element, or 0, and its text.
   local title_at, title_buf, title_len, title_text = 0, {}, 0, nil
+  local title_bytes = 0
   -- True right after a pre start tag: one newline there is skipped.
   local pre_first = false
   local hr_line
@@ -191,14 +197,15 @@ function M.new(width)
   end
 
   -- Places the pending word, with one space before it when white space
-  -- came before it.
-  local function commit()
+  -- came before it. With partial, the word goes on in later pieces.
+  local function commit(partial)
     if nw == 0 then
+      cont = cont and partial or false
       return
     end
-    local gap = (space and has_word) and 1 or 0
+    local gap = (space and has_word and not cont) and 1 or 0
     space = false
-    if cur_w + gap + ww > width and has_word then
+    if cur_w + gap + ww > width and has_word and not cont then
       end_line()
       gap = 0
     end
@@ -220,6 +227,7 @@ function M.new(width)
     end
     nw, ww = 0, 0
     has_word = true
+    cont = partial or false
   end
 
   local function add_piece(s, ascii)
@@ -227,6 +235,10 @@ function M.new(width)
     nw = nw + 1
     word[nw], wst[nw], wwd[nw] = s, style, w
     ww = ww + w
+    -- A word wider than the width is split now, so it stays small.
+    if ww > width then
+      commit(true)
+    end
   end
 
   -- Text outside pre: white space collapses, words wrap.
@@ -303,6 +315,29 @@ function M.new(width)
     end
   end
 
+  -- Adds text to the title buffer. Stops at TITLE_BUF bytes and cuts the
+  -- piece that crosses the limit at a character boundary.
+  local function add_title(value)
+    if title_at == 0 or title_len >= 64 or title_bytes >= TITLE_BUF then
+      return
+    end
+    local room = TITLE_BUF - title_bytes
+    if #value > room then
+      local cut = room
+      while cut > 0 do
+        local b = byte(value, cut + 1)
+        if b < 0x80 or b >= 0xC0 then
+          break
+        end
+        cut = cut - 1
+      end
+      value = sub(value, 1, cut)
+    end
+    title_bytes = title_bytes + #value
+    title_len = title_len + 1
+    title_buf[title_len] = value
+  end
+
   local function end_title()
     local s = concat(title_buf, "", 1, title_len)
     s = gsub(gsub(s, "[ \t\n]+", " "), "^ ", "")
@@ -322,7 +357,7 @@ function M.new(width)
     if s ~= "" then
       title_text = s
     end
-    title_buf, title_len = nil, 0
+    title_buf, title_len, title_bytes = nil, 0, 0
   end
 
   -- Closes the innermost open element and applies its end rule.
@@ -494,10 +529,7 @@ function M.new(width)
         return
       end
       if drop_at > 0 then
-        if title_at > 0 and title_len < 64 then
-          title_len = title_len + 1
-          title_buf[title_len] = value
-        end
+        add_title(value)
       elseif in_pre then
         pre_text(value)
       else

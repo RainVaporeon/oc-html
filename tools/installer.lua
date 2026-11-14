@@ -317,9 +317,13 @@ function M.game_deps()
         return nil, why
       end
       local done, werr = f:write(content)
-      f:close()
+      -- A full disk can report "not enough space" only at close.
+      local closed, cerr = f:close()
       if not done then
         return nil, werr
+      end
+      if not closed then
+        return nil, cerr or "close failed"
       end
       return true
     end,

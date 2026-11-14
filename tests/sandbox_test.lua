@@ -77,7 +77,9 @@ function T.fake_clock_1_replaces_os_clock()
 end
 
 function T.fake_clock_2_is_reset_before_next_test()
-  t.ok(os.clock() < 5, "os.clock is real again")
+  -- The real CPU time of the whole run can pass 5 s, so compare with the
+  -- fake value of the previous test instead of a fixed limit.
+  t.ok(os.clock() ~= 6.5, "os.clock is real again")
 end
 
 function T.host_cannot_write_to_repo()

@@ -283,9 +283,10 @@ function M.new(read, progress)
         else
           if k > gt then
             -- The value may hold ">" and then "</".
-            local g = find(buf, ">", vs, true)
-            local e = g and g < k and find(buf, "</", g, true)
-            if e and e + 1 < k then
+            -- Search only inside the tag, from the value start up to k.
+            local seg = sub(buf, vs, k - 1)
+            local g = find(seg, ">", 1, true)
+            if g and find(seg, "</", g, true) then
               return cut(attrs, vs, gt)
             end
           end

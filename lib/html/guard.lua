@@ -248,8 +248,7 @@ local function check(free, lines)
   end
 end
 
--- lines is optional. It is the progress value in the memory error message.
-function M.tick(lines)
+local function yield_and_check()
   if os.clock() - last_yield > YIELD_INTERVAL then
     yield()
   end
@@ -257,6 +256,17 @@ function M.tick(lines)
   if interrupted and interrupted() then
     error("html: interrupted", 0)
   end
+end
+
+-- Yields on time and checks the interrupt, with no memory check. For the
+-- output loop, which keeps no new data.
+function M.tick_output()
+  yield_and_check()
+end
+
+-- lines is optional. It is the progress value in the memory error message.
+function M.tick(lines)
+  yield_and_check()
   if lines then
     last_lines = lines
     if lines > slots then

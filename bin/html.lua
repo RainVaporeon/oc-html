@@ -31,9 +31,9 @@ end
 
 clear_modules(package_loaded())
 
-local guard = require("html.guard")
-local tokenizer = require("html.tokenizer")
-local layout = require("html.layout")
+-- The html modules load on first use, inside the protected run (see
+-- load_modules).
+local guard, tokenizer, layout
 
 local M = {}
 
@@ -62,6 +62,8 @@ local EXIT_ERROR = 1
 local EXIT_USAGE = 2
 local EXIT_INTERRUPTED = 130
 local INTERRUPTED = "html: interrupted"
+-- The largest --width.
+local MAX_WIDTH = 1024
 
 M.USAGE = [[
 Usage: html [options] <file>
@@ -102,8 +104,9 @@ function M.parse_args(argv)
     elseif a == "--width" then
       i = i + 1
       local w = math.tointeger(tonumber(argv[i]))
-      if not w or w < 1 then
-        return nil, "html: --width needs a positive whole number"
+      if not w or w < 1 or w > MAX_WIDTH then
+        return nil, "html: --width needs a whole number from 1 to "
+          .. MAX_WIDTH
       end
       opts.width = w
       opts.print = true
@@ -140,6 +143,11 @@ function M.expand_home(path, home)
   return path
 end
 
+-- The first line of a failure reason.
+local function reason(why)
+  return (tostring(why or "unknown reason"):match("^[^\n]*"))
+end
+
 -- Writes text to a new file at path. Checks write, flush and close, because
 -- a full /tmp reports "not enough space" only at flush or close (measured).
 -- Returns true, or nil and a reason.
@@ -148,27 +156,51 @@ function M.write_text(open, path, text)
   if not f then
     return nil, why or "cannot open"
   end
-  local done, err = f:write(text)
-  if done then
-    done, err = f:flush()
+  local called, done, err = pcall(function()
+    local d, e = f:write(text)
+    if d then
+      d, e = f:flush()
+    end
+    return d, e
+  end)
+  local closed_ok, closed, cerr = pcall(f.close, f)
+  if not called then
+    return nil, reason(done)
   end
-  local closed, cerr = f:close()
+  if not closed_ok then
+    closed, cerr = nil, closed
+  end
   if not done then
     return nil, err or "write failed"
   end
   if not closed then
-    return nil, cerr or "close failed"
+    return nil, reason(cerr or "close failed")
   end
   return true
 end
 
--- The first line of a failure reason.
-local function reason(why)
-  return (tostring(why or "unknown reason"):match("^[^\n]*"))
-end
-
 local function is_controlled(e)
   return type(e) == "string" and sub(e, 1, 6) == "html: "
+end
+
+-- Loads the html modules. Returns true, or nil and a controlled message
+-- that names the module that failed.
+local function load_modules()
+  if guard and tokenizer and layout then
+    return true
+  end
+  local names = { "guard", "tokenizer", "layout" }
+  local mods = {}
+  for i = 1, #names do
+    local name = "html." .. names[i]
+    local ok, mod = pcall(require, name)
+    if not ok then
+      return nil, "html: cannot load " .. name .. ": " .. reason(mod)
+    end
+    mods[i] = mod
+  end
+  guard, tokenizer, layout = mods[1], mods[2], mods[3]
+  return true
 end
 
 -- Removes the style bytes.
@@ -182,6 +214,10 @@ end
 -- Runs the tokenizer and layout over a reader. Returns the lines and the
 -- document title or nil.
 function M.render(read, width)
+  local loaded, why = load_modules()
+  if not loaded then
+    error(why, 0)
+  end
   local lay = layout.new(width)
   local next_token = tokenizer.new(read, lay.count)
   local push = lay.push
@@ -226,7 +262,14 @@ local function run(f, opts, deps, st, done)
   -- The lowest free reading starts here, after the settled reading.
   guard.reset()
   local clock0, wall0 = deps.clock(), deps.uptime and deps.uptime()
-  local lines, title = M.render(function() return f:read(CHUNK) end, st.width)
+  local lines, title = M.render(function()
+    local chunk, why = f:read(CHUNK)
+    -- A plain nil is the end of the input. A nil with a message is an error.
+    if chunk == nil and why then
+      error("html: read error: " .. reason(why), 0)
+    end
+    return chunk
+  end, st.width)
   st.cpu = deps.clock() - clock0
   if wall0 then
     st.wall = deps.uptime() - wall0
@@ -245,7 +288,7 @@ local function run(f, opts, deps, st, done)
   end
   local out = deps.out
   for i = 1, #lines do
-    guard.tick()
+    guard.tick_output()
     out(plain(lines[i]))
   end
 end
@@ -358,8 +401,7 @@ local function report_stats(st, opts, deps)
   if not opts.stats_out then
     return true
   end
-  local path = M.expand_home(opts.stats_out, deps.home)
-  path = deps.resolve and deps.resolve(path) or path
+  local path = opts.stats_path
   local ok, done, why = false, nil, "no file access"
   if deps.write_file then
     ok, done, why = pcall(deps.write_file, path,
@@ -466,6 +508,21 @@ function M.main(argv, deps)
   end
   local path = M.expand_home(opts.file, deps.home)
   path = deps.resolve and deps.resolve(path) or path
+  if opts.stats_out then
+    local out_path = M.expand_home(opts.stats_out, deps.home)
+    out_path = deps.resolve and deps.resolve(out_path) or out_path
+    opts.stats_path = out_path
+    if out_path == path then
+      deps.err("html: --stats-out must not be the input file: "
+        .. opts.stats_out)
+      return EXIT_USAGE
+    end
+  end
+  local loaded, load_why = load_modules()
+  if not loaded then
+    deps.err(load_why)
+    return EXIT_ERROR
+  end
   if deps.exists and not deps.exists(path) then
     deps.err("html: file not found: " .. opts.file)
     return EXIT_ERROR
@@ -508,13 +565,17 @@ function M.main(argv, deps)
   local open_file = f
   local function close_file()
     if open_file then
-      open_file:close()
+      local h = open_file
       open_file = nil
+      h:close()
     end
   end
 
   local traceback = deps.traceback
   local function handler(e)
+    if e == "interrupted" then
+      return INTERRUPTED
+    end
     if is_controlled(e) then
       return e
     end
@@ -535,10 +596,15 @@ function M.main(argv, deps)
       end
     end)
   end, handler)
-  close_file()
-  stop_listening()
+  -- Each step runs alone, so a failure in one does not skip the other.
+  pcall(stop_listening)
+  pcall(close_file)
 
   local code = 0
+  if not ok and result == "interrupted" then
+    -- A bare "interrupted" error is Ctrl+C from the event system.
+    result = INTERRUPTED
+  end
   if not ok then
     code = EXIT_ERROR
     if is_controlled(result) then
@@ -561,13 +627,19 @@ end
 
 -- The links to OpenOS. Loaded only when the chunk runs as a program.
 function M.game_deps()
-  local component = require("component")
-  local computer = require("computer")
-  local event = require("event")
-  local filesystem = require("filesystem")
-  local shell = require("shell")
-  local term = require("term")
-  local viewer = require("html.viewer")
+  local function need(name)
+    local ok, mod = pcall(require, name)
+    if not ok then
+      error("html: cannot load " .. name .. ": " .. reason(mod), 0)
+    end
+    return mod
+  end
+  local component = need("component")
+  local computer = need("computer")
+  local event = need("event")
+  local filesystem = need("filesystem")
+  local shell = need("shell")
+  local term = need("term")
   local width = DEFAULT_WIDTH
   local ok, w = pcall(term.getViewport)
   if ok and math.tointeger(w) and w > 0 then
@@ -601,6 +673,7 @@ function M.game_deps()
     end,
     gpu = gpu,
     view = function(lines, opts)
+      local viewer = need("html.viewer")
       return viewer.run(lines, opts, { gpu = gpu, pull = event.pull,
         term = term })
     end,
@@ -619,6 +692,15 @@ function M.run_program(argv, get_deps, loaded)
   end)
   clear_modules(loaded)
   if not ok then
+    if is_controlled(code) then
+      -- A failed module load: one line and exit code 1.
+      if type(io) == "table" and io.stderr then
+        io.stderr:write(code, "\n")
+      else
+        print(code)
+      end
+      return EXIT_ERROR
+    end
     error(code, 0)
   end
   return code
