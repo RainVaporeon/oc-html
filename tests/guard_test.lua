@@ -356,4 +356,20 @@ function T.run_past_16384_lines_stops_before_the_doubling()
   t.eq(computer.test.model_state().slots, 16384)
 end
 
+function T.interrupt_check_raises_controlled_string()
+  local guard = setup()
+  local flag = false
+  guard.set_interrupt_check(function() return flag end)
+  local ok = pcall(guard.tick, 1)
+  t.ok(ok, "no flag, no error")
+  flag = true
+  t.raises(function() guard.tick(2) end, "^html: interrupted$")
+  guard.reset()
+  t.raises(function() guard.tick(3) end, "^html: interrupted$",
+    "reset keeps the check")
+  guard.set_interrupt_check(nil)
+  ok = pcall(guard.tick, 4)
+  t.ok(ok, "check removed")
+end
+
 return T

@@ -36,6 +36,8 @@ local LINE_COST_START = 100
 local TRACE_MAX = 60
 
 local last_yield = os.clock()
+-- A function that returns true after Ctrl+C, or nil. reset() keeps it.
+local interrupted
 -- The lowest freeMemory() reading since the last reset. It includes garbage
 -- that is not collected yet, so it is a lower bound of the real free memory.
 local lowest
@@ -174,6 +176,12 @@ function M.reset()
   reserve = math.max(MEMORY_RESERVE, SLOT_DOUBLING * slots)
 end
 
+-- Sets the function that tick() calls to check for Ctrl+C. When it returns
+-- true, tick() raises "html: interrupted". nil removes the check.
+function M.set_interrupt_check(fn)
+  interrupted = fn
+end
+
 -- The effective reserve for the current line count. See SLOT_DOUBLING.
 function M.reserve()
   return reserve
@@ -244,6 +252,10 @@ end
 function M.tick(lines)
   if os.clock() - last_yield > YIELD_INTERVAL then
     yield()
+  end
+  -- An event listener sets the flag during a yield, here or in a settle.
+  if interrupted and interrupted() then
+    error("html: interrupted", 0)
   end
   if lines then
     last_lines = lines

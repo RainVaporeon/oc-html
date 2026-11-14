@@ -27,8 +27,10 @@ local function read_file(path)
   return s
 end
 
--- Runs main and returns the exit code, stdout lines and stderr lines.
+-- Runs main in print mode and returns the exit code, stdout lines and
+-- stderr lines. tests/entry_test.lua covers the viewer mode.
 local function main(args, extra)
+  table.insert(args, 1, "--print")
   local out, err = {}, {}
   local deps = {
     out = function(line) out[#out + 1] = line end,

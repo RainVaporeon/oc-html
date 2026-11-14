@@ -1,5 +1,5 @@
--- html: renders a local HTML file as text.
--- Run as a program: html [options] <file>
+-- html: shows a local HTML file in a full-screen viewer, or prints it as
+-- text. Run as a program: html [options] <file>
 -- Loaded with a table as the first argument, the chunk returns its module
 -- table M without running. The tests use this.
 
@@ -51,15 +51,31 @@ local ERROR_LOG_MAX = 8192
 local DEFAULT_WIDTH = 80
 -- Used for "~" when HOME is not set. OpenOS sets HOME to /home.
 local DEFAULT_HOME = "/home"
+-- The size check before reading assumes at least this many scaled units of
+-- memory per input byte. Measured: about 0.75 on large.html (751914 units
+-- for 1000193 bytes), at most about 1.5 in the worst case. 0.5 is a third of
+-- the worst case, so the check stops only a file that clearly cannot fit.
+-- The guard still protects the render of a smaller file.
+local SIZE_COST_MIN = 0.5
+-- Exit codes.
+local EXIT_ERROR = 1
+local EXIT_USAGE = 2
+local EXIT_INTERRUPTED = 130
+local INTERRUPTED = "html: interrupted"
 
 M.USAGE = [[
 Usage: html [options] <file>
-Renders a local HTML file as text.
+Shows a local HTML file in a full-screen viewer.
 Options:
-  --width <n>         wrap lines at n columns (default: screen width)
+  --print             write the page as plain text to stdout
+  --width <n>         wrap lines at n columns (sets --print,
+                      default: the terminal width)
+  --no-rescale        keep the current screen resolution in the viewer
   --stats             print file size, line count, render time and memory
+                      to stderr (after the viewer closes)
   --stats-out <path>  also write the stats lines to a file (sets --stats)
-  --help              show this help]]
+  --help              show this help
+Viewer keys: Up Down PgUp PgDn Home End, q quit, Ctrl+C exit.]]
 
 -- Returns an options table, or nil and a controlled error message.
 function M.parse_args(argv)
@@ -71,6 +87,10 @@ function M.parse_args(argv)
       opts.help = true
     elseif a == "--stats" then
       opts.stats = true
+    elseif a == "--print" then
+      opts.print = true
+    elseif a == "--no-rescale" then
+      opts.no_rescale = true
     elseif a == "--stats-out" then
       i = i + 1
       local p = argv[i]
@@ -86,6 +106,7 @@ function M.parse_args(argv)
         return nil, "html: --width needs a positive whole number"
       end
       opts.width = w
+      opts.print = true
     elseif #a > 1 and sub(a, 1, 1) == "-" then
       return nil, "html: unknown option: " .. a
     elseif opts.file then
@@ -158,7 +179,8 @@ local function plain(line)
   return line
 end
 
--- Runs the tokenizer and layout over a reader. Returns the lines.
+-- Runs the tokenizer and layout over a reader. Returns the lines and the
+-- document title or nil.
 function M.render(read, width)
   local lay = layout.new(width)
   local next_token = tokenizer.new(read, lay.count)
@@ -170,39 +192,8 @@ function M.render(read, width)
     end
     push(kind, value, attrs, self_closing)
   end
-  return lay.finish()
-end
-
--- Renders the file and prints the lines. Fills st with the stats values as
--- it goes, so a render that stops still has the values up to that point.
-local function run(f, opts, deps, st)
-  if opts.stats then
-    st.free_before = guard.settled_free()
-  end
-  -- The lowest free reading starts here, after the settled reading.
-  guard.reset()
-  local clock0, wall0 = deps.clock(), deps.uptime and deps.uptime()
-  local lines = M.render(function() return f:read(CHUNK) end, st.width)
-  st.cpu = deps.clock() - clock0
-  if wall0 then
-    st.wall = deps.uptime() - wall0
-  end
-  st.lines = #lines
-  if opts.stats then
-    st.free_after = guard.settled_free()
-  end
-  local out = deps.out
-  for i = 1, #lines do
-    guard.tick()
-    out(plain(lines[i]))
-  end
-end
-
-local function per_line(bytes, lines)
-  if lines then
-    return string.format(" (%.1f per line)", bytes / math.max(1, lines))
-  end
-  return ""
+  local lines = lay.finish()
+  return lines, lay.title()
 end
 
 local NA = "n/a"
@@ -217,6 +208,53 @@ local function int_text(v)
     return NA
   end
   return tostring(math.tointeger(math.floor(v)) or v)
+end
+
+-- Checks the file size, renders the file, and prints the lines or opens
+-- the viewer. Fills st with the stats values as it goes, so a render that
+-- stops still has the values up to that point. done() is called when the
+-- render ends. Returns the viewer result, or nil in print mode.
+local function run(f, opts, deps, st, done)
+  local free = guard.settled_free()
+  if opts.stats then
+    st.free_before = free
+  end
+  if is_num(st.size) and st.size * SIZE_COST_MIN > free then
+    error("html: file too large for available memory (" .. int_text(st.size)
+      .. " bytes, " .. int_text(free) .. " free)", 0)
+  end
+  -- The lowest free reading starts here, after the settled reading.
+  guard.reset()
+  local clock0, wall0 = deps.clock(), deps.uptime and deps.uptime()
+  local lines, title = M.render(function() return f:read(CHUNK) end, st.width)
+  st.cpu = deps.clock() - clock0
+  if wall0 then
+    st.wall = deps.uptime() - wall0
+  end
+  st.lines = #lines
+  if opts.stats then
+    st.free_after = guard.settled_free()
+  end
+  done()
+  if not opts.print then
+    if title == "" then
+      title = nil
+    end
+    return deps.view(lines, { title = title, file = opts.file,
+      no_rescale = opts.no_rescale })
+  end
+  local out = deps.out
+  for i = 1, #lines do
+    guard.tick()
+    out(plain(lines[i]))
+  end
+end
+
+local function per_line(bytes, lines)
+  if lines then
+    return string.format(" (%.1f per line)", bytes / math.max(1, lines))
+  end
+  return ""
 end
 
 -- A missing value prints as "n/a", so a stats report never fails.
@@ -348,28 +386,79 @@ local function file_size(f, path, deps)
   return size
 end
 
+-- Returns the viewer width: the maximum screen width, or the current width
+-- with no_rescale. Returns nil when there is no GPU or no screen.
+local function screen_width(gpu, no_rescale)
+  if type(gpu) ~= "table" then
+    return nil
+  end
+  local ok, w = pcall(function()
+    if gpu.getScreen and not gpu.getScreen() then
+      return nil
+    end
+    if no_rescale then
+      return (gpu.getResolution())
+    end
+    return (gpu.maxResolution())
+  end)
+  if ok and math.tointeger(w) and w > 0 then
+    return w
+  end
+  return nil
+end
+
+-- Prints one line for an unexpected error and writes the details to the
+-- error log. Returns the line.
+local function report_unexpected(result, deps)
+  result = tostring(result)
+  local first = result:match("^[^\n]*")
+  if deps.log then
+    local called, done, why = pcall(deps.log, result)
+    if called and done then
+      deps.err("html: unexpected error: " .. first .. " (details in "
+        .. ERROR_LOG .. ")")
+    else
+      if not called then
+        why = done
+      end
+      deps.err("html: unexpected error: " .. first .. " (cannot write "
+        .. ERROR_LOG .. ": " .. reason(why) .. ")")
+    end
+  else
+    deps.err("html: unexpected error: " .. first)
+  end
+  return "html: unexpected error: " .. first
+end
+
 -- argv: the program arguments (a table, n is optional).
 -- deps: the machine links:
 --   out(line), err(line)   print to stdout and stderr
---   width                  default wrap width
+--   width                  default wrap width for --print
 --   open(path, mode)       io.open
 --   traceback(msg)         debug.traceback, or a fake in the tests
 --   clock()                os.clock
 --   uptime()               optional, wall time in seconds
 --   resolve(path)          optional, makes a path absolute
 --   home                   optional, the home directory for "~"
+--   exists(path)           optional
 --   is_dir(path)           optional
 --   size(path)             optional, file size in bytes
 --   log(text)              optional, keeps the details of an unexpected
 --                          error. Returns true, or nil and a reason
 --   write_file(path, text) optional, for --stats-out. Returns true, or nil
 --                          and a reason
+--   gpu                    optional, the GPU proxy. Without it, or without
+--                          a screen, the page prints as text
+--   view(lines, opts)      optional, runs the viewer (see viewer.run).
+--                          Returns "quit" or "interrupted"
+--   on_interrupt(fn)       optional, calls fn on Ctrl+C. Returns a function
+--                          that removes the listener
 -- Returns the exit code.
 function M.main(argv, deps)
   local opts, msg = M.parse_args(argv)
   if not opts then
     deps.err(msg .. " (see html --help)")
-    return 2
+    return EXIT_USAGE
   end
   if opts.help then
     deps.out(M.USAGE)
@@ -377,15 +466,53 @@ function M.main(argv, deps)
   end
   local path = M.expand_home(opts.file, deps.home)
   path = deps.resolve and deps.resolve(path) or path
+  if deps.exists and not deps.exists(path) then
+    deps.err("html: file not found: " .. opts.file)
+    return EXIT_ERROR
+  end
   if deps.is_dir and deps.is_dir(path) then
     deps.err("html: not a file: " .. opts.file)
-    return 1
+    return EXIT_ERROR
+  end
+  local width = opts.width or deps.width or DEFAULT_WIDTH
+  if not opts.print then
+    local w = deps.view and screen_width(deps.gpu, opts.no_rescale)
+    if w then
+      width = w
+    else
+      deps.err("html: no screen found, printing the text")
+      opts.print = true
+    end
   end
   local f = deps.open(path, "rb")
   if not f then
     deps.err("html: cannot open file: " .. opts.file)
-    return 1
+    return EXIT_ERROR
   end
+
+  -- Ctrl+C during the render: the listener sets the flag during a yield,
+  -- and the next guard.tick raises INTERRUPTED.
+  local interrupted, remove = false, nil
+  if deps.on_interrupt then
+    remove = deps.on_interrupt(function() interrupted = true end)
+  end
+  guard.set_interrupt_check(function() return interrupted end)
+  local function stop_listening()
+    guard.set_interrupt_check(nil)
+    if remove then
+      local fn = remove
+      remove = nil
+      pcall(fn)
+    end
+  end
+  local open_file = f
+  local function close_file()
+    if open_file then
+      open_file:close()
+      open_file = nil
+    end
+  end
+
   local traceback = deps.traceback
   local function handler(e)
     if is_controlled(e) then
@@ -393,55 +520,62 @@ function M.main(argv, deps)
     end
     return traceback(tostring(e), 2)
   end
-  local st = { width = opts.width or deps.width or DEFAULT_WIDTH }
+  local st = { width = width }
   local ok, result = xpcall(function()
     st.size = file_size(f, path, deps)
-    run(f, opts, deps, st)
+    return run(f, opts, deps, st, function()
+      close_file()
+      if interrupted then
+        error(INTERRUPTED, 0)
+      end
+      -- The viewer handles Ctrl+C itself. Print mode keeps the check for
+      -- the output loop.
+      if not opts.print then
+        stop_listening()
+      end
+    end)
   end, handler)
-  f:close()
+  close_file()
+  stop_listening()
+
   local code = 0
   if not ok then
-    code = 1
+    code = EXIT_ERROR
     if is_controlled(result) then
       deps.err(result)
       st.stopped = result
-    else
-      result = tostring(result)
-      local first = result:match("^[^\n]*")
-      if deps.log then
-        local called, done, why = pcall(deps.log, result)
-        if called and done then
-          deps.err("html: unexpected error: " .. first .. " (details in "
-            .. ERROR_LOG .. ")")
-        else
-          if not called then
-            why = done
-          end
-          deps.err("html: unexpected error: " .. first .. " (cannot write "
-            .. ERROR_LOG .. ": " .. reason(why) .. ")")
-        end
-      else
-        deps.err("html: unexpected error: " .. first)
+      if result == INTERRUPTED then
+        code = EXIT_INTERRUPTED
       end
-      st.stopped = "html: unexpected error: " .. first
+    else
+      st.stopped = report_unexpected(result, deps)
     end
+  elseif result == "interrupted" then
+    code = EXIT_INTERRUPTED
   end
   if opts.stats and not report_stats(st, opts, deps) then
-    code = 1
+    code = EXIT_ERROR
   end
   return code
 end
 
 -- The links to OpenOS. Loaded only when the chunk runs as a program.
 function M.game_deps()
+  local component = require("component")
   local computer = require("computer")
+  local event = require("event")
   local filesystem = require("filesystem")
   local shell = require("shell")
   local term = require("term")
+  local viewer = require("html.viewer")
   local width = DEFAULT_WIDTH
   local ok, w = pcall(term.getViewport)
   if ok and math.tointeger(w) and w > 0 then
     width = w
+  end
+  local gpu
+  if component.isAvailable("gpu") then
+    gpu = component.gpu
   end
   return {
     out = function(line) io.write(line, "\n") end,
@@ -453,6 +587,7 @@ function M.game_deps()
     uptime = computer.uptime,
     resolve = shell.resolve,
     home = os.getenv("HOME"),
+    exists = filesystem.exists,
     is_dir = filesystem.isDirectory,
     size = filesystem.size,
     log = function(text)
@@ -463,6 +598,15 @@ function M.game_deps()
     end,
     write_file = function(path, text)
       return M.write_text(io.open, path, text)
+    end,
+    gpu = gpu,
+    view = function(lines, opts)
+      return viewer.run(lines, opts, { gpu = gpu, pull = event.pull,
+        term = term })
+    end,
+    on_interrupt = function(fn)
+      event.listen("interrupted", fn)
+      return function() event.ignore("interrupted", fn) end
     end,
   }
 end
