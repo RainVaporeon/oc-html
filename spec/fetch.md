@@ -143,7 +143,7 @@ The implementation chose the smallest change where a rule above was open or coul
 - Note 8: Windows-1252 bytes with no character (0x81, 0x8D, 0x8F, 0x90, 0x9D) become the C1 code point. Text cleaning then removes them.
 - Note 9: For a guessed URL, the suffix ` (no local file named <arg>)` is also on the deferred read-error line of an error status. It is not on `html: interrupted` (the exit code stays 130) and not on the `html: HTTP <code>` notice.
 - Note 10: The interrupt flag is checked in each wait loop (connect, response, a `""` read). While data arrives, `guard.tick()` checks it per token.
-- Note 11: `html.fetch` loads only for a URL or a missing local file. A load failure gives `html: cannot load html.fetch: <reason>`, exit code 1.
+- Note 11: `html.fetch` loads only for a URL, after the TUI opens. `html.url` loads during the argument checks, for a URL or a missing local file. A load failure gives `html: cannot load html.fetch: <reason>` (or `html.url`), exit code 1.
 - Note 12: When `deps.exists` is not given (tests only), an argument without a scheme is always local (`spec/url.md`).
 
 ## In-game measurements and probe plan

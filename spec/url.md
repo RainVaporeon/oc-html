@@ -1,6 +1,6 @@
 # URL arguments
 
-Source: `lib/html/fetch.lua` (`M.parse_url`, `M.looks_like_host`), dispatch in `bin/html.lua`. Index: `SPEC.md`. Decisions D4 and D5: `docs/rationale.md` "Remote fetching: decisions".
+Source: `lib/html/url.lua` (`M.parse_url`, `M.looks_like_host`), dispatch in `bin/html.lua`. Index: `SPEC.md`. Decisions D4 and D5: `docs/rationale.md` "Remote fetching: decisions".
 
 ## Forms
 
@@ -20,11 +20,12 @@ html [options] host[:port][/path][?query]     http is assumed (see "Arguments wi
 - The host must not be empty. A URL with a space, a control byte or a byte above 0x7E stops with `html: invalid URL: <url>`, exit code 2. The program does not percent-encode. The user types an encoded URL.
 - The fragment (`#...`) is removed before the request. It is not sent to the server.
 - The URL is at most 2048 bytes. A longer URL stops with `html: invalid URL: too long`.
+- An invalid URL is a usage error found during the argument checks (see `spec/loading.md` "Startup"). The TUI does not open, no draw call happens, and neither `html.fetch`, `html.tokenizer` nor `html.layout` loads.
 - The default port is 80 for `http` and 443 for `https`.
 - The path is `/` when the URL has none. A query without a path is kept as the path (`http://example.com?q` gives the path `?q`).
 - The URL text keeps the case and form that the user typed (without the fragment). Only the scheme is compared without case.
 - Port and path checks beyond these rules are left to the card. It rejects a bad address with its own message (see `spec/fetch.md` "Errors").
-- The parser is a small pure function in `lib/html/fetch.lua` (`M.parse_url(s)`). It returns a table (`scheme`, `host`, `port`, `path`, `url` without fragment) or nil and a reason. Roadmap item 2 extends it into a full resolver.
+- The parser is a small pure function in `lib/html/url.lua` (`M.parse_url(s)`). `lib/html/fetch.lua` keeps `parse_url`, `looks_like_host` and `scheme` as aliases. It returns a table (`scheme`, `host`, `port`, `path`, `url` without fragment) or nil and a reason. Roadmap item 2 extends it into a full resolver.
 
 ## Arguments without a scheme
 

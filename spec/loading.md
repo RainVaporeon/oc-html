@@ -5,12 +5,12 @@ Source: `bin/html.lua`, `lib/html/viewer.lua`, `lib/html/guard.lua`. Index: `SPE
 ## Startup
 
 1. `bin/html.lua` checks the arguments (see `spec/cli.md`). A usage error stops here.
-2. For a local file, it checks that the file exists and is a file. A failed check stops here, before the TUI opens.
+2. For a local file, it checks that the file exists and is a file. For a URL, it checks that the URL is valid (`html.url`). A failed check stops here, before the TUI opens.
 3. It opens the TUI at once. It sets the resolution (see `spec/viewer.md` "Resolution"), draws the frame and a status line. This happens before it loads the heavy modules (`tokenizer`, `layout`, `fetch` and their dependencies) and before any network request.
 4. It loads the modules, opens the source and renders. The status line shows the phase.
 
 - Print mode and the no-screen path do not open the TUI. They keep the order of `spec/cli.md`.
-- `html.fetch` loads before the TUI only when a local path is missing (it needs `looks_like_host`). For a URL argument it loads after the TUI opens, so an invalid URL (exit code 2) restores the screen and then prints its line.
+- `html.url` (small, no dependencies) loads during the argument checks for a URL or a missing local path. It parses the URL and decides the host rule. An invalid URL (exit code 2) stops here, before the TUI opens, with no draw call. `html.fetch` loads after the TUI opens, only for a URL.
 
 ## Status line during load
 

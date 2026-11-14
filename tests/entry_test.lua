@@ -911,7 +911,11 @@ local function framed(o)
 
   local chunk = t.load_bin("html")({})
   local real_require = _G.require
+  rec.required = {}
   _G.require = function(name)
+    if type(name) == "string" and name:sub(1, 5) == "html." then
+      rec.required[#rec.required + 1] = name
+    end
     if name == "html.tokenizer" then
       trace("require")
     end
@@ -1228,10 +1232,6 @@ framed_cases("loading_error_exits", {
       end } },
     { code = 1, marks = { "restore", "err" },
       err = { "html: read error: disk gone" } } },
-  { "invalid URL (parsed after the frame): restore, exit 2",
-    { args = { "http://" }, card = { default = served(PAGE, 10) } },
-    { code = 2, marks = { "restore", "err" },
-      err = { "html: invalid URL: http://" } } },
   { "a failed fetch for a guessed URL names the argument",
     { args = { "example.com" }, deps = { exists = no },
       card = { default = { connect_error = "refused" } } },
@@ -1239,6 +1239,40 @@ framed_cases("loading_error_exits", {
       err = { "html: cannot connect: http://example.com: refused "
         .. "(no local file named example.com)" } } },
 })
+
+-- "Startup" rule 1: an invalid URL is a usage error of the argument checks.
+-- The screen does not open and only html.url loads.
+local function url_check_run(args)
+  local rec = framed({ args = args, card = { default = served(PAGE, 10) } })
+  local draws = 0
+  for _, name in ipairs({ "set", "fill", "copy", "setResolution",
+    "setForeground", "setBackground" }) do
+    draws = draws + rec.gctl.count(name)
+  end
+  local heavy = false
+  for _, name in ipairs(rec.required) do
+    if name ~= "html.url" then
+      heavy = true
+    end
+  end
+  return { code = rec.code, err = rec.err, draws = draws, heavy = heavy,
+    requests = rec.ctl and #rec.ctl.requests or 0 }
+end
+
+t.cases(T, "invalid_url_fails_before_the_screen", {
+  { "empty host", { "http://" },
+    { code = 2, err = { "html: invalid URL: http://" }, draws = 0,
+      heavy = false, requests = 0 } },
+  { "space in the URL", { "http://exa mple.com/" },
+    { code = 2, err = { "html: invalid URL: http://exa mple.com/" },
+      draws = 0, heavy = false, requests = 0 } },
+  { "unsupported scheme", { "ftp://example.com/" },
+    { code = 2, err = { "html: unsupported URL scheme: ftp" }, draws = 0,
+      heavy = false, requests = 0 } },
+  { "too long", { "http://example.com/" .. string.rep("a", 2100) },
+    { code = 2, err = { "html: invalid URL: too long" }, draws = 0,
+      heavy = false, requests = 0 } },
+}, url_check_run)
 
 -- "Startup": print mode and the no-screen path do not open the screen.
 local function print_run(args, no_gpu)

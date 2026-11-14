@@ -202,8 +202,23 @@ local function load_modules()
   return true
 end
 
--- Loads html.fetch, only for a URL or a missing local file. Returns true,
--- or nil and a controlled message.
+-- Loads html.url, for a URL or a missing local file. It is small and loads
+-- during the argument checks. Returns true, or nil and a controlled message.
+local urlmod
+local function load_url()
+  if urlmod then
+    return true
+  end
+  local ok, mod = pcall(require, "html.url")
+  if not ok then
+    return nil, "html: cannot load html.url: " .. reason(mod)
+  end
+  urlmod = mod
+  return true
+end
+
+-- Loads html.fetch, only for a URL. Returns true, or nil and a controlled
+-- message.
 local fetch
 local function load_fetch()
   if fetch then
@@ -441,6 +456,36 @@ function M.main(argv, deps)
     path = M.expand_home(arg, deps.home)
     path = deps.resolve and deps.resolve(path) or path
   end
+  -- A missing local path can be a host, and a URL must parse. Both are
+  -- checked before the screen opens (see spec/loading.md).
+  if path and deps.exists and not deps.exists(path) then
+    local url_loaded, url_why = load_url()
+    if not url_loaded then
+      deps.err(url_why)
+      return EXIT_ERROR
+    end
+    if not urlmod.looks_like_host(arg) then
+      deps.err("html: file not found: " .. arg)
+      return EXIT_ERROR
+    end
+    url, path, guessed = "http://" .. arg, nil, true
+  end
+  if url then
+    local url_loaded, url_why = load_url()
+    if not url_loaded then
+      deps.err(url_why)
+      return EXIT_ERROR
+    end
+    local u, why = urlmod.parse_url(url)
+    if not u then
+      deps.err(why)
+      return EXIT_USAGE
+    end
+    url = u.url
+  elseif deps.is_dir and deps.is_dir(path) then
+    deps.err("html: not a file: " .. arg)
+    return EXIT_ERROR
+  end
   -- The loading screen opens before the heavy modules load (see
   -- spec/loading.md). Print mode and the no-screen path load them first.
   local screen_w = not opts.print and (deps.view or deps.open_screen)
@@ -465,43 +510,6 @@ function M.main(argv, deps)
       deps.err(load_why)
       return EXIT_ERROR
     end
-  end
-  if path and deps.exists and not deps.exists(path) then
-    local fetch_loaded, fetch_why = load_fetch()
-    if not fetch_loaded then
-      deps.err(fetch_why)
-      return EXIT_ERROR
-    end
-    if not fetch.looks_like_host(arg) then
-      deps.err("html: file not found: " .. arg)
-      return EXIT_ERROR
-    end
-    url, path, guessed = "http://" .. arg, nil, true
-  end
-  -- Returns true, or nil, a controlled message and the exit code.
-  local function parse_target()
-    local fetch_loaded, fetch_why = load_fetch()
-    if not fetch_loaded then
-      return nil, fetch_why, EXIT_ERROR
-    end
-    local u, why = fetch.parse_url(url)
-    if not u then
-      return nil, why, EXIT_USAGE
-    end
-    url = u.url
-    return true
-  end
-  if url then
-    if not framed then
-      local parsed, why, code = parse_target()
-      if not parsed then
-        deps.err(why)
-        return code
-      end
-    end
-  elseif deps.is_dir and deps.is_dir(path) then
-    deps.err("html: not a file: " .. arg)
-    return EXIT_ERROR
   end
   local width = opts.width or deps.width or DEFAULT_WIDTH
   if not opts.print then
@@ -675,6 +683,10 @@ function M.main(argv, deps)
         size = total, kind = "file", name = arg,
       }
     end
+    local fetch_loaded, fetch_why = load_fetch()
+    if not fetch_loaded then
+      error(fetch_why, 0)
+    end
     local why
     resp, why = fetch.open(url, { internet = deps.internet,
       clock = fetch_clock, sleep = deps.sleep or os.sleep,
@@ -710,7 +722,6 @@ function M.main(argv, deps)
     }
   end
 
-  local bad_code
   local ok, result = xpcall(function()
     if framed then
       session = deps.open_screen({ no_rescale = opts.no_rescale,
@@ -724,13 +735,6 @@ function M.main(argv, deps)
         error(why, 0)
       end
       arm_guard()
-      if url then
-        local parsed, parse_why, code = parse_target()
-        if not parsed then
-          bad_code = code
-          error(parse_why, 0)
-        end
-      end
     end
     local source = open_source()
     in_body = true
@@ -777,8 +781,6 @@ function M.main(argv, deps)
       deps.err(result)
       if result == INTERRUPTED then
         code = EXIT_INTERRUPTED
-      elseif bad_code then
-        code = bad_code
       end
     else
       report_unexpected(result, deps)

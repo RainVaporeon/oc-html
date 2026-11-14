@@ -50,7 +50,7 @@ Out of scope:
 | Viewer | `spec/viewer.md` | `lib/html/viewer.lua` |
 | Guard: yields and memory limits | `spec/guard.md` | `lib/html/guard.lua`, `bin/html.lua` (size check) |
 | Errors, error log, file writes | `spec/errors.md` | `bin/html.lua` |
-| URL arguments | `spec/url.md` | `lib/html/fetch.lua`, `bin/html.lua` |
+| URL arguments | `spec/url.md` | `lib/html/url.lua`, `bin/html.lua` |
 | Remote fetching | `spec/fetch.md` | `lib/html/fetch.lua`, `bin/html.lua` |
 | Probe render stats | `spec/probe.md` | `tools/probe2.lua`, `lib/html/guard.lua` |
 | Installer | `spec/installer.md` | `tools/installer.lua`, `tools/mkinstall.lua` |
@@ -66,7 +66,8 @@ lib/html/text.lua       UTF-8 cleaning and the chunk split helper
 lib/html/tokenizer.lua  streaming, forgiving tokenizer (reads the input in chunks)
 lib/html/layout.lua     turns tokens into wrapped, styled lines (no DOM tree)
 lib/html/viewer.lua     screen drawing, scrolling, keys, quit prompt
-lib/html/fetch.lua      URL parsing, the host rule, the internet card request and the body stream
+lib/html/url.lua        URL parsing and the host rule (loads during the argument checks)
+lib/html/fetch.lua      redirects, the internet card request and the body stream
 ```
 
 Tests, tools, docs, tasks and releases: `docs/structure.md`.

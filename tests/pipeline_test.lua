@@ -232,7 +232,8 @@ end
 -- A fake package.loaded with html modules and other modules.
 local function fake_loaded()
   return {
-    ["html.guard"] = {}, ["html.layout"] = {}, ["html."] = true,
+    ["html.guard"] = {}, ["html.layout"] = {}, ["html.url"] = {},
+    ["html."] = true,
     html = {}, ["htmlx.a"] = {}, computer = {}, [1] = "html.x",
   }
 end
@@ -300,7 +301,7 @@ t.cases(T, "module_cache_cleared_on_every_path", {
 
 function T.clear_modules_removes_only_html_modules()
   local loaded = fake_loaded()
-  t.eq(html.clear_modules(loaded), 3)
+  t.eq(html.clear_modules(loaded), 4)
   t.eq(loaded_names(loaded), KEPT)
   t.eq(html.clear_modules(nil), 0)
 end
