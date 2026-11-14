@@ -32,8 +32,12 @@ local HEADERS = { ["User-Agent"] = "oc-html/" .. M.VERSION,
 local REDIRECT = { [301] = true, [302] = true, [303] = true, [307] = true,
   [308] = true }
 
-local ACCEPTED = { [""] = true, ["text/html"] = true,
-  ["application/xhtml+xml"] = true, ["text/plain"] = true }
+-- Any text/* type renders, as does XHTML. Images, archives and other
+-- application types do not.
+local function accepted(media)
+  return media == "" or media == "application/xhtml+xml"
+    or sub(media, 1, 5) == "text/"
+end
 
 local LATIN_CHARSETS = { ["iso-8859-1"] = true, latin1 = true,
   ["windows-1252"] = true }
@@ -242,7 +246,7 @@ local function make_response(h, u, code, message, headers, links, info,
     return nil, "html: compressed response not supported: "
       .. why_text(encoding)
   end
-  if not is_error and not ACCEPTED[media] then
+  if not is_error and not accepted(media) then
     close()
     return nil, "html: not an HTML page: " .. why_text(media)
   end
@@ -323,7 +327,7 @@ local function make_response(h, u, code, message, headers, links, info,
   local function use_short()
     short = short_page(code, resp.message, u.url)
   end
-  if bodyless or not ACCEPTED[media] or not plain then
+  if bodyless or not accepted(media) or not plain then
     close()
     finish()
     resp.length = nil

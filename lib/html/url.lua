@@ -107,4 +107,145 @@ function M.looks_like_host(arg)
   return labels >= 2 and not FILE_LABELS[lower(last)]
 end
 
+-- Link resolution -----------------------------------------------------------
+-- See spec/url.md "Link resolution".
+
+-- Returns the scheme of s in lower case when s starts with
+-- "<letter>[letters, digits, + . -]:" (RFC 3986), or nil.
+function M.ref_scheme(s)
+  local scheme = type(s) == "string" and s:match("^(%a[%w+.-]*):")
+  return scheme and lower(scheme) or nil
+end
+
+-- Removes the "." and ".." segments of an absolute path (RFC 3986 5.2.4).
+local function remove_dots(path)
+  if sub(path, 1, 1) ~= "/" then
+    return path
+  end
+  local segs = {}
+  for seg in (sub(path, 2) .. "/"):gmatch("([^/]*)/") do
+    segs[#segs + 1] = seg
+  end
+  local out = {}
+  for i, seg in ipairs(segs) do
+    local last = i == #segs
+    if seg == "." then
+      if last then
+        out[#out + 1] = ""
+      end
+    elseif seg == ".." then
+      out[#out] = nil
+      if last then
+        out[#out + 1] = ""
+      end
+    else
+      out[#out + 1] = seg
+    end
+  end
+  return "/" .. table.concat(out, "/")
+end
+
+-- Splits "path?query#fragment". The query and the fragment are nil when the
+-- text has no "?" or "#".
+local function split_ref(s)
+  local fragment
+  local hash = find(s, "#", 1, true)
+  if hash then
+    fragment = sub(s, hash + 1)
+    s = sub(s, 1, hash - 1)
+  end
+  local mark = find(s, "?", 1, true)
+  if mark then
+    return sub(s, 1, mark - 1), sub(s, mark + 1), fragment
+  end
+  return s, nil, fragment
+end
+
+-- Resolves a link of a local page. base is the absolute path of the page.
+local function resolve_local(base, ref, scheme)
+  if scheme == "file" then
+    local rest = ref:match("^[^:]*:///(.*)$")
+    if not rest then
+      return nil, "html: invalid URL: " .. ref
+    end
+    ref = "/" .. rest
+  elseif ref == "" or sub(ref, 1, 1) == "#" then
+    return { kind = "same", fragment = select(3, split_ref(ref)) }
+  end
+  local path, _, fragment = split_ref(ref)
+  path = path:gsub("%%(%x%x)", function(h)
+    return string.char(tonumber(h, 16))
+  end)
+  if path == "" then
+    path = base
+  elseif sub(path, 1, 1) ~= "/" then
+    path = (base:match("^(.*/)") or "/") .. path
+  end
+  return { kind = "file", path = remove_dots(path), fragment = fragment }
+end
+
+-- Resolves a link against a base. base is an http(s) URL (a remote page) or
+-- an absolute path (a local page). Returns one of
+-- { kind = "http", url, fragment }, { kind = "file", path, fragment },
+-- { kind = "same", fragment } and { kind = "unsupported", scheme },
+-- or nil and a controlled message.
+function M.resolve(base, ref)
+  ref = ref:match("^%s*(.-)%s*$")
+  local remote = M.scheme(base) ~= nil
+  local scheme = M.ref_scheme(ref)
+  if scheme == "file" and remote then
+    return nil, "html: unsupported URL scheme: file"
+  end
+  if scheme == "file" or (not scheme and not remote) then
+    return resolve_local(base, ref, scheme)
+  end
+  if scheme and scheme ~= "http" and scheme ~= "https" then
+    return { kind = "unsupported", scheme = scheme }
+  end
+  ref = ref:gsub("[%z\1-\32\127-\255]", function(c)
+    return string.format("%%%02X", byte(c))
+  end)
+  local target, fragment
+  if scheme then
+    local head, rest = ref:match("^(%a[%w+.-]*://[^/?#]*)(.*)$")
+    if not head then
+      return nil, "html: invalid URL: " .. ref
+    end
+    local path, query
+    path, query, fragment = split_ref(rest)
+    target = head .. remove_dots(path) .. (query and "?" .. query or "")
+  else
+    local u, why = M.parse_url(base)
+    if not u then
+      return nil, why
+    end
+    local path, query
+    path, query, fragment = split_ref(ref)
+    if path == "" and not query then
+      return { kind = "same", fragment = fragment }
+    end
+    local tail = query and "?" .. query or ""
+    local bpath = u.path:match("^[^?]*")
+    if bpath == "" then
+      bpath = "/"
+    end
+    if sub(path, 1, 2) == "//" then
+      local auth = path:match("^//([^/]*)")
+      target = u.scheme .. "://" .. auth
+        .. remove_dots(sub(path, 3 + #auth)) .. tail
+    elseif path == "" then
+      target = u.origin .. bpath .. tail
+    elseif sub(path, 1, 1) == "/" then
+      target = u.origin .. remove_dots(path) .. tail
+    else
+      target = u.origin .. remove_dots(bpath:match("^(.*/)") .. path) .. tail
+    end
+  end
+  local parsed, why = M.parse_url(target)
+  if not parsed then
+    return nil, why
+  end
+  return { kind = "http", url = parsed.url, fragment = fragment }
+end
+
 return M

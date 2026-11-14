@@ -510,6 +510,15 @@ t.cases(T, "content_type_and_encoding", {
     "application/xhtml+xml" } }, { text = "x" } },
   { "text/plain", { headers = { ["Content-Type"] = "text/plain" } },
     { text = "x" } },
+  { "text/css", { headers = { ["Content-Type"] = "text/css" } },
+    { text = "x" } },
+  { "text/* with case and parameters", { headers = { ["Content-Type"] =
+    "Text/Markdown; charset=utf-8" } }, { text = "x" } },
+  { "image/png", { headers = { ["Content-Type"] = "image/png" } },
+    { why = "html: not an HTML page: image/png", reads = 0 } },
+  { "application/zip", { headers = { ["Content-Type"] =
+    "application/zip" } },
+    { why = "html: not an HTML page: application/zip", reads = 0 } },
   { "spaces around the type", { headers = { ["Content-Type"] =
     " text/html ;q" } }, { text = "x" } },
   { "empty value counts as missing", { headers = { ["Content-Type"] = "" } },
