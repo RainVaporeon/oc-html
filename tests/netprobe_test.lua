@@ -534,4 +534,32 @@ function T.netprobe_write_failures()
   t.eq(m.err[1], "netprobe: cannot write " .. OUT .. " (disk full)")
 end
 
+-- The real game writer over a recording io.open: the first write replaces
+-- the file, later writes append, so the file holds every section.
+function T.netprobe_file_writer_appends()
+  local disk, modes = {}, {}
+  local function open(path, mode)
+    modes[#modes + 1] = mode
+    if mode == "wb" then
+      disk[path] = ""
+    end
+    return {
+      write = function(_, text)
+        disk[path] = disk[path] .. text
+        return true
+      end,
+      close = function() end,
+    }
+  end
+  local write = probe.file_writer(open)
+  t.eq(write("out", "one\n", false), true)
+  t.eq(write("out", "two\n", true), true)
+  t.eq(disk.out, "one\ntwo\n")
+  t.eq(table.concat(modes, ","), "wb,ab")
+  local failing = probe.file_writer(function() return nil, "no space" end)
+  local ok, why = failing("out", "x", false)
+  t.eq(ok, nil)
+  t.eq(why, "no space")
+end
+
 return T

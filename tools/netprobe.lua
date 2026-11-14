@@ -173,11 +173,6 @@ local function urlencode(s)
   end))
 end
 
--- The part of a URL after the scheme and before the first "/".
-local function host_of(url)
-  return url:match("^https?://([^/]+)") or url
-end
-
 -- Absolute URL of a redirect target, or nil for forms the probe skips.
 local function resolve(url, location)
   if location:match("^https?://") then
@@ -759,7 +754,7 @@ local function measure(P, R, name, url, o)
 end
 
 -- Runs a step. A failure is a value, an interrupt is passed up.
-local function step(P, R, name, fn, ...)
+local function step(R, name, fn, ...)
   local ok, err = pcall(fn, ...)
   if not ok then
     R.fail(name, err)
@@ -802,7 +797,7 @@ end
 local function section_connect(P, R, T)
   for _, page in ipairs(T.pages) do
     for try = 1, 2 do
-      step(P, R, page[1] .. "_" .. try, measure, P, R, page[1] .. "_" .. try,
+      step(R, page[1] .. "_" .. try, measure, P, R, page[1] .. "_" .. try,
         page[2], { max_bytes = 0 })
     end
   end
@@ -811,13 +806,13 @@ end
 -- N4, N5 and N6: chunk sizes, call times and memory.
 local function section_read(P, R, T)
   for _, page in ipairs(T.pages) do
-    step(P, R, page[1], measure, P, R, page[1], page[2], { max_bytes = SMALL_CAP,
+    step(R, page[1], measure, P, R, page[1], page[2], { max_bytes = SMALL_CAP,
       sample = SAMPLE, spin = true })
   end
   local runs = { { "large_default", nil }, { "large_4096", 4096 },
     { "large_65536", 65536 } }
   for _, run in ipairs(runs) do
-    step(P, R, run[1], measure, P, R, run[1], T.large, { max_bytes = READ_CAP,
+    step(R, run[1], measure, P, R, run[1], T.large, { max_bytes = READ_CAP,
       read_size = run[2], memory = true, hold = true, spin = run[2] == nil,
       timeout = STEP_TIMEOUT })
   end
@@ -829,7 +824,7 @@ local function section_large(P, R, T)
     R.set("skipped", "--skip-large")
     return
   end
-  step(P, R, "page", measure, P, R, "page", T.large, { max_bytes = LARGE_CAP,
+  step(R, "page", measure, P, R, "page", T.large, { max_bytes = LARGE_CAP,
     read_size = 4096, memory = true, timeout = LARGE_TIMEOUT })
 end
 
@@ -845,7 +840,7 @@ local function section_redirect(P, R, T)
     { "chain3", T.plain .. "/redirect/3" },
   }
   for _, c in ipairs(cases) do
-    step(P, R, c[1], function()
+    step(R, c[1], function()
       local url = c[2]
       for hop = 0, MAX_HOPS do
         local name = hop == 0 and c[1] or (c[1] .. "_hop" .. hop)
@@ -878,7 +873,7 @@ local function section_status(P, R, T)
     { "echo500", T.echo .. "/status/500" },
   }
   for _, c in ipairs(cases) do
-    step(P, R, c[1], measure, P, R, c[1], c[2], { max_bytes = 1024,
+    step(R, c[1], measure, P, R, c[1], c[2], { max_bytes = 1024,
       sample = SAMPLE })
   end
 end
@@ -899,23 +894,23 @@ local function section_fail(P, R, T)
   }
   for _, c in ipairs(cases) do
     c[3].timeout = STEP_TIMEOUT
-    step(P, R, c[1], measure, P, R, c[1], c[2], c[3])
+    step(R, c[1], measure, P, R, c[1], c[2], c[3])
   end
 end
 
 -- N14 and N15: request headers as the server sees them, and the headers of
 -- the origins of the real pages.
 local function section_headers(P, R, T)
-  step(P, R, "echo_default", measure, P, R, "echo_default", T.echo .. "/headers",
+  step(R, "echo_default", measure, P, R, "echo_default", T.echo .. "/headers",
     { max_bytes = CAPTURE, sample = CAPTURE })
-  step(P, R, "echo_agent", measure, P, R, "echo_agent", T.echo .. "/user-agent",
+  step(R, "echo_agent", measure, P, R, "echo_agent", T.echo .. "/user-agent",
     { max_bytes = CAPTURE, sample = CAPTURE })
-  step(P, R, "echo_custom", measure, P, R, "echo_custom", T.echo .. "/headers", {
+  step(R, "echo_custom", measure, P, R, "echo_custom", T.echo .. "/headers", {
     max_bytes = CAPTURE, sample = CAPTURE,
     headers = { ["User-Agent"] = "netprobe/1", ["X-Netprobe"] = "custom",
       ["Accept-Encoding"] = "identity" } })
   for _, page in ipairs(M.REAL_PAGES) do
-    step(P, R, "real_" .. page[1], measure, P, R, "real_" .. page[1], page[2],
+    step(R, "real_" .. page[1], measure, P, R, "real_" .. page[1], page[2],
       { max_bytes = 1024 })
   end
 end
@@ -1137,6 +1132,24 @@ function M.main(argv, deps)
   return code
 end
 
+-- Returns a write_file(path, text, append) over an io.open like function.
+-- The first write of a run (append is false) creates or replaces the file,
+-- later writes append.
+function M.file_writer(open)
+  return function(path, text, append)
+    local f, why = open(path, append and "ab" or "wb")
+    if not f then
+      return nil, why
+    end
+    local done, werr = f:write(text)
+    f:close()
+    if not done then
+      return nil, werr
+    end
+    return true
+  end
+end
+
 -- The links to OpenOS. Loaded only when the chunk runs as a program.
 function M.game_deps()
   local component = require("component")
@@ -1166,18 +1179,7 @@ function M.game_deps()
         event.ignore("interrupted", on_interrupt)
       end
     end,
-    write_file = function(path, text)
-      local f, why = io.open(path, append and "ab" or "wb")
-      if not f then
-        return nil, why
-      end
-      local done, werr = f:write(text)
-      f:close()
-      if not done then
-        return nil, werr
-      end
-      return true
-    end,
+    write_file = M.file_writer(io.open),
     version = _VERSION,
   }
 end
