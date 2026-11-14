@@ -1,4 +1,4 @@
--- Tests for lib/html/text.lua (SPEC.md "Text cleaning").
+-- Tests for lib/html/text.lua (spec/text.md "Text cleaning").
 
 local t = require("test")
 local text = require("html.text")

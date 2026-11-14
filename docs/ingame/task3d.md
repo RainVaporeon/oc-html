@@ -1,8 +1,8 @@
 # In-game check: Task 3d (release 0.0.4a, guard v2)
 
 Goal: install 0.0.4a and get the stats of the Wikipedia page and the 1 MB
-page with guard v2. Guard v2 settles on the kernel GC (see `SPEC.md`,
-"Limits and graceful failure").
+page with guard v2. Guard v2 settles on the kernel GC (see `spec/guard.md`,
+"Settle").
 
 `<BASE>` is the raw URL of the repository source. Use the version path
 `releases/0.0.4a/`, not `releases/latest`.

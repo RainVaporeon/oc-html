@@ -78,7 +78,7 @@ local function good_label(label)
 end
 
 -- True when an argument without a scheme looks like a host (decision D4).
--- See SPEC.md "Arguments without a scheme".
+-- See spec/url.md "Arguments without a scheme".
 function M.looks_like_host(arg)
   if type(arg) ~= "string" or arg == "" or find(arg, "^[/.~]")
       or has_bad_byte(arg) then

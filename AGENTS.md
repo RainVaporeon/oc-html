@@ -4,7 +4,7 @@ A minimalistic and lightweight HTML viewer, intended for OpenComputers running o
 
 ## status
 
-Release 0.1.1a renders local files only. Remote files, navigation and the subfeatures below are planned; see `tasks/todo.md`. Specification: `SPEC.md`. Handoff for a new session: `docs/HANDOFF.md`.
+Release 0.2.0a renders local files and fetches remote pages (`http://` and `https://`) with the Internet Card. Remote fetching is not yet verified in game. Navigation and the subfeatures below are planned; see `tasks/todo.md`. Specification: `SPEC.md` (index) and `spec/` (one file per component). Handoff for a new session: `docs/HANDOFF.md`.
 
 ## scope
 
@@ -33,7 +33,7 @@ Inside the interface, the following features are available:
 
 The script works out of the box. Simply run `html --help` to get started with the info.
 
-In game, install a release with its one-file installer: fetch `releases/<version>/html-install.lua` (for example with `wget`) and run it. It writes `/home/bin/html.lua` and `/home/lib/html/*.lua`. See `SPEC.md` "Installer".
+In game, install a release with its one-file installer: fetch `releases/<version>/html-install.lua` (for example with `wget`) and run it. It writes `/home/bin/html.lua` and `/home/lib/html/*.lua`. See `spec/installer.md`.
 
 ## requirements
 

@@ -1,0 +1,80 @@
+# Rationale and measurements behind the spec
+
+This file is informative. The rules are in `SPEC.md` (index) and `spec/`. Each section here names the spec file that it explains. The measured machine facts are in `docs/probe/FACTS.md`.
+
+## Commands (stats lines)
+
+Explains `spec/stats.md` and `spec/cli.md` "Home directory".
+
+
+- `delta` (free_before - free_after) is unreliable. The game has no `collectgarbage`, so a reading includes garbage, and garbage from earlier work (module loading) can be collected during the run. Measured: delta was -164198 bytes on a 98891-byte page.
+- `shell.resolve` does not expand `~` (measured: it gives `/home/~`). This is why `bin/html.lua` expands `~` itself.
+
+## Design: Pipeline
+
+Explains `spec/pipeline.md` and `spec/tokenizer.md` "Implementation rules".
+
+
+- Module cache (step 1). OpenOS keeps every required module in `package.loaded` until a reboot. No code removes an entry, and every program shares the same table. So after an update, `require` can return the module of an older version. (Seen in 0.0.2a: the new `bin/html.lua` called `guard.lowest_free`, which the cached 0.0.1a guard did not have.)
+- Tokenizer (step 2). Measured: `gsub` 94 KB/s, plain `find` 6338 KB/s.
+- Tokenizer (step 2). Measured costs (probe v2): plain `find` about 3.2 us per call (6821 KB/s), `string.byte` of 1 byte about 61 ns, `sub` of 80 bytes about 260 ns, `t[#t+1] = v` 17.2 M ops/s against `table.insert` 9.0 M.
+- Layout (step 3). Measured: one string per line with style bytes uses 80 bytes per line; a table of styled pieces used 322.
+
+## Design: Viewer
+
+Explains `spec/viewer.md`.
+
+
+- Measured: the user's keyboard sends PgUp, PgDn, Home and End as NumPad codes with char 0.
+- Measured: t3 had 120x60 on a GPU with a 160x50 maximum. This was a user-set resolution.
+
+## Design: Limits and graceful failure
+
+Explains `spec/guard.md` and `spec/errors.md`.
+
+
+- Doubling term of the reserve. Reason: the lines table holds one slot per line. When it is full, Lua doubles its array from c to 2c slots and keeps the old slots until the copy ends, so the doubling needs 2c slots of 16 real bytes at once. Measured: the 8192 to 16384 doubling cost 72818 units, and on large.html free memory hit 0 at that doubling (0.0.4a). For c = 8192 the term is 145636 (under the base reserve). For c = 16384 it is 291271.
+- Raw readings. A raw reading can be up to about 1.3 MB too low (measured), because garbage is not collected yet. The readings form a saw-tooth, because the incremental GC frees garbage during the render. Garbage never makes an allocation fail: a failed allocation runs a full GC and retries.
+- Live cost per line B. Measured in 0.0.4a: about 66.5 per line on large.html, 46 to 76 between settles that saw a GC. (The 0.0.3a values of 160 and 410 were a wrong estimate.)
+- Rule change from the first draft: the first draft settled on every raw reading under reserve / 2 and kept B at 410 or more. On a simulated 11302-line run with the measured saw-tooth, that gave 37 settles and 3.7 s of settle yields. The rule above gives 9 settles and 88 yields (0.9 s). With the doubling term and the new cost constants it gives 13 settles and 127 yields (1.3 s): the higher reserve above 8192 lines adds settles. In game, 0.0.4a gave 12 settles and 118 yields on large.html.
+- Decision against a forced GC. The measured kernel GC on every 10th yield is enough. The trick depends on the behavior of a failed allocation, which is not measured in game.
+- Controlled errors as strings. This design does not depend on how error tables pass through `pcall` and `xpcall` (see `docs/probe/FACTS.md`, run t3), This is simpler than error tables.
+
+## Remote fetching: decisions
+
+Decided by the user (2026-11-14). `spec/fetch.md` and `spec/url.md` state each rule; this list records the decisions and their IDs:
+- The response is streamed into the renderer. It is not saved to a cache file first.
+- D1: The program uses the card component directly, not the OpenOS `internet` library (see `spec/fetch.md` "Internet card API").
+- D2: The body of a 4xx or 5xx response renders. The program does not stop. The status code shows in the viewer, on stderr in `--print` mode, and in `stats: http=` (see `spec/fetch.md` "HTTP status and content type").
+- D3: Latin-1 and Windows-1252 convert to UTF-8. All other charsets pass through as UTF-8 (see `spec/fetch.md` "Charset").
+- D4: An argument without a scheme is a local file when that file exists. Otherwise, when it looks like a host, it is `http://<arg>` (see `spec/url.md` "Arguments without a scheme").
+- D5 (Q5): An argument whose last label is `html`, `htm`, `xhtml`, `txt` or `lua` stays a local file. A missing `x.html` gives `html: file not found: x.html` (see `spec/url.md` "Arguments without a scheme").
+- D6 (Q6): The exit code is 0 when an error status (4xx, 5xx) renders, in the viewer and in `--print` mode (see `spec/fetch.md` "HTTP status and content type").
+
+## Remote fetching: Internet card API
+
+Reasons for decision D1 (use the card component, not the OpenOS `internet` library):
+- The `internet.request` iterator reads with no size limit, so the chunk size is not under program control.
+- The iterator raises errors with `error(reason, 2)` and hides `response()` behind its metatable. Every failure would need a `pcall` and string matching.
+- The iterator waits with `os.sleep(0)` and has no timeout and no interrupt check.
+
+## Decisions of 2026-11-14 (spec rules)
+
+Decided by the user (2026-11-14). The rules are in the named spec files.
+
+- Misnested inline tags (`spec/layout.md` "The open-element stack"). In `<i><b>a</i>b</b>`, the second "b" stays bold, as in browsers. Pages written for browsers expect this result.
+- Broken quoted attribute (`spec/tokenizer.md` "Broken quoted value"). The tag ends at the first `>`, and the text after it is page text. A missing quote then hides only the rest of one tag, not the page that follows.
+- A `<` with no `>` (`spec/tokenizer.md` "Broken markup"). The same rule applies at the end of input and at the `MAX_TAG` limit. One rule is simpler, and the user sees all the text of the page, also a cut tag at the end.
+- `pre` drops one newline after the start tag (`spec/layout.md` "Preformatted text"). This matches the HTML standard, so a page shows no extra blank line at the top of a `pre` block.
+- `--width` maximum (`spec/cli.md` "Output width"). A width larger than the screen cannot be shown. 160 is the tier 3 maximum, the largest screen in the game.
+- Error status with a partial body (`spec/viewer.md` "Error popup"). The user keeps the received part of the page and still learns that it is not complete.
+- Installer suffix (`spec/installer.md`). `; old files kept` is true only when the install started to change files. A failed check before the first write changed nothing.
+
+## Startup and loading screen
+
+Explains `spec/loading.md`. Decided by the user (2026-11-14).
+
+- The TUI opens before the heavy modules load and before any network request. The user sees at once that the program runs, also on a slow server or a large page.
+- An event pull costs about 15 ms in game. A pull per token would make the render many times slower. A pull about every 0.25 s costs about 6% of the time and keeps `q` responsive.
+- The guard yield interval is 0.25 s of CPU time, not 1 s. Ctrl+C arrives as an event during a yield, so a shorter interval gives a faster reaction.
+- Status updates are rate-limited to one each 0.25 s, because each update draws on the GPU.

@@ -252,7 +252,7 @@ These facts come from the source code. `tools/memprobe.lua` (Task 3c, `docs/inga
 - So the real limit is reached only when an allocation fails after a full GC. A `freeMemory()` reading below the reserve can still have a lot of collectable garbage.
 - `computer.freeMemory()` and `totalMemory()` are scaled: the value is the real free memory divided by `ramScale`. On a 64-bit host the default `ramScaleFor64Bit` is 1.8. Measured in game: ramScale is 1.800 (probe v2, table doubling), and `totalMemory()` reads 2097152. So 1 byte of reported free memory is about 1.8 real bytes. Source: [ComputerAPI.scala L42-L48](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/scala/li/cil/oc/server/machine/luac/ComputerAPI.scala#L42-L48), [application.conf L259-L265](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/application.conf#L259-L265). The server config can change it.
 - The kernel runs `collectgarbage("collect")` before every 10th resume of the main OpenOS coroutine (native Lua only, where `persistKey` exists). A resume follows each yield to the machine, for example `os.sleep(0)`. So every 10th yield forces a full GC (measured, see above). Source: [machine.lua L1515-L1528](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/assets/opencomputers/lua/machine.lua#L1515-L1528), [PersistenceAPI.scala L15-L21](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/scala/li/cil/oc/server/machine/luac/PersistenceAPI.scala#L15-L21). This does not contradict "Yields do not force a GC" above: that probe used 5 yields, which can miss the 10th resume.
-- In 0.0.3a, `guard.settled_free()` used 3 yields. It could miss the forced GC. Guard v2 (0.0.4a) yields up to 11 times and stops at the first GC (see `SPEC.md`).
+- In 0.0.3a, `guard.settled_free()` used 3 yields. It could miss the forced GC. Guard v2 (0.0.4a) yields up to 11 times and stops at the first GC (see `spec/guard.md` "Settle").
 
 ## Release 0.0.3a stats
 
@@ -289,7 +289,7 @@ Source keys: `probe2: render.wiki.*`, `render.large.*`.
 
 - large.html rendered all 11302 lines. The 0.0.3a stop at 1803 lines was a false stop on garbage.
 - Live cost: about 66.5 scaled units per line (`probe2: render.large.delta=751914 bytes (66.5 per line)`), 46 to 76 between settle points that saw a GC.
-- `lowest_free` 0 is real. The heap hit the limit when the lines table grew from 8192 to 16384 slots (trace sample `8187:78737`, then 0). An emergency GC saved the render. Guard change: the reserve covers the next table doubling (`SPEC.md` "Limits and graceful failure").
+- `lowest_free` 0 is real. The heap hit the limit when the lines table grew from 8192 to 16384 slots (trace sample `8187:78737`, then 0). An emergency GC saved the render. Guard change: the reserve covers the next table doubling (`spec/guard.md` "Memory reserve").
 
 ## Components (t3)
 

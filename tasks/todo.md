@@ -1,9 +1,9 @@
 # Tasks: oc-html after the MVP
 
-Spec: `SPEC.md`. Finished MVP plan and tasks: `tasks/archive/mvp-plan.md`, `tasks/archive/mvp-todo.md`.
+Spec: `SPEC.md` (index) and `spec/` (one file per component). Finished MVP plan and tasks: `tasks/archive/mvp-plan.md`, `tasks/archive/mvp-todo.md`.
 Test command for every task: `pwsh tests/docker/test.ps1`. Fuzz run: `pwsh tests/docker/test.ps1 fuzz 1000`.
 
-Current release: 0.1.1a (local files only). The features below come from `AGENTS.md`. `SPEC.md` lists them as out of scope for the MVP. Each feature needs a short spec section and the user's approval before code starts (`SPEC.md` "Boundaries": ask first before an item moves into scope).
+Current release: 0.2.0a (local files and remote fetching). The features below come from `AGENTS.md`. `SPEC.md` "Scope" lists them as in scope. Each feature needs a short spec section and the user's approval before code starts (`SPEC.md` "Boundaries": ask first before an item moves into scope).
 
 Sizes: S = one module and its tests, M = two or three modules, L = a new subsystem with in-game measurements.
 
@@ -27,7 +27,7 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 
 **Goal:** `html http://...` and `html https://...` fetch a page with the Internet Card and show it in the viewer, with the same guards as a local file.
 
-**Spec:** `SPEC.md` "Remote fetching (roadmap item 1, approved 2026-11-14)". Status: approved by the user on 2026-11-14.
+**Spec:** `spec/fetch.md` and `spec/url.md` (roadmap item 1, approved 2026-11-14). Status: approved by the user on 2026-11-14.
 
 **Main files likely touched:** `bin/html.lua` (argument parsing, a chunk reader for a response), a new `lib/html/fetch.lua`, `tests/shim/internet.lua` (a fake internet card), `tests/entry_test.lua`, a new `tests/fetch_test.lua`, `tests/corpus_test.lua`, `tests/fuzz.lua`, `types/openos.lua`. Later: `tools/netprobe.lua` and `tests/netprobe_test.lua`.
 
@@ -49,9 +49,9 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 **Steps:**
 - [x] The user answers Q1 to Q4 (2026-11-14).
 - [x] The user approves the spec section and answers Q5 and Q6 (2026-11-14).
-- [ ] Write `tools/netprobe.lua` (spec "Probe script plan") and run it in game. Record N1 to N15 in `docs/probe/FACTS.md`.
+- [ ] Write `tools/netprobe.lua` (`docs/netprobe-plan.md` "Probe script plan") and run it in game. Record N1 to N15 in `docs/probe/FACTS.md`.
 - [ ] Update the spec with the measured values (timeouts, chunk size, redirect and error behavior).
-- [x] Implement `fetch.lua`, the fake card and the tests (2026-11-14, not committed yet). The spec section "Implementation notes" lists the choices. The measured values can still change the timeouts, the chunk size and the wait order.
+- [x] Implement `fetch.lua`, the fake card and the tests (2026-11-14, committed in 010a24e, released in 0.2.0a). `spec/fetch.md` "Implementation notes" lists the choices. The measured values can still change the timeouts, the chunk size and the wait order.
 - [ ] In game: fetch the three real pages and a 1 MB page.
 
 **Size:** L
@@ -71,6 +71,22 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 - History size and what one history entry holds.
 
 **Size:** L
+
+### 2a. Visible cursor
+
+**Goal:** Show a visible cursor, so the user sees what is selected (a link) or where input goes (a form field).
+
+**Spec:** `SPEC.md` "Scope" (in-scope item "Visible cursor"). A short spec section is still needed.
+
+**Main files likely touched:** `lib/html/viewer.lua` (draw the cursor, move it with the selection keys), `lib/html/layout.lua` (positions of selectable items).
+
+**Dependencies:** 2 (link selection). Form input needs form support, which is not on the roadmap yet.
+
+**Open design questions:**
+- How the cursor shows on depth 1, where there are no colors.
+- Whether the cursor is a highlight of the item or the GPU or `term` cursor.
+
+**Size:** S
 
 ### 3. Tabs
 
@@ -146,4 +162,4 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 
 ## Next recommended step
 
-Review and commit the remote fetching code. Then write `tools/netprobe.lua` (spec "Probe script plan") and run it in game to measure N1 to N15.
+Write `tools/netprobe.lua` (`docs/netprobe-plan.md` "Probe script plan") and run it in game to measure N1 to N15.

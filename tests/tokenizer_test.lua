@@ -1,4 +1,4 @@
--- Tests for lib/html/tokenizer.lua: SPEC.md parsing rules at every chunk
+-- Tests for lib/html/tokenizer.lua: spec/tokenizer.md rules at every chunk
 -- size.
 
 local t = require("test")
@@ -323,7 +323,7 @@ function T.text_run_streams()
   t.ok(reads <= 2, "reads " .. reads)
 end
 
--- The SPEC rule: tokens split at any chunk edge give the same result.
+-- spec/tokenizer.md: tokens split at any chunk edge give the same result.
 function T.same_tokens_at_chunk_sizes_1_to_8()
   local doc = '<!DOCTYPE html><html><head><title>T &amp; U</title></head>'
     .. '<body><h1 class="big">Caf\xC3\xA9 &amp; \xE4\xB8\xAD\xE6\x96\x87</h1>'
@@ -394,7 +394,7 @@ end
 
 
 -- A byte that clean removes inside an entity: the text is
--- decode(clean(run)) at every chunk size, as SPEC.md says. Found by the
+-- decode(clean(run)) at every chunk size, as spec/text.md says. Found by the
 -- fuzzer.
 local REMOVED_IN_ENTITY = {
   { "&copy\x04a", "&copya" },

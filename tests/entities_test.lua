@@ -1,4 +1,4 @@
--- Tests for lib/html/entities.lua (SPEC.md "Parsing rules").
+-- Tests for lib/html/entities.lua (spec/text.md "Entities").
 
 local t = require("test")
 local entities = require("html.entities")

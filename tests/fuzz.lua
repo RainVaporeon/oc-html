@@ -8,7 +8,7 @@
 -- * The driver runs when the file is a program. It runs outside the sandbox
 --   env and keeps the only write access: it saves failures under
 --   tests/fuzz-failures/. It loads this file again inside a sandbox env
---   (the rules of SPEC.md "Sandbox") to get the module part.
+--   (the rules of spec/testing.md "Sandbox") to get the module part.
 -- * The module part runs when the first argument is a table. It returns M.
 --   It generates the documents, runs the pipeline and checks the oracles.
 --   tests/fuzz_test.lua loads it in the test runner env.

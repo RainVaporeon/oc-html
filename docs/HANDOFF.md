@@ -18,12 +18,15 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
   - N1: the exact methods of the internet component, the request handle and the `headers` type are unknown.
   - N3: it is unknown whether `response()` gives a value before the first `read`. The wait order in `fetch.open` depends on it.
   - N10: it is unknown whether the card gives the body of a 404 or 500 response. Java raises on these statuses. The code covers both cases, but decision D2 needs the real answer.
-  - Full list: `SPEC.md` "Probe script plan" (N1 to N15).
+  - Full list: `docs/netprobe-plan.md` (N1 to N15).
+- The spec rules decided on 2026-11-14 are not in the code yet: misnested inline styles continue, a `<` with no `>` at the end of input is text, `option` is a block break, the `--width` maximum, `file not found` as the only missing-file message, the error popup, the installer suffix rule, the loading screen and the 0.25 s yield interval. Some tests still check the old behavior.
 - `VERSION` in `lib/html/fetch.lua` is a constant. Update it by hand before each release. A release script run does not change it.
+
 ## Repository map
 
 - `AGENTS.md`: project description and feature goals, for any agent.
-- `SPEC.md`: the MVP specification (commands, design, limits, tests, releases, boundaries).
+- `SPEC.md`: the spec index (objective, scope, tech stack, component table, global rules, code style, boundaries).
+- `spec/`: the normative rules, one file per component (`cli`, `pipeline`, `loading`, `tokenizer`, `text`, `layout`, `viewer`, `guard`, `errors`, `url`, `fetch`, `stats`, `installer`, `release`, `testing`). Informative content is in `docs/` (see "Moved spec content").
 - `bin/html.lua`: entry point (arguments, error boundary, stats, screen restore).
 - `lib/html/`: `fetch.lua` (internet card client), `guard.lua` (yields, memory), `tokenizer.lua`, `entities.lua`, `text.lua` (UTF-8 cleaning), `layout.lua` (styled lines), `viewer.lua` (screen, keys).
 - `tests/`: `run.lua` (sandboxed runner), `*_test.lua` (unit tests), `shim/` (OpenOS fakes, including a fake internet card), `cases/` (HTML with expected text), `real/` (saved real pages), `pages/large.html` (about 1 MB, generated), `fuzz.lua` and `fuzz-corpus/`, `docker/` (Dockerfile and `test.ps1`).
@@ -34,13 +37,22 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
 - `types/openos.lua` and `.luarc.json`: LuaLS settings and OpenOS type stubs.
 - `datacollection/` (ignored): raw files the user copied back from the game.
 
+## Moved spec content
+
+On 2026-11-14, `SPEC.md` was cut down to its normative rules. The informative parts moved to these files. Then the rules were split by component into `spec/`, and `SPEC.md` became the index. The user's decisions of 2026-11-14 (misnested tags, broken markup, `pre`, `--width` maximum, output width, error popup, installer suffix, loading screen) are now rules in `spec/`; their reasons are in `docs/rationale.md`.
+- `docs/rationale.md`: reasons and measurements behind the rules (stats, pipeline, viewer, memory guard), and the remote fetching decision log D1 to D6.
+- `docs/testing.md`: test coverage, including the fetch tests and the table of arguments without a scheme.
+- `docs/netprobe-plan.md`: measurements N1 to N15 and the `tools/netprobe.lua` plan.
+- `docs/structure.md`: the repository tree outside `bin/` and `lib/`.
+- `docs/code-style.md`: the code style example module.
+
 ## How to work
 
 - Build the test image once: `docker build -t oc-html-test tests/docker`.
 - All tests: `pwsh tests/docker/test.ps1`. The one skip (`f5_restore_closure_outside_pcall`) is known and expected.
 - Fuzz: `pwsh tests/docker/test.ps1 fuzz 1000 [SEED]`. Failures go to `tests/fuzz-failures/` (ignored). Turn each new failure into a unit test.
 - Release: commit `bin/`, `lib/` and the installer tools first, then `pwsh tools/release.ps1 <version>` (for example `0.2.1a`). It runs the tests, copies the files, writes `files.txt`, `release.tar.gz` and `html-install.lua`, and updates `releases/latest` in the index. Then commit the new folder and `releases/latest`.
-- Test code runs only in the container (sandbox flags in `SPEC.md` "Sandbox"). Do not run it on the host.
+- Test code runs only in the container (sandbox flags in `spec/testing.md` "Sandbox"). Do not run it on the host.
 
 ## Pitfalls
 
@@ -56,14 +68,14 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
 - Commit subject: imperative, capitalized, no final period, for example "Add release 0.1.1a" or "Treat a silent close as success in file writes". The body says why. Each commit ends with a `Co-Authored-By` line.
 - History is linear. No merge commits. Use rebase or cherry-pick.
 - One release per commit ("Add release <version>"), separate from the code commit it is built from.
-- Code style in `SPEC.md` "Code Style": two-space indent, only `local`, modules return `M`, controlled errors are strings with the prefix `html: `.
+- Code style in `SPEC.md` "Code style": two-space indent, only `local`, modules return `M`, controlled errors are strings with the prefix `html: `.
 - Tests: one `tests/<module>_test.lua` per module. Corpus cases are `tests/cases/<name>.html` with `<name>.txt`. When a bug is found, add the failing input to the tests (`SPEC.md` "Boundaries").
 - Docs use short sentences in active voice.
 - New instruction files are named `AGENTS.md`, not `CLAUDE.md`.
 
 ## Next step
 
-Write `tools/netprobe.lua` (`SPEC.md` "Probe script plan") and collect N1 to N15 in game. Record the results in `docs/probe/FACTS.md`. Then fix the fetch code where the measurements differ from the assumptions, and run the in-game checks for remote pages.
+Write `tools/netprobe.lua` (`docs/netprobe-plan.md` "Probe script plan") and collect N1 to N15 in game. Record the results in `docs/probe/FACTS.md`. Then fix the fetch code where the measurements differ from the assumptions, and run the in-game checks for remote pages.
 
 ## Open questions for the user
 

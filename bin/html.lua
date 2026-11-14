@@ -538,7 +538,7 @@ function M.main(argv, deps)
   end
   local arg = opts.file
   -- An argument with a scheme is a URL. Any other argument is a local path
-  -- first (see SPEC.md "Arguments without a scheme").
+  -- first (see spec/url.md "Arguments without a scheme").
   local url, path, guessed
   if find(arg, "^%a[%w+.-]*://") then
     url = arg
