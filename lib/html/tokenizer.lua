@@ -8,9 +8,28 @@
 --   "end", name
 --   "text", s           (cleaned and decoded, maybe empty)
 --   nil                 (end of input)
--- Names are lowercase. attrs is nil in this version.
--- Comments, doctype, CDATA and processing instructions are skipped.
--- The content of script and style is skipped up to the matching end tag.
+-- Names are lowercase. attrs maps a lowercase name to its cleaned and
+-- decoded value, or is nil when the tag has no attributes.
+-- Comments, doctype and processing instructions are skipped. CDATA content
+-- is text (cleaned, not decoded). The content of script and style is
+-- skipped up to the matching end tag. The content of title and textarea is
+-- text up to the matching end tag.
+--
+-- Recovery for broken markup:
+--   "<" + non-letter is text. "</>" is dropped. "</" + non-letter is a bogus
+--   comment up to ">".
+--   A "<" with no ">" within MAX_TAG bytes is text. At the end of input,
+--   such a tag is dropped.
+--   A broken quoted value ends the tag at the first ">" in the value. The
+--   value's attribute is dropped. A quoted value is broken when it does not
+--   close within MAX_TAG bytes of "<" or before the end of input, or when
+--   it holds a ">" and then "</" (as in <a href="x>text</a>).
+--   A tag that does not end within MAX_TAG bytes for another reason ends at
+--   the first ">" after its "<", with no attributes.
+--   An attribute name with a quote or "<", or one that starts with "=", is
+--   dropped. For a duplicate name, the first value is kept.
+--   An unclosed comment, bogus comment or raw text element ends with the
+--   input. Unclosed CDATA, title or textarea content is text.
 
 local guard = require("html.guard")
 local text = require("html.text")
@@ -27,15 +46,29 @@ local clean, split_tail, decode = text.clean, text.split_tail,
 -- A "<" with no ">" within this many bytes is text. This bounds the buffer.
 M.MAX_TAG = 16384
 
--- Raw text elements. Their content is never markup.
-local RAW = { script = true, style = true }
+-- Raw text elements. true: the content is text (RCDATA). false: the
+-- content is skipped.
+local RAW = { script = false, style = false, title = true, textarea = true }
+
+-- HTML whitespace: tab, LF, FF, CR, space.
+local WS = { [9] = true, [10] = true, [12] = true, [13] = true, [32] = true }
+
+-- Attribute scanner states.
+local BEFORE_NAME, NAME, AFTER_NAME, BEFORE_VALUE, UNQUOTED, QUOTED, SLASH =
+  1, 2, 3, 4, 5, 6, 7
 
 local function is_letter(b)
   return b ~= nil and ((b >= 65 and b <= 90) or (b >= 97 and b <= 122))
 end
 
-local function is_alnum(b)
-  return is_letter(b) or (b ~= nil and b >= 48 and b <= 57)
+-- Adds one attribute. Returns the attrs table, made on the first call.
+local function add(attrs, name, value)
+  name = lower(name)
+  attrs = attrs or {}
+  if attrs[name] == nil then
+    attrs[name] = value ~= "" and decode(clean(value)) or ""
+  end
+  return attrs
 end
 
 -- read() returns the next chunk, or nil at the end of input.
@@ -43,10 +76,17 @@ end
 -- Returns a function that returns the next token.
 function M.new(read, progress)
   local buf, pos, eof = "", 1, false
+  -- Stream offset of buf: byte i of buf is byte base + i of the input.
+  local base = 0
+  -- Stream offset of the last byte of a run with no ">". A later search
+  -- for ">" starts after it, so many "<" with no ">" stay linear.
+  local nogt
   -- Terminator of a skipped comment or bogus tag.
   local skip_to
-  -- Name of the raw text element whose content is skipped.
-  local raw
+  -- Name of the open raw text element, and true when its content is text.
+  local raw, rcdata
+  -- True inside a CDATA section.
+  local cdata
 
   local function tick()
     guard.tick(progress and progress())
@@ -64,8 +104,10 @@ function M.new(read, progress)
       return false
     end
     if pos > #buf then
+      base = base + #buf
       buf = chunk
     else
+      base = base + pos - 1
       buf = sub(buf, pos) .. chunk
     end
     pos = 1
@@ -103,31 +145,244 @@ function M.new(read, progress)
     end
   end
 
-  -- Skips raw text up to "</name" followed by a non-alphanumeric byte.
-  local function skip_raw()
+  -- Streams the content of a raw text element up to "</name" followed by
+  -- whitespace, "/" or ">". Returns a text token for RCDATA content.
+  local function raw_step()
+    if pos > #buf then
+      if not fill() then
+        raw = nil
+      end
+      return nil
+    end
     local k = find(buf, "</", pos, true)
     if not k then
-      -- Keep a last "<".
-      pos = max(pos, #buf)
+      -- Keep a last "<" and, for text, a cut UTF-8 sequence or entity.
+      local keep = byte(buf, #buf) == 60 and #buf or #buf + 1
+      local s = ""
+      if rcdata then
+        local tail
+        s, tail = split_tail(sub(buf, pos, keep - 1))
+        pos = keep - #tail
+      else
+        pos = keep
+      end
       if not fill() then
+        if rcdata then
+          s = s .. sub(buf, pos)
+        end
         pos = #buf + 1
         raw = nil
       end
-      return
+      if s ~= "" then
+        return text_token(s)
+      end
+      return nil
+    end
+    if k > pos and rcdata then
+      local s = sub(buf, pos, k - 1)
+      pos = k
+      return text_token(s)
     end
     pos = k
     if not want(#raw + 3) then
-      -- Too short for an end tag. Unclosed raw text ends with the input.
+      -- Too short for an end tag. The rest of the input is content.
+      local s = sub(buf, pos)
       pos = #buf + 1
       raw = nil
-      return
+      if rcdata then
+        return text_token(s)
+      end
+      return nil
     end
+    local c = byte(buf, pos + 2 + #raw)
     if lower(sub(buf, pos + 2, pos + 1 + #raw)) == raw
-        and not is_alnum(byte(buf, pos + 2 + #raw)) then
+        and (WS[c] or c == 47 or c == 62) then
+      -- The main loop reads the end tag.
       raw = nil
-    else
-      pos = pos + 2
+      return nil
     end
+    pos = pos + 2
+    if rcdata then
+      return "text", "</"
+    end
+    return nil
+  end
+
+  -- Streams CDATA content up to "]]>".
+  local function cdata_step()
+    if pos > #buf and not fill() then
+      cdata = nil
+      return nil
+    end
+    local k = find(buf, "]]>", pos, true)
+    if k then
+      local s = sub(buf, pos, k - 1)
+      pos = k + 3
+      cdata = nil
+      return "text", clean(s)
+    end
+    -- Keep the bytes that can start "]]>" and a cut UTF-8 sequence.
+    local keep = max(pos, #buf - 1)
+    local s, tail = split_tail(sub(buf, pos, keep - 1))
+    pos = keep - #tail
+    if not fill() then
+      s = s .. sub(buf, pos)
+      pos = #buf + 1
+      cdata = nil
+    end
+    if s ~= "" then
+      return "text", clean(s)
+    end
+    return nil
+  end
+
+  -- Ends a broken tag. In a broken quoted value (vs is its start), the tag
+  -- ends at the first ">" in the value and keeps the attributes before it.
+  -- Otherwise it ends at gt, the first ">" after "<", with no attributes.
+  local function cut(attrs, vs, gt)
+    if vs then
+      local g = find(buf, ">", vs, true)
+      if g and g - pos <= M.MAX_TAG then
+        pos = g + 1
+        return attrs, false
+      end
+    end
+    pos = gt + 1
+    return nil, false
+  end
+
+  -- Scans the attributes from i up to the ">" that ends the tag. gt is the
+  -- first ">" after the "<" at pos. Sets pos after the tag. Returns attrs
+  -- and the self-closing flag. An end tag (closing) collects no attrs.
+  -- A quoted value is broken when it does not close within MAX_TAG bytes of
+  -- "<" or before the end of input, or when it holds a ">" and then "</"
+  -- (as in <a href="x>text</a>).
+  local function attributes(i, gt, closing)
+    local state = BEFORE_NAME
+    local attrs, name, ns, vs, quote, bad
+    while true do
+      if i - pos > M.MAX_TAG then
+        return cut(attrs, state == QUOTED and vs, gt)
+      end
+      if i > #buf then
+        -- Only a quoted value can carry the scan past gt.
+        tick()
+        local old = pos
+        if not fill() then
+          return cut(attrs, state == QUOTED and vs, gt)
+        end
+        local d = old - 1
+        i, gt = i - d, gt - d
+        if ns then
+          ns = ns - d
+        end
+        if vs then
+          vs = vs - d
+        end
+      end
+      local b = byte(buf, i)
+      if state == QUOTED then
+        local k = find(buf, quote, i, true)
+        if not k then
+          i = #buf + 1
+        elseif k - pos > M.MAX_TAG then
+          -- The same result as a scan that never sees this quote.
+          return cut(attrs, vs, gt)
+        else
+          if k > gt then
+            -- The value may hold ">" and then "</".
+            local g = find(buf, ">", vs, true)
+            local e = g and g < k and find(buf, "</", g, true)
+            if e and e + 1 < k then
+              return cut(attrs, vs, gt)
+            end
+          end
+          if not (closing or bad) then
+            attrs = add(attrs, name, sub(buf, vs, k - 1))
+          end
+          state, vs, i = BEFORE_NAME, nil, k + 1
+        end
+      elseif state == BEFORE_NAME then
+        if b == 62 then
+          break
+        elseif b == 47 then
+          state = SLASH
+        elseif not WS[b] then
+          state, ns = NAME, i
+          bad = b == 61 or b == 34 or b == 39 or b == 60
+        end
+        i = i + 1
+      elseif state == NAME then
+        if WS[b] or b == 61 or b == 62 or b == 47 then
+          name, ns = sub(buf, ns, i - 1), nil
+          if b == 61 then
+            state = BEFORE_VALUE
+          elseif WS[b] then
+            state = AFTER_NAME
+          else
+            if not (closing or bad) then
+              attrs = add(attrs, name, "")
+            end
+            if b == 62 then
+              break
+            end
+            state = SLASH
+          end
+        elseif b == 34 or b == 39 or b == 60 then
+          bad = true
+        end
+        i = i + 1
+      elseif state == AFTER_NAME then
+        if b == 61 then
+          state = BEFORE_VALUE
+        elseif not WS[b] then
+          if not (closing or bad) then
+            attrs = add(attrs, name, "")
+          end
+          if b == 62 then
+            break
+          elseif b == 47 then
+            state = SLASH
+          else
+            state, ns = NAME, i
+            bad = b == 34 or b == 39 or b == 60
+          end
+        end
+        i = i + 1
+      elseif state == BEFORE_VALUE then
+        if b == 34 or b == 39 then
+          state, quote, vs = QUOTED, b == 34 and '"' or "'", i + 1
+        elseif b == 62 then
+          if not (closing or bad) then
+            attrs = add(attrs, name, "")
+          end
+          break
+        elseif not WS[b] then
+          state, vs = UNQUOTED, i
+        end
+        i = i + 1
+      elseif state == UNQUOTED then
+        if WS[b] or b == 62 then
+          if not (closing or bad) then
+            attrs = add(attrs, name, sub(buf, vs, i - 1))
+          end
+          if b == 62 then
+            break
+          end
+          state, vs = BEFORE_NAME, nil
+        end
+        i = i + 1
+      else -- SLASH
+        if b == 62 then
+          pos = i + 1
+          return attrs, true
+        end
+        -- Read the byte again as the start of a name.
+        state = BEFORE_NAME
+      end
+    end
+    pos = i + 1
+    return attrs, false
   end
 
   -- Reads the markup at pos, which is "<". Returns a token, or nil when the
@@ -139,8 +394,18 @@ function M.new(read, progress)
     end
     local b = byte(buf, pos + 1)
     if b == 33 then -- "!"
-      if want(4) and sub(buf, pos, pos + 3) == "<!--" then
-        skip_to, pos = "-->", pos + 4
+      want(9)
+      if sub(buf, pos, pos + 3) == "<!--" then
+        local c1, c2 = byte(buf, pos + 4, pos + 5)
+        if c1 == 62 then -- "<!-->"
+          pos = pos + 5
+        elseif c1 == 45 and c2 == 62 then -- "<!--->"
+          pos = pos + 6
+        else
+          skip_to, pos = "-->", pos + 4
+        end
+      elseif sub(buf, pos + 2, pos + 8) == "[CDATA[" then
+        cdata, pos = true, pos + 9
       else
         skip_to, pos = ">", pos + 2
       end
@@ -158,16 +423,21 @@ function M.new(read, progress)
     end
     if not is_letter(byte(buf, pos + rel)) then
       if closing then
+        -- "</>" is dropped. "</ x>" is a bogus comment.
         skip_to, pos = ">", pos + 2
         return nil
       end
       pos = pos + 1
       return "text", "<"
     end
-    local gt = find(buf, ">", pos + rel, true)
+    local from = pos + rel
+    if nogt and nogt - base >= from then
+      from = nogt - base + 1
+    end
+    local gt = find(buf, ">", from, true)
     while not gt do
-      local scanned = #buf - pos + 1
-      if scanned > M.MAX_TAG then
+      nogt = base + #buf
+      if #buf - pos + 1 > M.MAX_TAG then
         pos = pos + 1
         return "text", "<"
       end
@@ -177,20 +447,32 @@ function M.new(read, progress)
         pos = #buf + 1
         return nil
       end
-      gt = find(buf, ">", pos + scanned, true)
+      gt = find(buf, ">", nogt - base + 1, true)
+    end
+    if gt - pos > M.MAX_TAG then
+      pos = pos + 1
+      return "text", "<"
     end
     local start = pos + rel
     local _, e = find(buf, "^[^%s/>]+", start)
     local name = lower(sub(buf, start, e))
-    local self_closing = byte(buf, gt - 1) == 47 and gt - 1 > e
-    pos = gt + 1
+    local attrs, self_closing
+    local nb = byte(buf, e + 1)
+    if nb == 62 then
+      pos, self_closing = e + 2, false
+    elseif nb == 47 and byte(buf, e + 2) == 62 then
+      pos, self_closing = e + 3, true
+    else
+      attrs, self_closing = attributes(e + 1, gt, closing)
+    end
     if closing then
       return "end", name
     end
-    if RAW[name] then
-      raw = name
+    local r = RAW[name]
+    if r ~= nil then
+      raw, rcdata = name, r
     end
-    return "start", name, nil, self_closing
+    return "start", name, attrs, self_closing
   end
 
   return function()
@@ -199,7 +481,15 @@ function M.new(read, progress)
       if skip_to then
         skip()
       elseif raw then
-        skip_raw()
+        local kind, s = raw_step()
+        if kind then
+          return kind, s
+        end
+      elseif cdata then
+        local kind, s = cdata_step()
+        if kind then
+          return kind, s
+        end
       else
         if pos > #buf and not fill() then
           return nil
@@ -214,7 +504,7 @@ function M.new(read, progress)
           -- A UTF-8 sequence or entity cut by the chunk end waits for the
           -- next chunk.
           local head, tail = split_tail(sub(buf, pos))
-          buf, pos = tail, 1
+          pos = #buf - #tail + 1
           fill()
           if head ~= "" then
             return text_token(head)
