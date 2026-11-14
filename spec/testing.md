@@ -22,6 +22,8 @@ Inside the container, the script runs `lua5.3 tests/run.lua` and `lua5.3 tests/f
 - The runner helper `t.load_tool(name)` loads `tools/<name>.lua` the same way. `t.read_repo(path)` reads a file under `releases/<version>/` or `tools/` (read-only, no `..`). `t.release_versions()` lists the release folders. `t.list_cases()` lists the base names of `tests/cases/*.html`, sorted. The env `io.open` limit stays as it is. The user approved these helpers.
 - All tests run with `--network none`. No test touches a real network. A fake internet card in `tests/shim/internet.lua` serves the fetch tests.
 
+A test pins the probe seams listed in `spec/probe.md`.
+
 ## Sandbox
 
 Two layers protect the host.

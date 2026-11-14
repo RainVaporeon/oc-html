@@ -6,15 +6,12 @@ Source: `bin/html.lua`. Index: `SPEC.md`.
 
 In game:
 ```
-html [--print] [--width n] [--stats] [--stats-out path] [--no-rescale] <file>
+html [--print] [--width n] [--no-rescale] <file>
                      render a local HTML file. The viewer is the default
                      (a URL also works: see spec/url.md and spec/fetch.md)
 html --print <file>        write the page as text to stdout, without style bytes. The width is the terminal width
 html --no-rescale <file>   keep the current screen resolution
 html --width n <file>      output width in columns. It turns on --print; use it to compare with test files
-html --stats <file>        print the stats lines to stderr (see spec/stats.md)
-html --stats-out <path> <file>
-                           also write the stats lines to <path> (see spec/stats.md)
 html --help          show usage
 html                 (no arguments) show usage. Later: start a new session
 html ~/page.html     a leading "~/" (or a bare "~") is the home directory
@@ -27,7 +24,7 @@ html-install [--prefix <dir>] [--dry-run]
 
 ## Home directory
 
-- `shell.resolve` does not expand `~` (see `docs/rationale.md` "Commands"). So `bin/html.lua` replaces a leading `~/` or a bare `~` in the file argument and in the `--stats-out` path with the home directory before `shell.resolve`. The home directory is `os.getenv("HOME")`, or `/home` when it is not set. `~user` is not expanded.
+- `shell.resolve` does not expand `~` (see `docs/rationale.md` "Commands"). So `bin/html.lua` replaces a leading `~/` or a bare `~` in the file argument with the home directory before `shell.resolve`. The home directory is `os.getenv("HOME")`, or `/home` when it is not set. `~user` is not expanded.
 
 ## Output width
 
@@ -48,4 +45,9 @@ html-install [--prefix <dir>] [--dry-run]
 
 ## Output streams
 
-- The page text goes to stdout in print mode. Errors, notices and `--stats` output go to stderr.
+- The page text goes to stdout in print mode. Errors and notices go to stderr.
+
+## Print output loop
+
+- The print output loop has no memory check. It keeps no new data. It yields and checks Ctrl+C.
+- Print mode renders all lines first, with the guard and the size check of `spec/guard.md`, as in the viewer. Then it writes them.

@@ -28,7 +28,7 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 ## Error popup
 
 - When a remote page with an error status stops reading after the first byte (a read error or a read timeout), the viewer shows the part received. It then shows a popup over the page with the error line (`html: read error: <reason>` or `html: timed out reading ...`).
-- A key closes the popup. The user then keeps browsing the partial page.
+- Enter or Esc closes the popup. The viewer ignores all other keys while the popup shows. The user then keeps browsing the partial page.
 - When the user quits normally, the exit code is 0.
 - Print mode and the no-screen path have no popup. See `spec/fetch.md` "HTTP status and content type".
 
@@ -52,4 +52,4 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 ## Exit
 
 - On exit (normal, error or Ctrl+C) the viewer restores the colors and the resolution, calls `term.clear()` and sets the cursor. The `term` cursor is stale after direct GPU drawing (measured), so the viewer must set it.
-- Error lines and `--stats` lines print after the screen restore, so they stay on the screen.
+- Error lines print after the screen restore, so they stay on the screen.

@@ -3,7 +3,7 @@
 Spec: `SPEC.md` (index) and `spec/` (one file per component). Finished MVP plan and tasks: `tasks/archive/mvp-plan.md`, `tasks/archive/mvp-todo.md`.
 Test command for every task: `pwsh tests/docker/test.ps1`. Fuzz run: `pwsh tests/docker/test.ps1 fuzz 1000`.
 
-Current release: 0.2.0a (local files and remote fetching). The features below come from `AGENTS.md`. `SPEC.md` "Scope" lists them as in scope. Each feature needs a short spec section and the user's approval before code starts (`SPEC.md` "Boundaries": ask first before an item moves into scope).
+Current release: 0.2.0a (local files and remote fetching). The features below come from `AGENTS.md`. `SPEC.md` "Scope" lists them as in scope. Each feature needs a short spec section and the user's approval before code starts (`SPEC.md` "Boundaries": the ask-first rule for moving an item into scope covers only CSS and JS, so these features need no ask for scope, but each still needs its spec section and approval).
 
 Sizes: S = one module and its tests, M = two or three modules, L = a new subsystem with in-game measurements.
 
@@ -37,7 +37,7 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 - The response is streamed into the renderer. It is not saved to a cache file first (the user, 2026-11-14).
 - The spec section answers the earlier questions: unknown size (the guard alone), redirects, status codes, timeouts, messages, charset and compression.
 - D1 (Q1): use the card component directly, not the OpenOS `internet` library (the user, 2026-11-14).
-- D2 (Q2): render the body of a 4xx or 5xx response. Show `[HTTP <code>]` in the viewer status line, a stderr line in `--print` mode and the code in `stats: http=`. Show a short `HTTP <code> <message>` page when the body is empty or cannot be read. Measurement N10 must confirm that the card gives the error body (the user, 2026-11-14).
+- D2 (Q2): render the body of a 4xx or 5xx response. Show `[HTTP <code>]` in the viewer status line, and a stderr line in `--print` mode. Show a short `HTTP <code> <message>` page when the body is empty or cannot be read. Measurement N10 must confirm that the card gives the error body (the user, 2026-11-14).
 - D3 (Q3): convert Latin-1 and Windows-1252 to UTF-8 only (the user, 2026-11-14).
 - D4 (Q4): an argument without a scheme opens the local file when it exists. Otherwise, when it looks like a host, it is `http://<arg>`. The spec defines "looks like a host" and lists the edge-case tests (the user, 2026-11-14).
 
@@ -159,6 +159,10 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 **Open design questions:** which `Content-Encoding` values the Data Card can inflate, and the limits on input size.
 
 **Size:** S
+
+## Low priority
+
+- [ ] Move stats collection from html into tools/probe2.lua (spec/probe.md). Low priority.
 
 ## Next recommended step
 

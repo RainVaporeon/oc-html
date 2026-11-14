@@ -39,15 +39,16 @@ The layout consumes tokens, keeps a small stack of open elements, and appends fi
 - Unclosed tags close at the end of the document or when a parent closes.
 - A stray end tag with no matching open tag is ignored. It does not close an outer element (`<b>a</i>b</b>`: "b" stays bold).
 - Implied ends:
-  - A block or heading start closes an open `p`.
+  - The start tag of one of these elements closes an open `p` (the HTML standard list): `address` `article` `aside` `blockquote` `center` `details` `dialog` `dir` `div` `dl` `dd` `dt` `fieldset` `figcaption` `figure` `footer` `form` `header` `hgroup` `hr` `li` `listing` `main` `menu` `nav` `ol` `p` `plaintext` `pre` `search` `section` `summary` `table` `ul` `xmp` `h1` `h2` `h3` `h4` `h5` `h6`.
+  - No other start tag closes a `p`. In particular `tr`, `td`, `th`, `input`, `button`, `select`, `textarea`, `option`, `a`, `span` and `br` do not.
   - `li` closes an open `li`. The search stops at `ul`, `ol` or `menu`.
   - `dt` and `dd` close an open `dt` or `dd`. The search stops at `dl`.
   - `tr` closes an open `tr`, `td` or `th`. The search stops at `table`.
   - `td` and `th` close an open `td` or `th`. The search stops at `tr` or `table`.
   - `option` closes an open `option`. The search stops at `select`.
   - `body` closes `head`. An unclosed `title` in `head` also ends there.
-- Misnested inline elements: when an end tag closes an outer inline element, the inner style elements that are still open continue after it, as in browsers. They end at their own end tag or when a parent closes. Example: `<i><b>a</i>b</b>c` shows "a" and "b" in the emphasis style and "c" in the normal style.
-- When a block or heading element closes, the inline elements still open inside it close with it (`<p>a <b>b</p>c`: "c" is normal).
+- Inline styles continue after a misnested inline end tag. When an end tag closes an outer inline element, the inner style elements that are still open continue after it, as in browsers. They end at their own end tag or when a parent closes. Example: `<i><b>a</i>b</b>c` shows "a" and "b" in the emphasis style and "c" in the normal style.
+- When a block or heading element closes, the inline elements still open inside it close with it (`<p>a <b>b</p>c`: "c" is normal). A stray `<b>` then cannot make the rest of the page bold.
 - Styles nest. The innermost style wins. When it closes, the outer style returns (`<a href=x>a<b>b</b>c</a>`: "a" link, "b" emphasis, "c" link).
 - Depth bound: the stack holds at most 256 open elements (`MAX_DEPTH`). A start tag past the bound does not go on the stack. Its style is lost: its text shows in the style of the innermost element on the stack. A dropped element past the bound still hides its content. Deep nesting inside a dropped element is still hidden.
 

@@ -10,7 +10,7 @@ html [options] https://host[:port][/path][?query][#fragment]
 html [options] host[:port][/path][?query]     http is assumed (see "Arguments without a scheme")
 ```
 
-- All options of a local file work the same: `--print`, `--width`, `--stats`, `--stats-out`, `--no-rescale`.
+- All options of a local file work the same: `--print`, `--width`, `--no-rescale`.
 
 ## URL parsing
 

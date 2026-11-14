@@ -10,6 +10,7 @@ Source: `bin/html.lua` (`M.render`, `M.run_program`, `M.clear_modules`). Index: 
 4. `viewer` draws the lines and handles keys (see `spec/viewer.md`).
 
 - A remote page uses the same steps. `response.read` takes the place of the file reader (see `spec/fetch.md` "Stream into the pipeline").
+- When the first argument of `bin/html.lua` is a table, the chunk returns `M` and does not run. `tools/probe2.lua` uses this (see `spec/probe.md`).
 - The tokenizer and layout never call `component`. They take `guard` as their only link to the machine.
 
 ## Module loading

@@ -17,13 +17,13 @@ Source: `lib/html/tokenizer.lua`. Index: `SPEC.md`.
 - `<!` and `<?` start a bogus comment up to the next `>` (`<! x >`, `<?xml y?>`, `<!>`).
 - `</` followed by a byte that is not a letter starts a bogus comment up to the next `>` (`</ foo>`, `</3>`).
 - `</>` is dropped.
-- An unclosed comment, bogus comment or CDATA section ends with the input. Its content gives no token.
+- An unclosed comment, bogus comment or CDATA section ends with the input. Its content gives no token and no text. Example: `a<!--` shows "a". This is an exception to the "Broken markup" rule that a `<` with no `>` becomes text. Browsers hide this content too.
 
 ## Broken markup
 
 - Never raise an error on bad markup.
 - `<` followed by a byte that is not a letter, `!`, `/` or `?` is text (`a < b`, `<3`, `c<` at the end).
-- A `<` with no `>` before the end of input becomes text, up to the end of input. Example: `x<a href` at the end of input shows `x<a href`, and `x</a` shows `x</a`.
+- A `<` with no `>` before the end of input becomes text, up to the end of input. Exception: an unclosed comment, bogus comment, CDATA section, `script` or `style` gives no text (see "Skipped markup" and "Raw text and RCDATA"). Example: `x<a href` at the end of input shows `x<a href`, and `x</a` shows `x</a`.
 - A `<` with no `>` within `MAX_TAG` (16384) bytes becomes text in the same way. This bounds the buffer.
 - A tag that has a `>` within `MAX_TAG` bytes, but does not end there for another reason (an open quoted value), follows "Broken quoted value" below.
 
@@ -50,7 +50,7 @@ Source: `lib/html/tokenizer.lua`. Index: `SPEC.md`.
 - The content of `script` and `style` is skipped up to the matching end tag. A start token and an end token are still produced.
 - The content of `title` and `textarea` is text up to the matching end tag. Tags inside it are text. Entities in it are decoded.
 - An end tag matches only when its name is followed by a space, a newline, `/` or `>`. `</styles>` and `</style-x>` do not end `style`. Case does not matter (`</SCRIPT >`).
-- An unclosed `script` or `style` ends with the input. Its content gives no token.
+- An unclosed `script` or `style` ends with the input. Its content gives no token and no text. This is the same exception to the "Broken markup" rule.
 - Unclosed `title` or `textarea` content is text up to the end of input (`<title>a<b` gives the text `a<b`).
 
 ## Implementation rules

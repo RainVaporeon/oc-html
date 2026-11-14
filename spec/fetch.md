@@ -45,7 +45,7 @@ The handle closes on every exit path: normal end, controlled error, unexpected e
 - `Location` can be an absolute `http(s)://` URL or a path that starts with `/` (joined to the current scheme, host and port). Any other form stops with `html: cannot follow redirect: <location>`.
 - At most 5 redirects. The 6th stops with `html: too many redirects: <url>`.
 - A redirect to a scheme other than http or https stops with `html: unsupported URL scheme: <scheme>`.
-- The status line and `--stats` show the final URL.
+- The status line shows the final URL.
 
 ## HTTP status and content type
 
@@ -53,7 +53,6 @@ The handle closes on every exit path: normal end, controlled error, unexpected e
 - 300 to 399 without `Location`, and every status from 400 (an error status): the body renders too (decision D2). The program does not stop.
   - The viewer status line shows `[HTTP <code>]` before the title (or the URL).
   - `--print` writes one line `html: HTTP <code> <message>: <url>` to stderr before the page text. Stdout gets only the page text.
-  - `stats: http=<code>` holds the code, as for any status.
   - The exit code is 0, in the viewer and in `--print` mode (decision D6).
 - Short page. For an error status, the program renders a short generated page in place of the body when:
   - the body is empty,
@@ -90,7 +89,6 @@ All errors are controlled. Each is one line with the prefix `html: `, exit code 
 - For a guessed URL, each message ends with ` (no local file named <arg>)` (see `spec/url.md` "Arguments without a scheme").
 - A reason from the card can be a string or another value. The message uses `tostring`, and the existing `reason()` helper in `bin/html.lua` cleans it.
 - A raised error from a card call is caught with `pcall` in `fetch.lua` and turned into the matching message. No card error reaches the unexpected-error path.
-- With `--stats`, a fetch error prints the stats lines and `stats: stopped=<message>` (see `spec/stats.md`).
 
 ## Timeouts and yields
 
@@ -125,7 +123,7 @@ All errors are controlled. Each is one line with the prefix `html: `, exit code 
 
 ## Stats
 
-The stats lines for a URL: `spec/stats.md` "Remote pages".
+Stats for a URL come from the probe: `spec/probe.md` "Keys".
 
 ## Tests
 

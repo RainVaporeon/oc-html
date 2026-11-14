@@ -15,7 +15,7 @@ Source: `bin/html.lua`. Index: `SPEC.md`. Exit codes: `SPEC.md` "Global rules".
 
 ## File writes
 
-- On a full `/tmp`, `write` returns success because it is buffered. The error "not enough space" shows at `flush` or `close` (measured). So every file write (the error log, `--stats-out`, the installer) checks the results of `write`, `flush` and `close`.
+- On a full `/tmp`, `write` returns success because it is buffered. The error "not enough space" shows at `flush` or `close` (measured). So every file write (the error log, the installer) checks the results of `write`, `flush` and `close`.
 - OpenOS `close` returns no values on success (measured, the cause of the 0.1.0a installer failure). So `close` fails only when it returns a reason.
 - A failure gives one `html: ` line.
 

@@ -10,7 +10,7 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
 
 - Release: 0.2.0a (`releases/0.2.0a/`, `releases/latest` points to it). It adds remote fetching: `html http(s)://...` streams the response into the renderer. Remote fetching is implemented and not yet verified in game.
 - Older releases are frozen. 0.1.0a has a broken installer (OpenOS `file:close()` returns no values on success). 0.1.1a fixes it. 0.1.1a is the last local-only release.
-- Works: everything in 0.1.1a (tokenizer, entities, UTF-8 cleaning, layout, viewer, `--print`, `--width`, `--stats`, `--stats-out`, `--no-rescale`, guard v2, Ctrl+C, error log, one-file installer), plus `lib/html/fetch.lua` (internet card client, HTTP status handling, redirects, limits).
+- Works: everything in 0.1.1a (tokenizer, entities, UTF-8 cleaning, layout, viewer, `--print`, `--width`, `--no-rescale`, guard v2, Ctrl+C, error log, one-file installer), plus `lib/html/fetch.lua` (internet card client, HTTP status handling, redirects, limits).
 - Verified in the container: `pwsh tests/docker/test.ps1` gives 437 passed, 0 failed, 1 skipped (`f5_restore_closure_outside_pcall`, expected). `fuzz 1000` with seed 1794649681 gives 0 failures. The tests use a fake internet card in `tests/shim/internet.lua`.
 - Verified in game: the probes (`docs/probe/`), the tracer bullet and memory runs up to 0.0.4a, the 0.1.0a viewer and exit paths, and `html --print` on the pages in `tests/real/` (2026-11-14).
 - Not verified in game: all remote fetching, `docs/ingame/mvp.md` sections 4 and 6, a low-RAM machine, and the 0.1.1a installer.
@@ -19,15 +19,15 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
   - N3: it is unknown whether `response()` gives a value before the first `read`. The wait order in `fetch.open` depends on it.
   - N10: it is unknown whether the card gives the body of a 404 or 500 response. Java raises on these statuses. The code covers both cases, but decision D2 needs the real answer.
   - Full list: `docs/netprobe-plan.md` (N1 to N15).
-- The spec rules decided on 2026-11-14 are not in the code yet: misnested inline styles continue, a `<` with no `>` at the end of input is text, `option` is a block break, the `--width` maximum, `file not found` as the only missing-file message, the error popup, the installer suffix rule, the loading screen and the 0.25 s yield interval. Some tests still check the old behavior.
+- The spec rules decided on 2026-11-14 are not in the code yet: misnested inline styles continue, a `<` with no `>` at the end of input is text, `option` is a block break, the `--width` maximum, `file not found` as the only missing-file message, the error popup, the installer suffix rule, the loading screen, the 0.25 s yield interval, the misnested inline rule, the exact p-closing list, the popup keys (Enter or Esc), the unclosed-comment exception, the removal of --stats and --stats-out, and the print output loop rule. Some tests still check the old behavior.
 - `VERSION` in `lib/html/fetch.lua` is a constant. Update it by hand before each release. A release script run does not change it.
 
 ## Repository map
 
 - `AGENTS.md`: project description and feature goals, for any agent.
 - `SPEC.md`: the spec index (objective, scope, tech stack, component table, global rules, code style, boundaries).
-- `spec/`: the normative rules, one file per component (`cli`, `pipeline`, `loading`, `tokenizer`, `text`, `layout`, `viewer`, `guard`, `errors`, `url`, `fetch`, `stats`, `installer`, `release`, `testing`). Informative content is in `docs/` (see "Moved spec content").
-- `bin/html.lua`: entry point (arguments, error boundary, stats, screen restore).
+- `spec/`: the normative rules, one file per component (`cli`, `pipeline`, `loading`, `tokenizer`, `text`, `layout`, `viewer`, `guard`, `errors`, `url`, `fetch`, `probe`, `installer`, `release`, `testing`). Informative content is in `docs/` (see "Moved spec content").
+- `bin/html.lua`: entry point (arguments, error boundary, screen restore).
 - `lib/html/`: `fetch.lua` (internet card client), `guard.lua` (yields, memory), `tokenizer.lua`, `entities.lua`, `text.lua` (UTF-8 cleaning), `layout.lua` (styled lines), `viewer.lua` (screen, keys).
 - `tests/`: `run.lua` (sandboxed runner), `*_test.lua` (unit tests), `shim/` (OpenOS fakes, including a fake internet card), `cases/` (HTML with expected text), `real/` (saved real pages), `pages/large.html` (about 1 MB, generated), `fuzz.lua` and `fuzz-corpus/`, `docker/` (Dockerfile and `test.ps1`).
 - `tools/`: `release.ps1` (makes a release), `mkinstall.lua` and `installer.lua` (one-file installer), `genpage.lua` (makes `tests/pages/large.html`), `probe.lua`, `probe2.lua`, `memprobe.lua` (in-game measurement scripts, not released).
@@ -40,7 +40,7 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
 ## Moved spec content
 
 On 2026-11-14, `SPEC.md` was cut down to its normative rules. The informative parts moved to these files. Then the rules were split by component into `spec/`, and `SPEC.md` became the index. The user's decisions of 2026-11-14 (misnested tags, broken markup, `pre`, `--width` maximum, output width, error popup, installer suffix, loading screen) are now rules in `spec/`; their reasons are in `docs/rationale.md`.
-- `docs/rationale.md`: reasons and measurements behind the rules (stats, pipeline, viewer, memory guard), and the remote fetching decision log D1 to D6.
+- `docs/rationale.md`: reasons and measurements behind the rules (render stats, pipeline, viewer, memory guard), and the remote fetching decision log D1 to D6.
 - `docs/testing.md`: test coverage, including the fetch tests and the table of arguments without a scheme.
 - `docs/netprobe-plan.md`: measurements N1 to N15 and the `tools/netprobe.lua` plan.
 - `docs/structure.md`: the repository tree outside `bin/` and `lib/`.

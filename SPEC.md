@@ -52,7 +52,7 @@ Out of scope:
 | Errors, error log, file writes | `spec/errors.md` | `bin/html.lua` |
 | URL arguments | `spec/url.md` | `lib/html/fetch.lua`, `bin/html.lua` |
 | Remote fetching | `spec/fetch.md` | `lib/html/fetch.lua`, `bin/html.lua` |
-| Stats output and print-mode memory | `spec/stats.md` | `bin/html.lua`, `lib/html/guard.lua` |
+| Probe render stats | `spec/probe.md` | `tools/probe2.lua`, `lib/html/guard.lua` |
 | Installer | `spec/installer.md` | `tools/installer.lua`, `tools/mkinstall.lua` |
 | Releases | `spec/release.md` | `tools/release.ps1` |
 | Testing and success criteria | `spec/testing.md` | `tests/`, `tests/docker/` |
@@ -75,8 +75,8 @@ Tests, tools, docs, tasks and releases: `docs/structure.md`.
 
 - Controlled errors are one line with the prefix `html: ` (`spec/errors.md`).
 - Exit codes: 0 quit, 1 error, 2 bad arguments, 130 Ctrl+C (also from the viewer).
-- The screen is restored on every exit path. Error lines and `--stats` lines print after the restore.
-- Errors, notices and `--stats` output go to stderr.
+- The screen is restored on every exit path. Error lines print after the restore.
+- Errors and notices go to stderr.
 
 ### Code style
 

@@ -4,7 +4,7 @@ This file is informative. The rules are in `SPEC.md` (index) and `spec/`. Each s
 
 ## Commands (stats lines)
 
-Explains `spec/stats.md` and `spec/cli.md` "Home directory".
+Explains `spec/probe.md` and `spec/cli.md` "Home directory".
 
 
 - `delta` (free_before - free_after) is unreliable. The game has no `collectgarbage`, so a reading includes garbage, and garbage from earlier work (module loading) can be collected during the run. Measured: delta was -164198 bytes on a 98891-byte page.
@@ -45,7 +45,7 @@ Explains `spec/guard.md` and `spec/errors.md`.
 Decided by the user (2026-11-14). `spec/fetch.md` and `spec/url.md` state each rule; this list records the decisions and their IDs:
 - The response is streamed into the renderer. It is not saved to a cache file first.
 - D1: The program uses the card component directly, not the OpenOS `internet` library (see `spec/fetch.md` "Internet card API").
-- D2: The body of a 4xx or 5xx response renders. The program does not stop. The status code shows in the viewer, on stderr in `--print` mode, and in `stats: http=` (see `spec/fetch.md` "HTTP status and content type").
+- D2: The body of a 4xx or 5xx response renders. The program does not stop. The status code shows in the viewer, and on stderr in `--print` mode (see `spec/fetch.md` "HTTP status and content type").
 - D3: Latin-1 and Windows-1252 convert to UTF-8. All other charsets pass through as UTF-8 (see `spec/fetch.md` "Charset").
 - D4: An argument without a scheme is a local file when that file exists. Otherwise, when it looks like a host, it is `http://<arg>` (see `spec/url.md` "Arguments without a scheme").
 - D5 (Q5): An argument whose last label is `html`, `htm`, `xhtml`, `txt` or `lua` stays a local file. A missing `x.html` gives `html: file not found: x.html` (see `spec/url.md` "Arguments without a scheme").
@@ -78,3 +78,10 @@ Explains `spec/loading.md`. Decided by the user (2026-11-14).
 - An event pull costs about 15 ms in game. A pull per token would make the render many times slower. A pull about every 0.25 s costs about 6% of the time and keeps `q` responsive.
 - The guard yield interval is 0.25 s of CPU time, not 1 s. Ctrl+C arrives as an event during a yield, so a shorter interval gives a faster reaction.
 - Status updates are rate-limited to one each 0.25 s, because each update draws on the GPU.
+- Unclosed comment, bogus comment, CDATA, `script` or `style` at the end of input gives no text (`spec/tokenizer.md` "Skipped markup"). It is an exception to the rule that a `<` with no `>` becomes text. Browsers hide this content too, so `a<!--` shows "a".
+- Inline styles after a misnested end tag, and inline close at block close (`spec/layout.md` "The open-element stack"). A stray `<b>` must not make the rest of the page bold.
+- Error popup keys (`spec/viewer.md` "Error popup"). Enter or Esc closes the popup, and other keys are ignored. A key press meant for scrolling then cannot close the popup by accident.
+- Exact list of start tags that close `p` (`spec/layout.md` "The open-element stack"). The list follows the HTML standard, so pages written for browsers keep their structure. `dt` and `dd` close `p`. Table cells and form elements do not.
+- Stats move out of `html` (`spec/probe.md`, `spec/cli.md`). The user approved the move: `--stats` and `--stats-out` are measurement tools, not user features, and `tools/probe2.lua` can collect the same keys through the seams without code in the release. The work is low priority.
+- Corrected defect: `lowest_free` and the trace cover only the render and the settle after it, not the output.
+- Print output loop has no memory check (`spec/cli.md` "Print output loop"). It keeps no new data, so it cannot run out of memory. It yields and checks Ctrl+C. This replaces the old "print-mode memory limit" section.
