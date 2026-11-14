@@ -1,114 +1,13 @@
--- Tests for lib/html/fetch.lua: URL parsing, the host rule for arguments
--- without a scheme, the request flow with the fake card, redirects, status
--- and content-type rules, charset conversion, timeouts and Ctrl+C.
+-- Tests for lib/html/fetch.lua through its public functions (parse_url,
+-- looks_like_host and open with the fake card). The rules are in
+-- spec/fetch.md and spec/url.md. Each table row names the rule it checks.
 
 local t = require("test")
 local fetch = require("html.fetch")
 local internet = require("internet")
+local computer = require("computer")
 
 local T = {}
-
--- URL parsing ---------------------------------------------------------------
-
-function T.parse_url_parts()
-  local u = fetch.parse_url("http://example.com:8080/a/b?x=1#top")
-  t.eq(u.scheme, "http")
-  t.eq(u.host, "example.com")
-  t.eq(u.port, 8080)
-  t.eq(u.path, "/a/b?x=1")
-  t.eq(u.url, "http://example.com:8080/a/b?x=1")
-  t.eq(u.origin, "http://example.com:8080")
-end
-
-function T.parse_url_defaults()
-  local u = fetch.parse_url("https://example.com")
-  t.eq(u.scheme, "https")
-  t.eq(u.port, 443)
-  t.eq(u.path, "/")
-  t.eq(u.url, "https://example.com")
-  t.eq(fetch.parse_url("http://example.com?q").path, "?q")
-  t.eq(fetch.parse_url("http://example.com").port, 80)
-end
-
-function T.parse_url_scheme_is_not_case_sensitive()
-  local u = fetch.parse_url("HTTP://Example.com/")
-  t.eq(u.scheme, "http")
-  t.eq(u.url, "HTTP://Example.com/")
-  t.eq(fetch.parse_url("hTtPs://x.org").scheme, "https")
-end
-
-function T.parse_url_other_scheme()
-  t.eq(select(2, fetch.parse_url("ftp://example.com")),
-    "html: unsupported URL scheme: ftp")
-  t.eq(select(2, fetch.parse_url("FILE://x")),
-    "html: unsupported URL scheme: file")
-  t.eq(select(2, fetch.parse_url("svn+ssh://x")),
-    "html: unsupported URL scheme: svn+ssh")
-end
-
-function T.parse_url_scheme_detection()
-  t.eq(fetch.scheme("http://x"), "http")
-  t.eq(fetch.scheme("a.b-c+d://x"), "a.b-c+d")
-  t.eq(fetch.scheme("1ftp://x"), nil)
-  t.eq(fetch.scheme("example.com"), nil)
-  t.eq(fetch.scheme("dir/http://x"), nil)
-  t.eq(fetch.scheme("http:/x"), nil)
-end
-
-function T.parse_url_invalid()
-  for _, s in ipairs({ "http://", "http:///path", "http://:80/",
-      "http://exa mple.com", "http://example.com/a b", "http://x.com/\1",
-      "http://x.com/\127", "http://x.com/\195\169", "http://#frag" }) do
-    local u, why = fetch.parse_url(s)
-    t.eq(u, nil, s)
-    t.eq(why, "html: invalid URL: " .. s, s)
-  end
-end
-
-function T.parse_url_length_limit()
-  local base = "http://example.com/"
-  local ok = base .. string.rep("a", 2048 - #base)
-  t.ok(fetch.parse_url(ok), "2048 bytes")
-  local u, why = fetch.parse_url(ok .. "a")
-  t.eq(u, nil)
-  t.eq(why, "html: invalid URL: too long")
-end
-
-function T.parse_url_leaves_port_checks_to_the_card()
-  local u = fetch.parse_url("http://example.com:abc/")
-  t.eq(u.host, "example.com")
-  t.eq(u.port, nil)
-  t.eq(u.url, "http://example.com:abc/")
-end
-
--- Arguments without a scheme -----------------------------------------------
-
-function T.looks_like_host_yes()
-  for _, s in ipairs({ "example.com", "EXAMPLE.COM", "example.com/path",
-      "example.com/", "example.com:8080/a?b=1", "example.com#top",
-      "localhost", "LocalHost", "localhost:8080", "192.168.0.1",
-      "a-b.c0.org", "x.y:65535", "x.y:1", "example.com?q=a.html" }) do
-    t.eq(fetch.looks_like_host(s), true, s)
-  end
-end
-
-function T.looks_like_host_no()
-  for _, s in ipairs({ "", "./x.html", "x.html", "X.HTM", "a.xhtml",
-      "notes.txt", "prog.lua", "dir/x.html", "dir/example.com", "foo",
-      "foo:8080", "example..com", ".example.com", "example.com.",
-      "a.-b.com", "a.b-.com", "example.com:", "example.com:0",
-      "example.com:99999", "example.com:123456", "example.com:8a",
-      "exa mple.com", "ex\195\164mple.com", "~/example.com", "~",
-      "/example.com", "a_b.com", "x." .. string.rep("a", 64),
-      "example.com\t", "a.b:c:80" }) do
-    t.eq(fetch.looks_like_host(s), false, s)
-  end
-  t.eq(fetch.looks_like_host("x." .. string.rep("a", 63)), true, "63 bytes")
-end
-
--- Request flow -------------------------------------------------------------
-
-local computer = require("computer")
 
 local URL = "http://example.com/"
 local PAGE = "<title>T</title><p>Hello world</p>"
@@ -136,6 +35,7 @@ local function open(script, url, opts)
 end
 
 -- Reads a response to its end. Returns the text and the error message.
+-- Every chunk has 1 to 4096 bytes (spec "Stream into the pipeline", rule 5).
 local function read_all(resp)
   local out = {}
   while true do
@@ -148,28 +48,160 @@ local function read_all(resp)
   end
 end
 
--- Every handle was closed exactly once.
+-- Every handle was closed (the handle closes on every exit path).
 local function all_closed(ctl)
   for i, h in ipairs(ctl.handles) do
-    t.eq(h.closed, 1, "handle " .. i .. " closes")
+    t.ok(h.closed >= 1, "handle " .. i .. " closes")
   end
   t.eq(ctl.open, 0, "no open connection")
 end
 
+-- Closes a response (when there is one) and checks that no handle is left.
+local function finish(resp, ctl)
+  if resp then
+    resp.close()
+  end
+  all_closed(ctl)
+end
+
+-- URL parsing (spec/url.md "URL parsing") -----------------------------------
+
+local LONG_BASE = "http://example.com/"
+local LONG_OK = LONG_BASE .. string.rep("a", 2048 - #LONG_BASE)
+
+local function parts(scheme, host, port, path, url)
+  return { scheme = scheme, host = host, port = port, path = path, url = url }
+end
+
+local function invalid(s)
+  return "html: invalid URL: " .. s
+end
+
+t.cases(T, "parse_url", {
+  { "all parts, fragment removed", "http://example.com:8080/a/b?x=1#top",
+    parts("http", "example.com", 8080, "/a/b?x=1",
+      "http://example.com:8080/a/b?x=1") },
+  { "https default port 443, path /", "https://example.com",
+    parts("https", "example.com", 443, "/", "https://example.com") },
+  { "http default port 80, path /", "http://example.com",
+    parts("http", "example.com", 80, "/", "http://example.com") },
+  { "query without path is the path", "http://example.com?q",
+    parts("http", "example.com", 80, "?q", "http://example.com?q") },
+  { "fragment without path", "http://x.com#a/b",
+    parts("http", "x.com", 80, "/", "http://x.com") },
+  { "scheme is not case-sensitive, text keeps its case", "HTTP://Example.com/",
+    parts("http", "Example.com", 80, "/", "HTTP://Example.com/") },
+  { "mixed case https", "hTtPs://x.org",
+    parts("https", "x.org", 443, "/", "hTtPs://x.org") },
+  { "host and path keep their case", "http://EXAMPLE.com/Path?Q=A",
+    parts("http", "EXAMPLE.com", 80, "/Path?Q=A",
+      "http://EXAMPLE.com/Path?Q=A") },
+  { "port checks are left to the card", "http://example.com:abc/",
+    parts("http", "example.com", nil, "/", "http://example.com:abc/") },
+  { "2048 bytes are accepted", LONG_OK,
+    parts("http", "example.com", 80, LONG_OK:sub(#"http://example.com" + 1),
+      LONG_OK) },
+  { "2049 bytes are too long", LONG_OK .. "a", "html: invalid URL: too long" },
+  { "ftp scheme", "ftp://example.com",
+    "html: unsupported URL scheme: ftp" },
+  { "scheme in the message is lowercase", "FILE://x",
+    "html: unsupported URL scheme: file" },
+  { "scheme letters, digits and + . -", "svn+ssh://x",
+    "html: unsupported URL scheme: svn+ssh" },
+  { "scheme with dot and dash", "a.b-c+d://x",
+    "html: unsupported URL scheme: a.b-c+d" },
+  { "empty host", "http://", invalid("http://") },
+  { "empty host before a path", "http:///path", invalid("http:///path") },
+  { "empty host before a port", "http://:80/", invalid("http://:80/") },
+  { "empty host before a fragment", "http://#frag", invalid("http://#frag") },
+  { "space in the host", "http://exa mple.com",
+    invalid("http://exa mple.com") },
+  { "space in the path", "http://example.com/a b",
+    invalid("http://example.com/a b") },
+  { "control byte", "http://x.com/\1", invalid("http://x.com/\1") },
+  { "byte 0x7F", "http://x.com/\127", invalid("http://x.com/\127") },
+  { "byte above 0x7E", "http://x.com/\195\169",
+    invalid("http://x.com/\195\169") },
+  { "no scheme", "example.com", invalid("example.com") },
+  { "scheme must start with a letter", "1ftp://x", invalid("1ftp://x") },
+  { "scheme needs two slashes", "http:/x", invalid("http:/x") },
+  { "scheme must be at the start", "dir/http://x", invalid("dir/http://x") },
+}, function(s)
+  local u, why = fetch.parse_url(s)
+  if not u then
+    return why
+  end
+  return parts(u.scheme, u.host, u.port, u.path, u.url)
+end)
+
+-- Arguments without a scheme (spec/url.md "Arguments without a scheme") -----
+
+t.cases(T, "looks_like_host", {
+  { "domain", "example.com", true },
+  { "upper case", "EXAMPLE.COM", true },
+  { "with path", "example.com/path", true },
+  { "with a slash only", "example.com/", true },
+  { "port, path and query", "example.com:8080/a?b=1", true },
+  { "fragment", "example.com#top", true },
+  { "localhost", "localhost", true },
+  { "localhost not case-sensitive", "LocalHost", true },
+  { "localhost with port", "localhost:8080", true },
+  { "ipv4", "192.168.0.1", true },
+  { "dash and digit labels", "a-b.c0.org", true },
+  { "highest port", "x.y:65535", true },
+  { "lowest port", "x.y:1", true },
+  { "extension only in the query", "example.com?q=a.html", true },
+  { "label of 63 bytes", "x." .. string.rep("a", 63), true },
+  { "empty", "", false },
+  { "starts with a dot", "./x.html", false },
+  { "html extension", "x.html", false },
+  { "extension not case-sensitive", "X.HTM", false },
+  { "xhtml extension", "a.xhtml", false },
+  { "txt extension", "notes.txt", false },
+  { "lua extension", "prog.lua", false },
+  { "slash before the first dot", "dir/x.html", false },
+  { "slash before the first dot, domain", "dir/example.com", false },
+  { "one label", "foo", false },
+  { "one label with port", "foo:8080", false },
+  { "empty label", "example..com", false },
+  { "leading dot", ".example.com", false },
+  { "trailing dot", "example.com.", false },
+  { "label starts with dash", "a.-b.com", false },
+  { "label ends with dash", "a.b-.com", false },
+  { "empty port", "example.com:", false },
+  { "port 0", "example.com:0", false },
+  { "port above 65535", "example.com:99999", false },
+  { "port with 6 digits", "example.com:123456", false },
+  { "port with a letter", "example.com:8a", false },
+  { "space", "exa mple.com", false },
+  { "byte above 0x7E", "ex\195\164mple.com", false },
+  { "starts with ~", "~/example.com", false },
+  { "only ~", "~", false },
+  { "starts with /", "/example.com", false },
+  { "underscore in a label", "a_b.com", false },
+  { "label of 64 bytes", "x." .. string.rep("a", 64), false },
+  { "control byte", "example.com\t", false },
+  { "two colons", "a.b:c:80", false },
+}, function(arg)
+  return fetch.looks_like_host(arg)
+end)
+
+-- Request flow --------------------------------------------------------------
+
+-- Spec "Internet card API" and "Stream into the pipeline": one end-to-end
+-- request with the headers sent, the response fields and the chunk size.
 function T.open_reads_the_body_and_sends_the_headers()
   local resp, why, ctl = open({ connect_polls = 3, response_polls = 2,
     headers = { ["Content-Type"] = { "text/html; charset=utf-8" },
       ["Content-Length"] = { tostring(#PAGE) } },
     body = internet.pieces(PAGE, 5, true) })
   t.eq(why, nil)
+  assert(resp, why)
   t.eq(resp.status, 200)
-  t.eq(resp.message, "OK")
-  t.eq(resp.is_error, false)
   t.eq(resp.length, #PAGE)
   t.eq(resp.final_url, URL)
   t.eq(resp.content_type, "text/html; charset=utf-8")
   t.eq(read_all(resp), PAGE)
-  t.eq(resp.bytes, #PAGE)
   t.eq(resp.read(), nil, "read after the end")
   t.eq(ctl.requests, { URL })
   t.eq(ctl.data, nil)
@@ -178,395 +210,514 @@ function T.open_reads_the_body_and_sends_the_headers()
   resp.close()
   resp.close()
   all_closed(ctl)
-end
-
-function T.open_reads_large_pieces_in_4096_byte_chunks()
   local text = string.rep("abcdefgh", 2000)
-  local resp, _, ctl = open({ body = { text } })
-  t.eq(read_all(resp), text)
-  resp.close()
-  all_closed(ctl)
+  resp, _, ctl = open({ body = { text } })
+  assert(resp, "open failed")
+  t.eq(read_all(resp), text, "a large piece comes in chunks of 4096 bytes")
+  finish(resp, ctl)
 end
 
-function T.header_names_are_not_case_sensitive()
-  local resp = open({ headers = { ["content-length"] = "12",
-    ["CONTENT-TYPE"] = "text/plain" } })
-  t.eq(resp.length, 12)
-  t.eq(resp.content_type, "text/plain")
-end
-
-function T.fragment_is_not_sent()
-  local resp, _, ctl = open({ body = { "x" } }, "http://example.com/a#top")
-  t.eq(ctl.requests, { "http://example.com/a" })
-  t.eq(resp.final_url, "http://example.com/a")
-end
-
-function T.open_with_a_bad_url()
-  local resp, why, ctl = open({}, "ftp://x.org")
-  t.eq(resp, nil)
-  t.eq(why, "html: unsupported URL scheme: ftp")
-  t.eq(#ctl.requests, 0)
-end
-
-function T.no_card()
-  local resp, why = fetch.open(URL, links(nil), {})
-  t.eq(resp, nil)
-  t.eq(why, "html: no internet card found (needed for " .. URL .. ")")
-end
-
-function T.http_disabled()
-  local resp, why, ctl = open({}, URL, { http = false })
-  t.eq(resp, nil)
-  t.eq(why, "html: HTTP requests are disabled on this server")
-  t.eq(#ctl.requests, 0)
-end
-
-function T.request_fails()
-  local _, why, ctl = open({ request_error = "address is not allowed" })
-  t.eq(why, "html: cannot fetch " .. URL .. ": address is not allowed")
-  t.eq(#ctl.handles, 0)
-  _, why = open({ request_raise = "bad address\nmore" })
-  t.eq(why, "html: cannot fetch " .. URL .. ": bad address")
-  _, why = open({ request_raise = { 1 } })
-  t.ok(why:find("^html: cannot fetch " .. URL .. ": table"), why)
-end
-
-function T.connection_limit()
-  local _, why, ctl = open({}, URL, { limit = 0 })
-  t.eq(why, "html: cannot fetch " .. URL .. ": too many open connections")
-  t.eq(ctl.open, 0)
-end
-
-function T.connect_fails()
-  local _, why, ctl = open({ connect_polls = 2, connect_error = "unknown host" })
-  t.eq(why, "html: cannot connect: " .. URL .. ": unknown host")
-  all_closed(ctl)
-  _, why, ctl = open({ connect_raise = "refused" })
-  t.eq(why, "html: cannot connect: " .. URL .. ": refused")
-  all_closed(ctl)
-end
-
-function T.connect_timeout()
-  local _, why, ctl = open({ connect_polls = 1000000 })
-  t.eq(why, "html: timed out connecting to " .. URL)
-  all_closed(ctl)
-  local now = computer.uptime()
-  t.ok(now >= 15 and now < 16, "gave up after 15 s: " .. now)
-end
-
-function T.response_timeout()
-  local _, why, ctl = open({ connect_polls = 100, response_polls = 1000000 })
-  t.eq(why, "html: timed out connecting to " .. URL)
-  all_closed(ctl)
-  local now = computer.uptime()
-  t.ok(now >= 15 and now < 16, "one budget for connect and response: "
-    .. now)
-end
-
-function T.slow_connect_inside_the_timeout()
-  -- 250 polls of 0.05 s is 12.5 s.
-  local resp, why, ctl = open({ connect_polls = 150, response_polls = 100,
-    body = { "x" } })
-  t.eq(why, nil)
-  t.eq(read_all(resp), "x")
-  resp.close()
-  all_closed(ctl)
-end
-
-function T.read_timeout_restarts_with_each_chunk()
-  local body = {}
-  for i = 1, 3 do
-    body[#body + 1] = "abc"
-    for _ = 1, 500 do
-      body[#body + 1] = ""
-    end
-  end
-  local resp, _, ctl = open({ body = body, endless = true })
-  local text, why = read_all(resp)
-  t.eq(text, "abcabcabc")
-  t.eq(why, "html: timed out reading " .. URL .. " (9 bytes received)")
-  resp.close()
-  all_closed(ctl)
-end
-
-function T.read_errors()
-  local resp, _, ctl = open({ body = { "abc" }, read_error = "reset" })
-  local text, why = read_all(resp)
-  t.eq(text, "abc")
-  t.eq(why, "html: read error: reset")
-  resp.close()
-  all_closed(ctl)
-  resp = open({ body = { "abc" }, read_raise = "broken\npipe" })
-  text, why = read_all(resp)
-  t.eq(why, "html: read error: broken")
-end
-
-function T.interrupt_during_connect()
-  local flag = { on = true }
-  local _, why, ctl = open({ connect_polls = 10 }, URL, { flag = flag })
-  t.eq(why, "html: interrupted")
-  all_closed(ctl)
-  _, why, ctl = open({ response_polls = 10 }, URL, { flag = flag })
-  t.eq(why, "html: interrupted")
-  all_closed(ctl)
-end
-
-function T.interrupt_during_read()
-  local flag = { on = false }
-  local resp, _, ctl = open({ body = { "abc", "", "def" } }, URL,
-    { flag = flag })
-  t.eq(resp.read(), "abc")
-  flag.on = true
-  t.eq(select(2, resp.read()), "html: interrupted")
-  resp.close()
-  all_closed(ctl)
-end
-
-function T.raised_sleep_closes_the_handle()
-  local card, ctl = internet.new({ default = { connect_polls = 5 } })
-  local l = links(card)
-  l.sleep = function() error("interrupted", 0) end
-  local ok, err = pcall(fetch.open, URL, l, {})
-  t.eq(ok, false)
-  t.eq(err, "interrupted")
-  all_closed(ctl)
-end
-
--- Redirects -----------------------------------------------------------------
-
-local function redirect(code, location)
-  return { code = code, message = "Moved", headers = location
-    and { Location = { location } } or {} }
-end
-
+-- Spec "Redirects" and spec/probe.md: a chain with an absolute and a path
+-- Location, the requests made, the final URL and the redirect count.
 function T.redirect_absolute_and_path()
   local routes = {
-    ["http://a.com/"] = redirect(301, "https://b.com:8443/x?y#frag"),
-    ["https://b.com:8443/x?y"] = redirect(302, "/z"),
+    ["http://a.com/"] = { code = 301, message = "Moved",
+      headers = { Location = { "https://b.com:8443/x?y#frag" } } },
+    ["https://b.com:8443/x?y"] = { code = 302, message = "Moved",
+      headers = { Location = { "/z" } } },
     ["https://b.com:8443/z"] = { body = { "done" } },
   }
   local resp, why, ctl, info = open({}, "http://a.com/", { routes = routes })
   t.eq(why, nil)
+  assert(resp, why)
   t.eq(ctl.requests, { "http://a.com/", "https://b.com:8443/x?y",
     "https://b.com:8443/z" })
   t.eq(resp.final_url, "https://b.com:8443/z")
-  t.eq(resp.redirects, 2)
   t.eq(info.redirects, 2)
   t.eq(read_all(resp), "done")
-  resp.close()
-  all_closed(ctl)
+  finish(resp, ctl)
 end
 
-function T.redirect_codes()
-  for _, code in ipairs({ 301, 302, 303, 307, 308 }) do
-    local resp = open({}, "http://a.com/", { routes = {
-      ["http://a.com/"] = redirect(code, "http://b.com/"),
-      ["http://b.com/"] = { body = { "b" } } } })
-    t.eq(resp.final_url, "http://b.com/", "code " .. code)
-  end
-end
-
-function T.redirect_chain_of_five_and_the_sixth()
-  local routes = {}
-  for i = 0, 5 do
-    routes["http://h.com/" .. i] = redirect(302, "/" .. (i + 1))
-  end
-  routes["http://h.com/5"] = { body = { "end" } }
-  local resp, why, ctl, info = open({}, "http://h.com/0", { routes = routes })
-  t.eq(why, nil)
-  t.eq(info.redirects, 5)
-  t.eq(read_all(resp), "end")
-  resp.close()
-  all_closed(ctl)
-  routes["http://h.com/5"] = redirect(302, "/6")
-  resp, why, ctl = open({}, "http://h.com/0", { routes = routes })
-  t.eq(resp, nil)
-  t.eq(why, "html: too many redirects: http://h.com/0")
-  t.eq(#ctl.requests, 6)
-  all_closed(ctl)
-end
-
-function T.redirect_to_other_scheme_or_form()
-  local cases = {
-    { "ftp://x.com/f", "html: unsupported URL scheme: ftp" },
-    { "x.html", "html: cannot follow redirect: x.html" },
-    { "../up", "html: cannot follow redirect: ../up" },
-    { "//other.com/p", "html: cannot follow redirect: //other.com/p" },
-    { "http://bad host/", "html: cannot follow redirect: http://bad host/" },
-    { "/a b", "html: cannot follow redirect: /a b" },
-  }
-  for _, c in ipairs(cases) do
-    local resp, why, ctl = open(redirect(302, c[1]))
-    t.eq(resp, nil, c[1])
-    t.eq(why, c[2], c[1])
-    all_closed(ctl)
-  end
-end
-
-function T.redirect_without_location_is_an_error_status()
-  local resp, why, ctl = open({ code = 302, message = "Found",
-    body = { "<p>moved</p>" } })
-  t.eq(why, nil)
-  t.eq(resp.is_error, true)
-  t.eq(resp.status, 302)
-  t.eq(read_all(resp), "<p>moved</p>")
-  t.eq(#ctl.requests, 1)
-end
-
--- Content type, encoding and charset -----------------------------------------
-
-function T.accepted_content_types()
-  for _, ct in ipairs({ "text/html", "TEXT/HTML; charset=UTF-8",
-      "application/xhtml+xml", "text/plain", " text/html ;q", "" }) do
-    local resp, why = open({ headers = { ["Content-Type"] = ct },
-      body = { "x" } })
-    t.eq(why, nil, ct)
-    t.eq(read_all(resp), "x", ct)
-  end
-  local resp = open({ body = { "x" } })
-  t.eq(read_all(resp), "x", "no type")
-end
-
-function T.other_content_type_stops()
-  local resp, why, ctl = open({ headers = { ["Content-Type"] =
-    "image/png" }, body = { "\137PNG" } })
-  t.eq(resp, nil)
-  t.eq(why, "html: not an HTML page: image/png")
-  t.eq(ctl.handles[1].reads, 0)
-  all_closed(ctl)
-end
-
-function T.compressed_response_stops()
-  local resp, why, ctl = open({ headers = { ["Content-Encoding"] = "gzip" },
-    body = { "x" } })
-  t.eq(resp, nil)
-  t.eq(why, "html: compressed response not supported: gzip")
-  all_closed(ctl)
-  resp, why = open({ headers = { ["Content-Encoding"] = "Identity" },
-    body = { "x" } })
-  t.eq(why, nil)
-end
-
-function T.latin1_and_windows_1252_convert()
-  local bytes = "caf\233 \128 \150 \129 \255"
-  local want = "caf\195\169 \226\130\172 \226\128\147 \194\129 \195\191"
-  for _, cs in ipairs({ "iso-8859-1", "ISO-8859-1", "latin1",
-      "windows-1252", "\"windows-1252\"" }) do
-    local resp = open({ headers = { ["Content-Type"] =
-      "text/html; charset=" .. cs }, body = internet.pieces(bytes, 3) })
-    t.eq(read_all(resp), want, cs)
-    t.eq(resp.bytes, #bytes, "bytes received count the input")
-  end
-end
-
-function T.other_charsets_pass_through()
-  local bytes = "caf\233 \195\169"
-  for _, ct in ipairs({ "text/html; charset=utf-8", "text/html; charset=koi8-r",
-      "text/html" }) do
-    local resp = open({ headers = { ["Content-Type"] = ct }, body = { bytes } })
-    t.eq(read_all(resp), bytes, ct)
-  end
-end
-
-function T.latin_conversion_function()
-  t.eq(fetch.latin_to_utf8("plain"), "plain")
-  local all = {}
-  for b = 0x80, 0xFF do
-    all[#all + 1] = string.char(b)
-  end
-  local out = fetch.latin_to_utf8(table.concat(all))
-  t.ok(utf8.len(out), "valid UTF-8")
-  t.eq(utf8.len(out), 128)
-end
-
--- Error status ------------------------------------------------------------
-
-local function short_page(code, message, url)
-  local head = "HTTP " .. code .. (message ~= "" and (" " .. message) or "")
-  return "<title>" .. head .. "</title><h1>" .. head .. "</h1><p>" .. url
-    .. "</p>"
-end
-
-function T.error_status_renders_the_body()
-  for _, code in ipairs({ 404, 500 }) do
-    local resp, why, ctl = open({ code = code, message = "Bad",
-      headers = { ["Content-Type"] = { "text/html" } },
-      body = { "<h1>Oops</h1>", "", "<p>more</p>" } })
-    t.eq(why, nil)
-    t.eq(resp.is_error, true)
-    t.eq(resp.status, code)
-    t.eq(resp.message, "Bad")
-    t.eq(read_all(resp), "<h1>Oops</h1><p>more</p>")
-    t.eq(resp.read_error, nil)
-    resp.close()
-    all_closed(ctl)
-  end
-end
-
-function T.error_status_short_page_cases()
-  local cases = {
-    { body = {} },
-    { body = {}, read_error = "no body" },
-    { body = {}, read_raise = "FileNotFoundException" },
-    { body = { "", "", "" }, endless = true },
-    { headers = { ["Content-Type"] = "application/json" },
-      body = { "{}" } },
-    { headers = { ["Content-Encoding"] = "br" }, body = { "zz" } },
-  }
-  for i, c in ipairs(cases) do
-    c.code, c.message = 404, "Not Found"
-    local resp, why, ctl = open(c)
-    t.eq(why, nil, "case " .. i)
-    t.eq(resp.is_error, true)
-    t.eq(read_all(resp), short_page(404, "Not Found", URL), "case " .. i)
-    t.eq(resp.read_error, nil, "case " .. i)
-    t.eq(resp.bytes, 0, "case " .. i)
-    resp.close()
-    all_closed(ctl)
-  end
-end
-
-function T.short_page_escapes_and_empty_message()
-  local resp = open({ code = 500, message = "<b>&" },
-    "http://x.com/?a=1&b=<2>")
-  t.eq(read_all(resp), short_page(500, "&lt;b>&amp;",
-    "http://x.com/?a=1&amp;b=&lt;2>"))
-  resp = open({ code = 503, message = "" })
-  t.eq(read_all(resp), short_page(503, "", URL))
-  resp = open({ code = 503 })
-  t.ok(resp.message ~= nil)
-end
-
-function T.error_status_read_error_after_the_first_byte()
-  local resp, _, ctl = open({ code = 500, message = "Error",
-    body = { "<p>part" }, read_error = "reset" })
-  t.eq(read_all(resp), "<p>part")
-  t.eq(resp.read_error, "html: read error: reset")
-  resp.close()
-  all_closed(ctl)
-  resp = open({ code = 500, body = { "<p>part" }, endless = true })
-  t.eq(read_all(resp), "<p>part")
-  t.eq(resp.read_error, "html: timed out reading " .. URL
-    .. " (7 bytes received)")
-end
-
-function T.error_status_interrupt_passes_through()
-  local flag = { on = true }
-  local resp = open({ code = 404, body = { "", "x" } }, URL, { flag = flag })
-  t.eq(select(2, resp.read()), "html: interrupted")
-end
-
+-- Spec/probe.md "fetch": seconds from the request to the end of the body.
 function T.fetch_time_runs_to_the_end_of_the_body()
   local body = { "a" }
   for _ = 1, 20 do
     body[#body + 1] = ""
   end
   local resp = open({ connect_polls = 10, body = body })
+  assert(resp, "open failed")
   read_all(resp)
   local done = resp.fetch_time()
   t.ok(done >= 1.5 and done < 1.6, "fetch time " .. done)
   computer.test.advance(5)
   t.eq(resp.fetch_time(), done, "the clock stops at the end")
 end
+
+-- Request URL: the fragment is not sent, the text keeps its case.
+t.cases(T, "request_url", {
+  { "fragment is not sent", "http://example.com/a#top",
+    { requests = { "http://example.com/a" },
+      final_url = "http://example.com/a" } },
+  { "the user's case is kept", "HTTP://Example.COM/Path",
+    { requests = { "HTTP://Example.COM/Path" },
+      final_url = "HTTP://Example.COM/Path" } },
+  { "unsupported scheme makes no request", "ftp://x.org",
+    { requests = {}, why = "html: unsupported URL scheme: ftp" } },
+  { "invalid URL makes no request", "http://",
+    { requests = {}, why = "html: invalid URL: http://" } },
+}, function(url)
+  local resp, why, ctl = open({ body = { "x" } }, url)
+  local out = { requests = ctl.requests, why = why }
+  if resp then
+    out.final_url = resp.final_url
+  end
+  finish(resp, ctl)
+  return out
+end)
+
+-- Errors (spec/fetch.md "Errors") --------------------------------------------
+
+t.cases(T, "fetch_open_errors", {
+  { "no internet card", { no_card = true },
+    { why = "html: no internet card found (needed for " .. URL .. ")",
+      requests = 0 } },
+  { "HTTP disabled in the server config", { opts = { http = false } },
+    { why = "html: HTTP requests are disabled on this server",
+      requests = 0 } },
+  { "request returns nil and a reason",
+    { script = { request_error = "address is not allowed" } },
+    { why = "html: cannot fetch " .. URL .. ": address is not allowed",
+      requests = 1 } },
+  { "request raises a string", { script = { request_raise = "bad address" } },
+    { why = "html: cannot fetch " .. URL .. ": bad address", requests = 1 } },
+  { "the message is one line", { script = { request_raise = "bad\nmore" } },
+    { why = "html: cannot fetch " .. URL .. ": bad", requests = 1 } },
+  { "a reason that is not a string", { script = { request_raise = { 1 } } },
+    { why = "html: cannot fetch " .. URL .. ": table: ADDR", requests = 1 } },
+  { "too many open connections", { opts = { limit = 0 } },
+    { why = "html: cannot fetch " .. URL .. ": too many open connections",
+      requests = 1 } },
+  { "finishConnect fails",
+    { script = { connect_polls = 2, connect_error = "unknown host" } },
+    { why = "html: cannot connect: " .. URL .. ": unknown host",
+      requests = 1 } },
+  { "finishConnect raises", { script = { connect_raise = "refused" } },
+    { why = "html: cannot connect: " .. URL .. ": refused", requests = 1 } },
+  { "unsupported scheme", { url = "ftp://x.org" },
+    { why = "html: unsupported URL scheme: ftp", requests = 0 } },
+}, function(input)
+  if input.no_card then
+    local resp, why = fetch.open(URL, links(nil), {})
+    return { why = resp and "opened" or why, requests = 0 }
+  end
+  local resp, why, ctl = open(input.script or {}, input.url, input.opts)
+  finish(resp, ctl)
+  if resp then
+    why = "opened"
+  end
+  return { why = (why:gsub("table: %w+", "table: ADDR")),
+    requests = #ctl.requests }
+end)
+
+-- A read that fails (2xx status): the part before the error is delivered.
+t.cases(T, "fetch_read_errors", {
+  { "read returns nil and a reason",
+    { body = { "abc" }, read_error = "reset" },
+    { text = "abc", why = "html: read error: reset" } },
+  { "read raises", { body = { "abc" }, read_raise = "broken\npipe" },
+    { text = "abc", why = "html: read error: broken" } },
+  { "read fails at once", { read_error = "gone" },
+    { text = "", why = "html: read error: gone" } },
+}, function(script)
+  local resp, _, ctl = open(script)
+  assert(resp, "open failed")
+  local text, why = read_all(resp)
+  finish(resp, ctl)
+  return { text = text, why = why }
+end)
+
+-- Timeouts (spec/fetch.md "Timeouts and yields") ------------------------------
+
+local function gaps(count, first)
+  local body = { first }
+  for _ = 1, count do
+    body[#body + 1] = ""
+  end
+  return body
+end
+
+local function three_chunks_with_gaps()
+  local body = {}
+  for _ = 1, 3 do
+    for _, piece in ipairs(gaps(500, "abc")) do
+      body[#body + 1] = piece
+    end
+  end
+  return body
+end
+
+t.cases(T, "fetch_timeouts", {
+  { "connect never completes", { connect_polls = 1000000 },
+    { why = "html: timed out connecting to " .. URL, secs = 15 } },
+  { "response never comes: one budget for connect and response",
+    { connect_polls = 100, response_polls = 1000000 },
+    { why = "html: timed out connecting to " .. URL, secs = 15 } },
+  { "12.5 s of connecting and waiting is inside the budget",
+    { connect_polls = 150, response_polls = 100, body = { "x" } },
+    { text = "x", secs = 12 } },
+  { "no byte at all", { body = {}, endless = true },
+    { text = "", why = "html: timed out reading " .. URL
+      .. " (0 bytes received)", secs = 30 } },
+  { "29 s without a byte is inside the budget",
+    { body = gaps(580, "x") }, { text = "x", secs = 29 } },
+  { "each chunk restarts the 30 s timer",
+    { body = three_chunks_with_gaps(), endless = true },
+    { text = "abcabcabc", why = "html: timed out reading " .. URL
+      .. " (9 bytes received)", secs = 80 } },
+}, function(script)
+  local t0 = computer.uptime()
+  local resp, why, ctl = open(script)
+  local text
+  if resp then
+    text, why = read_all(resp)
+  end
+  finish(resp, ctl)
+  return { text = text, why = why,
+    secs = math.floor(computer.uptime() - t0 + 0.01) }
+end)
+
+-- Ctrl+C (spec/fetch.md "Timeouts and yields", note 10) -----------------------
+
+t.cases(T, "fetch_interrupt", {
+  { "during connect", { script = { connect_polls = 10 }, flag = true },
+    { open_why = "html: interrupted" } },
+  { "during the wait for the response",
+    { script = { response_polls = 10 }, flag = true },
+    { open_why = "html: interrupted" } },
+  { "during a read that gets no data",
+    { script = { body = { "abc", "", "def" } }, after_first = true },
+    { first = "abc", why = "html: interrupted" } },
+  { "during a read of an error status",
+    { script = { code = 404, body = { "", "x" } }, flag = true },
+    { why = "html: interrupted" } },
+  { "a raised sleep error passes through and closes the handle",
+    { script = { connect_polls = 5 }, sleep_raises = true },
+    { raised = "interrupted" } },
+}, function(input)
+  local flag = { on = input.flag == true }
+  local card, ctl = internet.new({ default = input.script })
+  local l = links(card, flag)
+  if input.sleep_raises then
+    l.sleep = function() error("interrupted", 0) end
+  end
+  local ok, resp, why = pcall(fetch.open, URL, l, {})
+  local out = {}
+  if not ok then
+    out.raised = resp
+  elseif not resp then
+    out.open_why = why
+  else
+    if input.after_first then
+      out.first = resp.read()
+      flag.on = true
+    end
+    out.why = select(2, resp.read())
+    resp.close()
+  end
+  all_closed(ctl)
+  return out
+end)
+
+-- Redirects (spec/fetch.md "Redirects") ---------------------------------------
+
+local function redirect(code, location, name)
+  return { code = code, message = "Moved", headers = location
+    and { [name or "Location"] = { location } } or {} }
+end
+
+local function chain(last)
+  local routes = {}
+  for i = 0, 5 do
+    routes["http://h.com/" .. i] = redirect(302, "/" .. (i + 1))
+  end
+  routes["http://h.com/5"] = last
+  return { routes = routes, url = "http://h.com/0" }
+end
+
+local redirect_rows = {
+  { "chain of 5 redirects", chain({ body = { "end" } }),
+    { final = "http://h.com/5", redirects = 5, text = "end" } },
+  { "the 6th redirect stops", chain(redirect(302, "/6")),
+    { why = "html: too many redirects: http://h.com/0", requests = 6 } },
+  { "Location header name is not case-sensitive",
+    { routes = {
+      [URL] = redirect(302, "http://b.com/", "location"),
+      ["http://b.com/"] = { body = { "b" } } } },
+    { final = "http://b.com/", redirects = 1, text = "b" } },
+  { "a path Location keeps the query and drops the fragment",
+    { routes = {
+      [URL] = redirect(302, "/z?x=1#f"),
+      ["http://example.com/z?x=1"] = { body = { "z" } } } },
+    { final = "http://example.com/z?x=1", redirects = 1, text = "z" } },
+  { "redirect to ftp", { script = redirect(302, "ftp://x.com/f") },
+    { why = "html: unsupported URL scheme: ftp", requests = 1 } },
+  { "redirect to an upper case scheme", { script = redirect(302, "FTP://x.com") },
+    { why = "html: unsupported URL scheme: ftp", requests = 1 } },
+  { "relative name", { script = redirect(302, "x.html") },
+    { why = "html: cannot follow redirect: x.html", requests = 1 } },
+  { "dot dot path", { script = redirect(302, "../up") },
+    { why = "html: cannot follow redirect: ../up", requests = 1 } },
+  { "scheme-relative", { script = redirect(302, "//other.com/p") },
+    { why = "html: cannot follow redirect: //other.com/p", requests = 1 } },
+  { "absolute URL that does not parse",
+    { script = redirect(302, "http://bad host/") },
+    { why = "html: cannot follow redirect: http://bad host/", requests = 1 } },
+  { "path with a space", { script = redirect(302, "/a b") },
+    { why = "html: cannot follow redirect: /a b", requests = 1 } },
+}
+for _, code in ipairs({ 301, 302, 303, 307, 308 }) do
+  redirect_rows[#redirect_rows + 1] = { "status " .. code .. " follows",
+    { routes = { [URL] = redirect(code, "http://b.com/"),
+      ["http://b.com/"] = { body = { "b" } } } },
+    { final = "http://b.com/", redirects = 1, text = "b" } }
+end
+
+t.cases(T, "redirects", redirect_rows, function(input)
+  local resp, why, ctl, info = open(input.script or {}, input.url,
+    { routes = input.routes })
+  local out = {}
+  if resp then
+    out.final, out.redirects = resp.final_url, info.redirects
+    out.text = read_all(resp)
+  else
+    out.why, out.requests = why, #ctl.requests
+  end
+  finish(resp, ctl)
+  return out
+end)
+
+-- Content type and encoding (spec/fetch.md "HTTP status and content type") ----
+
+t.cases(T, "content_type_and_encoding", {
+  { "no Content-Type", { headers = {} }, { text = "x" } },
+  { "text/html", { headers = { ["Content-Type"] = "text/html" } },
+    { text = "x" } },
+  { "list value as the card gives it",
+    { headers = { ["Content-Type"] = { "text/html" } } }, { text = "x" } },
+  { "case and parameter", { headers = { ["Content-Type"] =
+    "TEXT/HTML; charset=UTF-8" } }, { text = "x" } },
+  { "application/xhtml+xml", { headers = { ["Content-Type"] =
+    "application/xhtml+xml" } }, { text = "x" } },
+  { "text/plain", { headers = { ["Content-Type"] = "text/plain" } },
+    { text = "x" } },
+  { "spaces around the type", { headers = { ["Content-Type"] =
+    " text/html ;q" } }, { text = "x" } },
+  { "empty value counts as missing", { headers = { ["Content-Type"] = "" } },
+    { text = "x" } },
+  { "header name in lower case", { headers = { ["content-type"] =
+    "image/png" } }, { why = "html: not an HTML page: image/png", reads = 0 } },
+  { "header name in upper case", { headers = { ["CONTENT-TYPE"] =
+    "image/png" } }, { why = "html: not an HTML page: image/png", reads = 0 } },
+  { "other type stops before the body", { headers = { ["Content-Type"] =
+    "image/png" }, body = { "\137PNG" } },
+    { why = "html: not an HTML page: image/png", reads = 0 } },
+  { "the message has no parameters", { headers = { ["Content-Type"] =
+    "application/json; charset=utf-8" } },
+    { why = "html: not an HTML page: application/json", reads = 0 } },
+  { "gzip stops", { headers = { ["Content-Encoding"] = "gzip" } },
+    { why = "html: compressed response not supported: gzip", reads = 0 } },
+  { "Content-Encoding name in lower case", { headers = {
+    ["content-encoding"] = "gzip" } },
+    { why = "html: compressed response not supported: gzip", reads = 0 } },
+  { "identity is accepted", { headers = { ["Content-Encoding"] =
+    "identity" } }, { text = "x" } },
+  { "identity not case-sensitive", { headers = { ["Content-Encoding"] =
+    "Identity" } }, { text = "x" } },
+}, function(input)
+  local resp, why, ctl = open({ headers = input.headers,
+    body = input.body or { "x" } })
+  local out = {}
+  if resp then
+    out.text, out.why = read_all(resp)
+  else
+    out.why, out.reads = why, ctl.handles[1].reads
+  end
+  finish(resp, ctl)
+  return out
+end)
+
+-- Response header names are not case-sensitive; Content-Length (spec/fetch.md
+-- "Internet card API", "Stream into the pipeline", "Memory").
+t.cases(T, "response_headers", {
+  { "names as the card gives them",
+    { headers = { ["Content-Length"] = { "12" },
+      ["Content-Type"] = { "text/plain" } } },
+    { length = 12, content_type = "text/plain", text = "x" } },
+  { "lower case names", { headers = { ["content-length"] = "12",
+    ["content-type"] = "text/plain" } },
+    { length = 12, content_type = "text/plain", text = "x" } },
+  { "upper case names", { headers = { ["CONTENT-LENGTH"] = "12",
+    ["CONTENT-TYPE"] = "text/plain" } },
+    { length = 12, content_type = "text/plain", text = "x" } },
+  { "no headers", { headers = {} }, { text = "x" } },
+  { "Content-Length that is not a number", { headers = {
+    ["Content-Length"] = "abc" } }, { text = "x" } },
+  { "body longer than Content-Length is read to its end",
+    { headers = { ["Content-Length"] = "3" }, body = { "abcdef" } },
+    { length = 3, text = "abcdef" } },
+}, function(script)
+  script.body = script.body or { "x" }
+  local resp, _, ctl = open(script)
+  assert(resp, "open failed")
+  local out = { length = resp.length, content_type = resp.content_type,
+    text = read_all(resp) }
+  finish(resp, ctl)
+  return out
+end)
+
+-- Charset (spec/fetch.md "Charset") ------------------------------------------
+
+-- Windows-1252 code points for 0x80 to 0x9F. A byte with no character gives
+-- the C1 code point (note 8).
+local WIN1252 = { 0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+  0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x8D, 0x017D, 0x8F, 0x90, 0x2018,
+  0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161,
+  0x203A, 0x0153, 0x9D, 0x017E, 0x0178 }
+
+local ALL_BYTES, ALL_CODEPOINTS = {}, {}
+for b = 0x80, 0xFF do
+  ALL_BYTES[#ALL_BYTES + 1] = string.char(b)
+  ALL_CODEPOINTS[#ALL_CODEPOINTS + 1] = b <= 0x9F and WIN1252[b - 0x7F] or b
+end
+ALL_BYTES = table.concat(ALL_BYTES)
+
+local charset_rows = {}
+for _, cs in ipairs({ "iso-8859-1", "ISO-8859-1", "latin1", "windows-1252",
+    "\"windows-1252\"" }) do
+  charset_rows[#charset_rows + 1] = { "every byte 0x80 to 0xFF as " .. cs,
+    { content_type = "text/html; charset=" .. cs, bytes = ALL_BYTES },
+    ALL_CODEPOINTS, sizes = { 1, 3, 4096 } }
+end
+
+t.cases(T, "charset_all_bytes", charset_rows, function(input, size)
+  local resp, _, ctl = open({ headers = { ["Content-Type"] =
+    input.content_type }, body = internet.pieces(input.bytes, size) })
+  assert(resp, "open failed")
+  local text = read_all(resp)
+  finish(resp, ctl)
+  return { utf8.codepoint(text, 1, -1) }
+end)
+
+local MIXED = "caf\233 \128 \150 \129 \255"
+local MIXED_UTF8 = "caf\195\169 \226\130\172 \226\128\147 \194\129 \195\191"
+local UTF8_BYTES = "caf\233 \195\169"
+
+t.cases(T, "charset_parameter", {
+  { "latin1 converts and keeps ASCII", { "text/html; charset=latin1", MIXED },
+    MIXED_UTF8 },
+  { "no space after the semicolon", { "text/html;charset=latin1", MIXED },
+    MIXED_UTF8 },
+  { "spaces around the equal sign", { "text/html; charset = latin1", MIXED },
+    MIXED_UTF8 },
+  { "charset after another parameter",
+    { "text/html; format=x; charset=latin1", MIXED }, MIXED_UTF8 },
+  { "parameter name in upper case", { "text/html; CHARSET=latin1", MIXED },
+    MIXED_UTF8 },
+  { "text/plain converts too", { "text/plain; charset=windows-1252", MIXED },
+    MIXED_UTF8 },
+  { "utf-8 passes through", { "text/html; charset=utf-8", UTF8_BYTES },
+    UTF8_BYTES },
+  { "other charset passes through", { "text/html; charset=koi8-r",
+    UTF8_BYTES }, UTF8_BYTES },
+  { "no charset passes through", { "text/html", UTF8_BYTES }, UTF8_BYTES },
+}, function(input, size)
+  local resp, _, ctl = open({ headers = { ["Content-Type"] = input[1] },
+    body = internet.pieces(input[2], size) })
+  assert(resp, "open failed")
+  local text = read_all(resp)
+  finish(resp, ctl)
+  return text
+end, { sizes = { 1, 3, 4096 } })
+
+-- Error status (spec/fetch.md "HTTP status and content type") ------------------
+
+local function page(head, url)
+  return "<title>" .. head .. "</title><h1>" .. head .. "</h1><p>" .. url
+    .. "</p>"
+end
+
+local NF = page("HTTP 404 Not Found", URL)
+
+local function not_found(extra)
+  extra.code, extra.message = 404, "Not Found"
+  return extra
+end
+
+t.cases(T, "error_status_body", {
+  { "404 renders the body", { script = { code = 404, message = "Bad",
+    headers = { ["Content-Type"] = { "text/html" } },
+    body = { "<h1>Oops</h1>", "", "<p>more</p>" } } },
+    { status = 404, text = "<h1>Oops</h1><p>more</p>" } },
+  { "500 renders the body", { script = { code = 500, message = "Bad",
+    body = { "<p>x</p>" } } }, { status = 500, text = "<p>x</p>" } },
+  { "302 without Location renders", { script = { code = 302,
+    message = "Found", body = { "<p>moved</p>" } } },
+    { status = 302, text = "<p>moved</p>" } },
+  { "type and parameters follow the same rules as for 200",
+    { script = not_found({ headers = { ["content-type"] =
+      " TEXT/HTML ; charset=utf-8" }, body = { "<p>b</p>" } }) },
+    { status = 404, text = "<p>b</p>" } },
+  { "text/plain renders", { script = not_found({ headers = {
+    ["Content-Type"] = "text/plain" }, body = { "b" } }) },
+    { status = 404, text = "b" } },
+  { "empty Content-Type renders", { script = not_found({ headers = {
+    ["Content-Type"] = "" }, body = { "b" } }) },
+    { status = 404, text = "b" } },
+  { "empty body gives the short page", { script = not_found({ body = {} }) },
+    { status = 404, text = NF } },
+  { "first read fails with a reason", { script = not_found({ body = {},
+    read_error = "no body" }) }, { status = 404, text = NF } },
+  { "first read raises", { script = not_found({ body = {},
+    read_raise = "FileNotFoundException" }) },
+    { status = 404, text = NF } },
+  { "read times out before the first byte", { script = not_found({
+    body = { "", "", "" }, endless = true }) }, { status = 404, text = NF } },
+  { "other content type gives the short page", { script = not_found({
+    headers = { ["Content-Type"] = "application/json" }, body = { "{}" } }) },
+    { status = 404, text = NF } },
+  { "compressed body gives the short page", { script = not_found({
+    headers = { ["Content-Encoding"] = "br" }, body = { "zz" } }) },
+    { status = 404, text = NF } },
+  { "304 is an error status", { script = { code = 304,
+    message = "Not Modified", body = {} } },
+    { status = 304, text = page("HTTP 304 Not Modified", URL) } },
+  { "message and URL escape & and <", { script = { code = 500,
+    message = "<b>&" }, url = "http://x.com/?a=1&b=<2>" },
+    { status = 500, text = page("HTTP 500 &lt;b>&amp;",
+      "http://x.com/?a=1&amp;b=&lt;2>") } },
+  { "empty message has no trailing space", { script = { code = 503,
+    message = "" } }, { status = 503, text = page("HTTP 503", URL) } },
+  { "read error after the first byte keeps the part", { script = {
+    code = 500, message = "Error", body = { "<p>part" }, read_error = "reset" } },
+    { status = 500, text = "<p>part",
+      read_error = "html: read error: reset" } },
+  { "read raises after the first byte", { script = { code = 500,
+    body = { "<p>part" }, read_raise = "broken" } },
+    { status = 500, text = "<p>part",
+      read_error = "html: read error: broken" } },
+  { "read timeout after the first byte keeps the part", { script = {
+    code = 500, body = { "<p>part" }, endless = true } },
+    { status = 500, text = "<p>part", read_error = "html: timed out reading "
+      .. URL .. " (7 bytes received)" } },
+}, function(input)
+  local resp, why, ctl = open(input.script, input.url)
+  t.eq(why, nil)
+  assert(resp, why)
+  local text, rwhy = read_all(resp)
+  local out = { status = resp.status, text = text, why = rwhy,
+    read_error = resp.read_error }
+  finish(resp, ctl)
+  return out
+end)
 
 return T

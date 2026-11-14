@@ -14,6 +14,7 @@ end
 
 local fuzz = load_fuzz()
 
+-- A saved failure replays only when the same seed gives the same document.
 function T.same_seed_gives_same_documents()
   local sources = { files = { { "x", "<p>a &amp; b</p>" } } }
   for index = 1, 10 do
@@ -26,57 +27,59 @@ function T.same_seed_gives_same_documents()
     "another seed gives another document")
 end
 
-function T.utf8_check()
-  t.eq(fuzz.utf8_error("abc 中文 😀"), nil)
-  t.eq(fuzz.utf8_error("a\128"), 2, "lone continuation")
-  t.eq(fuzz.utf8_error("\192\175"), 1, "overlong")
-  t.eq(fuzz.utf8_error("\237\160\128"), 1, "surrogate")
-  t.eq(fuzz.utf8_error("\244\144\128\128"), 1, "above U+10FFFF")
-  t.eq(fuzz.utf8_error("x\228\184"), 2, "truncated")
-end
+-- The UTF-8 oracle: the index of the first bad byte, or nil.
+t.cases(T, "utf8_error", {
+  { "ASCII, CJK and emoji", "abc \228\184\173\230\150\135 \240\159\152\128",
+    nil },
+  { "empty", "", nil },
+  { "lone continuation byte", "a\128", 2 },
+  { "overlong", "\192\175", 1 },
+  { "surrogate", "\237\160\128", 1 },
+  { "above U+10FFFF", "\244\144\128\128", 1 },
+  { "truncated sequence", "x\228\184", 2 },
+  { "highest code point", "\244\143\191\191", nil },
+  { "byte 0xFF", "a\255", 2 },
+}, function(s)
+  return fuzz.utf8_error(s)
+end)
 
-function T.line_oracles()
-  t.eq(fuzz.check_lines({ "\1abc", "", "\2中文\3x" }, 5), nil)
-  t.ok(fuzz.check_lines({ "abc" }, 10), "no style byte")
-  t.ok(fuzz.check_lines({ "\1a\tb" }, 10), "tab")
-  t.ok(fuzz.check_lines({ "\1a\0b" }, 10), "zero byte")
-  t.ok(fuzz.check_lines({ "\1abcdef" }, 5), "too wide")
-  t.ok(fuzz.check_lines({ "\1\237\160\128" }, 5), "invalid UTF-8")
-end
+-- The line oracle: true when check_lines rejects the lines.
+t.cases(T, "check_lines", {
+  { "valid lines", { { "\1abc", "", "\2\228\184\173\230\150\135\3x" }, 5 },
+    false },
+  { "no style byte", { { "abc" }, 10 }, true },
+  { "tab", { { "\1a\tb" }, 10 }, true },
+  { "zero byte", { { "\1a\0b" }, 10 }, true },
+  { "too wide", { { "\1abcdef" }, 5 }, true },
+  { "invalid UTF-8", { { "\1\237\160\128" }, 5 }, true },
+  { "not a table", { "text", 5 }, true },
+}, function(input)
+  return fuzz.check_lines(input[1], input[2]) ~= nil
+end)
 
+-- The fuzz contract: a fixed seed over the saved cases and the fuzz corpus
+-- gives no failure. A share of the documents goes through the fake card with
+-- random chunks, gaps, headers and errors.
 function T.short_run_has_no_failures()
+  local corpus = { "tests/fuzz-corpus/mixed.html",
+    "tests/fuzz-corpus/broken.html" }
+  for _, name in ipairs(t.list_cases()) do
+    corpus[#corpus + 1] = "tests/cases/" .. name .. ".html"
+  end
   local failures = {}
   local summary = fuzz.run({
-    n = 30,
+    n = 60,
     seed = 20261114,
-    corpus = { "tests/cases/basic.html", "tests/fuzz-corpus/mixed.html",
-      "tests/fuzz-corpus/broken.html" },
+    corpus = corpus,
     large = "tests/pages/large.html",
     on_failure = function(f)
       failures[#failures + 1] = f.index .. " (" .. f.generator .. "): "
         .. f.message:sub(1, 300)
     end,
   })
-  t.eq(summary.documents, 30)
+  t.eq(summary.documents, 60)
   t.ok(summary.card > 0, "some documents go through the card")
   t.eq(failures, {})
-end
-
-function T.card_runs_pass_on_a_valid_page()
-  local doc = "<title>T</title><h1>Head</h1><p>caf\195\169 &amp; more "
-    .. "text</p><pre>a\tb</pre>"
-  local plain = select(3, fuzz.check(doc, 40, 3))
-  t.ok(plain, "plain run")
-  for i = 1, 200 do
-    local result, message = fuzz.check_card(doc, 40, fuzz.card_rng(9, i),
-      plain)
-    t.ok(result ~= "fail", "script " .. i .. ": " .. tostring(message))
-  end
-end
-
-function T.card_rng_does_not_change_the_documents()
-  t.ok(fuzz.card_rng(7, 1).int(1, 1000000) ~= fuzz.doc_rng(7, 1).int(1,
-    1000000), "separate generators")
 end
 
 return T
