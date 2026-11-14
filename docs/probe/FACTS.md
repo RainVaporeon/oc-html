@@ -136,6 +136,27 @@ Decision: a line is one string with inline style bytes.
 
 Source keys: `keyboard.keys.*`.
 
+## Tracer bullet 0.0.1a
+
+Measured in game with release 0.0.1a (`html --stats`), tier 3, 2 MiB. Steps: `docs/ingame/task3.md`.
+
+| Fact | Value |
+|---|---|
+| `basic.html` at `--width 40` | same text as `basic.txt` |
+| Page | Wikipedia article, 98891 bytes |
+| Width | 160 |
+| Lines | 182 |
+| `cpu` (tokenizer and layout) | 0.156 s |
+| `wall` | 0.25 s |
+| `free_before` | 1684554 |
+| `free_after` | 1848752 |
+| `used` (free_before - free_after) | -164198 |
+
+- CPU speed: about 630 KB/s (98891 bytes in 0.156 s) for the minimal tokenizer and layout. A 1 MB page needs about 1.6 s of CPU at this speed. The full tokenizer and layout will be slower.
+- No yield error on the 100 KB page.
+- The memory delta cannot be measured this way. The game has no `collectgarbage`, so `freeMemory()` includes garbage. Garbage from module loading was collected during the run, so free memory was higher after the render. From 0.0.2a, `--stats` also reports `lowest_free` and `peak_used` (free_before - lowest_free), and the delta is named `delta`.
+- The user could not redirect stderr to a file in game. From 0.0.2a, `--stats-out <path>` writes the stats lines to a file.
+
 ## Components (t3)
 
 - Internet card: HTTP and TCP enabled (`extras.internet.*`).

@@ -69,6 +69,42 @@ function T.normal_memory_does_not_settle()
   t.eq(computer.test.sleeps(), 0)
 end
 
+function T.lowest_free_is_nil_after_reset()
+  local guard = setup()
+  t.eq(guard.lowest_free(), nil)
+  guard.tick(1)
+  t.eq(guard.lowest_free(), 1800000)
+  guard.reset()
+  t.eq(guard.lowest_free(), nil)
+end
+
+function T.lowest_free_tracks_tick_minimum()
+  local guard = setup()
+  computer.test.set_free(900000)
+  guard.tick(1)
+  computer.test.set_free(500000)
+  guard.tick(2)
+  computer.test.set_free(700000)
+  guard.tick(3)
+  t.eq(guard.lowest_free(), 500000)
+end
+
+function T.lowest_free_includes_settle_readings()
+  local guard = setup()
+  computer.test.set_free(1000000)
+  computer.test.set_jitter(200000)
+  local best = guard.settled_free()
+  t.eq(best, 1000000)
+  t.eq(guard.lowest_free(), 800000, "first low reading kept")
+end
+
+function T.lowest_free_includes_low_memory_settle()
+  local guard = setup()
+  computer.test.set_free(100 * 1024)
+  pcall(guard.tick, 1)
+  t.eq(guard.lowest_free(), 100 * 1024)
+end
+
 function T.never_calls_collectgarbage()
   t.eq(collectgarbage, nil)
   local guard, clock = setup()

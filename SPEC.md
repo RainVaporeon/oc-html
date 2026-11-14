@@ -42,15 +42,38 @@ Out of scope (later roadmap):
 
 In game:
 ```
-html [--width n] [--stats] [--no-rescale] <file>
+html [--width n] [--stats] [--stats-out path] [--no-rescale] <file>
                      render a local HTML file
 html --no-rescale <file>   keep the current screen resolution
 html --width n <file>      output width for stdout mode; use it to compare with test files
-html --stats <file>        print file size, line count, CPU and wall time, and settled free
-                           memory before and after, to stderr
+html --stats <file>        print the stats lines (below) to stderr
+html --stats-out <path> <file>
+                           also write the stats lines to <path> (overwrite). Sets --stats
 html --help          show usage
 html                 (no arguments) show usage. Later: start a new session
+html-install [--prefix <dir>] [--dry-run]
+                     install a release from its one-file installer (see "Releases")
 ```
+
+Stats lines, in this order:
+```
+stats: file=<bytes> bytes
+stats: width=<columns>              always a number (80 when the screen width is unknown)
+stats: lines=<count>
+stats: cpu=<seconds> s              os.clock time of the tokenizer and layout
+stats: wall=<seconds> s             computer.uptime time of the same part
+stats: free_before=<bytes> bytes    settled free memory before the render
+stats: free_after=<bytes> bytes     settled free memory after the render
+stats: delta=<bytes> bytes (<x> per line)
+stats: lowest_free=<bytes> bytes    lowest freeMemory() reading from the render start to the end of the output
+stats: peak_used=<bytes> bytes (<x> per line)
+                                    free_before - lowest_free
+```
+
+- `delta` (free_before - free_after) is unreliable. The game has no `collectgarbage`, so a reading includes garbage, and garbage from earlier work (module loading) can be collected during the run. Measured: delta was -164198 bytes on a 98891-byte page.
+- `peak_used` is an upper bound of the peak memory use. `lowest_free` includes garbage that is not collected yet.
+- When the render stops with a controlled error, the stats lines still follow the error line. They hold the values known at that point (file, width, free_before, lowest_free, peak_used without the per-line value) and a last line `stats: stopped=<error message>`.
+- `--stats-out` writes the same lines with LF endings. A write failure prints one line `html: cannot write stats file: <path> (<reason>)` after the stats lines and gives exit code 1. The page output and the stats on stderr are not affected.
 
 On the host (from the project root, Docker Desktop running):
 ```
@@ -68,9 +91,10 @@ A release is a fixed copy of the in-game files.
 - Path: `releases/<version>[suffix]/<output>`.
 - Version: `major.minor.patch`. Suffix `a` is alpha, `b` is beta, no suffix is a real release.
 - Plan: the tracer bullet is `0.0.1a`. Test builds before the MVP are `0.0.x` with `a`. The MVP is `0.1.0a`.
-- `releases/latest` is a symlink to the newest release folder. It does not resolve on the user's host (it shows as a plain file that holds the version text). It stays for local use. Fetch by version path, for example `releases/0.0.1a/bin/html.lua`.
+- `0.0.2a`: peak-memory stats, `--stats-out`, and the first one-file installer.
+- `releases/latest` is a symlink to the newest release folder. It does not resolve on the user's host (it shows as a plain file that holds the version text). It stays for local use. Fetch by version path, for example `releases/0.0.2a/html-install.lua`.
 - Each release folder has `release.tar.gz` with the bin and lib files: the same files as `files.txt`, with the same relative paths.
-- Unpacking a `.tar.gz` in game needs gzip inflate and a tar program. The test machine has no data card, and OpenOS has no tar by default. So in game, fetch the single files. The tarball is for transfer outside the game.
+- Unpacking a `.tar.gz` in game needs gzip inflate and a tar program. The test machine has no data card, and OpenOS has no tar by default. So in game, fetch `html-install.lua` (from 0.0.2a) or the single files. The tarball is for transfer outside the game.
 
 Release command (from the project root, Docker Desktop running):
 ```
@@ -83,17 +107,50 @@ The script stops when:
 - `bin/` or `lib/` has uncommitted changes (a release always matches a commit),
 - `pwsh tests/docker/test.ps1` fails.
 
-Then it copies the files, writes `files.txt`, creates `release.tar.gz` (ustar format, sorted names, owner and group 0, made with the Windows `tar.exe`) and updates `releases/latest`. If a real symlink cannot be created, it records the link in the git index only.
+Then it copies the files, writes `files.txt`, creates `release.tar.gz` (ustar format, sorted names, owner and group 0, made with the Windows `tar.exe`), creates `html-install.lua` and updates `releases/latest`. If a real symlink cannot be created, it records the link in the git index only.
 
 Layout (mirrors the in-game paths under `/home`):
 ```
 releases/<version>/bin/html.lua         goes to /home/bin/html.lua
 releases/<version>/lib/html/*.lua       goes to /home/lib/html/
 releases/<version>/files.txt            one relative path per line, sorted, LF endings
-releases/<version>/release.tar.gz     the files above except files.txt, same relative paths (gzip, ustar)
+releases/<version>/release.tar.gz       the files in files.txt, same relative paths (gzip, ustar)
+releases/<version>/html-install.lua     one-file installer that holds the files in files.txt (from 0.0.2a)
 ```
 
+`files.txt` lists neither `release.tar.gz` nor `html-install.lua`.
+
 The script checks the tarball: the list equals `files.txt`, and each extracted file is byte-identical to the release copy. It stops with an error if a check fails.
+
+### Installer
+
+`html-install.lua` installs a release with one fetch. It needs no data card and no other script.
+
+```
+wget -f <BASE>/releases/<version>/html-install.lua /home/html-install.lua
+/home/html-install.lua [--prefix <dir>] [--dry-run]
+```
+
+- The default prefix is `/home`. It writes `<prefix>/bin/html.lua` and `<prefix>/lib/html/*.lua`, and creates the folders.
+- `--dry-run` runs the checks and lists the files. It writes nothing.
+- Output: `html-install: oc-html <version>`, one line `<path> <size> bytes` per file, then `installed N files`.
+- Checks before any write:
+  - each embedded file has the size recorded at build time (a short download fails here or as a syntax error),
+  - no target path is a directory,
+  - the target filesystem (`filesystem.get(path)`) is not read-only,
+  - free space (`spaceTotal() - spaceUsed()`) is at least the sum of the file sizes, plus the largest file (for the temporary copy), plus 1024 bytes per file. Old files that the install replaces are not counted.
+- Write order:
+  1. Each file goes to `<target>.new` in the target folder. The installer reads it back and compares it with the embedded content.
+  2. When all temporary files are correct, each old file moves to `<target>.old`, and `<target>.new` is renamed to `<target>`. (OpenComputers does not rename over an existing file.)
+  3. The `.old` files are removed.
+- On any failure, the installer removes its temporary files, puts the old files back, and prints one line `html-install: <reason>; old files kept`. An unexpected error also prints one `html-install: ` line. The exit code is 1 (2 for bad arguments).
+- Loaded with a table as the first argument, the chunk returns its module: `VERSION`, `files` (relative path to content), `sizes` and `main(argv, deps)`. The tests use this with a fake filesystem.
+
+How it is built:
+- `tools/installer.lua` is the template with the install logic. `tools/mkinstall.lua` replaces its `-- @@FILES@@` line with the version and one long-bracket string per file in `files.txt`.
+- The long-bracket level is the lowest level whose close bracket first appears at the end of `content .. close`. Lua drops a newline right after the opening bracket, so the generator always writes one there.
+- The generator refuses content with a carriage return (Lua turns `\r` and `\r\n` in a long string into `\n`), bad or duplicate paths, and a bad version. It loads the result and compares every file before it prints the source.
+- `release.ps1` runs the generator in the test container (sandbox flags, repository read-only) and redirects stdout to the file. Then it runs `luac5.3 -p` on the installer and `lua5.3 tools/mkinstall.lua --check <version> releases/<version>`, which compares the embedded files with `files.txt` and the release copies.
 
 Add only the tarball to an existing release that has none:
 ```
@@ -101,7 +158,7 @@ pwsh tools/release.ps1 -TarballOnly 0.0.1a
 ```
 `-TarballOnly <version>` runs the same tar command and checks, and changes no other file. It stops if `release.tar.gz` already exists.
 
-`files.txt` lists the files of the release, not itself. A later installer reads it.
+`files.txt` lists the files of the release, not itself. The installer generator reads it.
 
 ## Project Structure
 
@@ -117,6 +174,7 @@ tests/run.lua           desktop test runner
 tests/*_test.lua        unit tests, one file per module
 tests/shim/             desktop replacements for OpenOS libraries
 tests/cases/            small hand-written HTML files with expected output
+tests/pages/            generated test pages (large.html: about 1 MB, from tools/genpage.lua)
 tests/real/             saved real-world pages
 tests/fuzz.lua          random and mutated HTML generator
 tests/docker/Dockerfile test image: alpine:3.20 with the lua5.3 package only
@@ -124,7 +182,10 @@ tests/docker/test.ps1   runs the tests in the container with the sandbox flags
 docs/intent/mvp.md      confirmed statement of intent
 docs/probe/             in-game probe outputs and FACTS.md (measured machine facts)
 docs/ingame/            in-game test steps, one file per task
-tools/release.ps1        publishes a release and updates releases/latest
+tools/release.ps1       publishes a release and updates releases/latest
+tools/installer.lua     installer template (install logic)
+tools/mkinstall.lua     builds and checks releases/<version>/html-install.lua (runs in the container)
+tools/genpage.lua       deterministic generator of tests/pages/large.html (runs in the container)
 releases/               published release folders and the latest symlink
 types/openos.lua        LuaLS type stubs for OpenOS
 .luarc.json             LuaLS settings (Lua 5.3, loads types/)
@@ -216,7 +277,7 @@ Whitespace collapses to one space outside `pre`. Lines wrap at word boundaries t
 
 There are no fixed size caps. The program measures and stops before damage happens.
 
-- `guard.tick()` is called in every loop of the tokenizer and layout. It measures time with `os.clock()`, which has sub-millisecond steps (`computer.uptime()` moves in 50 ms steps). It yields with `os.sleep(0)` when more than `YIELD_INTERVAL` (1 s) has passed since the last yield. This is well below the 5 second OpenOS timeout. `guard.reset()` restarts the yield timer, and the tests use it. `guard.settled_free()` is public. It yields a few times and returns the highest `freeMemory()` reading.
+- `guard.tick()` is called in every loop of the tokenizer and layout. It measures time with `os.clock()`, which has sub-millisecond steps (`computer.uptime()` moves in 50 ms steps). It yields with `os.sleep(0)` when more than `YIELD_INTERVAL` (1 s) has passed since the last yield. This is well below the 5 second OpenOS timeout. `guard.reset()` restarts the yield timer, and the tests use it. `guard.settled_free()` is public. It yields a few times and returns the highest `freeMemory()` reading. `guard.lowest_free()` returns the lowest `freeMemory()` reading that `tick()` and `settled_free()` saw since the last `reset()`, or nil. `reset()` clears it. `--stats` uses it for `lowest_free` and `peak_used`.
 - `guard.tick()` also checks `computer.freeMemory()` against `MEMORY_RESERVE` (128 KB). A reading can be up to about 200 KB too low, because garbage is not collected yet. Below the reserve, the guard yields a few times, reads `freeMemory()` again and uses the highest reading. Only when that reading is still below the reserve does it raise the controlled error "html: page too large for available memory (rendered N lines before stopping)".
 - The program never calls `collectgarbage`. OpenComputers removes it on purpose.
 - Before parsing, `bin/html.lua` compares the file size with free memory. If the file clearly cannot fit, it stops before reading.
@@ -281,7 +342,10 @@ return M
 - The shims copy the measured behavior in `docs/probe/FACTS.md` exactly, including the `unicode.*` results for invalid bytes, surrogates and U+200B.
 - The sandbox env has no `collectgarbage`, like the game.
 - Unit tests: tokenizer (each parsing rule), entities, layout (each row of the element table, wrapping, whitespace).
+- The runner helper `t.load_tool(name)` loads `tools/<name>.lua` the same way. `t.read_repo(path)` reads a file under `releases/<version>/` or `tools/` (read-only, no `..`). `t.release_versions()` lists the release folders. The env `io.open` limit stays as it is.
+- Installer tests: the template with a fake filesystem (install, upgrade, dry run, short space, read-only, write, read-back and rename failures), the long-bracket encoder, and every `releases/*/html-install.lua` against its release files (skipped while no release has one).
 - Corpus tests: each file in `tests/cases/` has an expected text output. Each file in `tests/real/` must render without an error and with more than zero lines.
+- Large page: `tests/pages/large.html` renders at width 160 with no uncontrolled error. The test prints its size, line count and CPU time. To make the page again: `docker run ... oc-html-test lua5.3 tools/genpage.lua > tests/pages/large.html` (same flags as `test.ps1`). The fixed seed gives the same bytes.
 - Fuzz tests: `tests/fuzz.lua` generates random tag soup and mutates files from the corpus (cuts, duplicated tags, random bytes). Every document must finish with lines or a controlled error. Any other error fails the run and saves the input to `tests/fuzz-failures/`.
 - In-game checks (manual, on a depth-8, a depth-4 and a depth-1 screen): the real-world pages, scrolling, quit prompt, resume, the low-memory error and the screen restore after an error.
 

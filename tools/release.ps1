@@ -3,6 +3,8 @@
 # Version: major.minor.patch, with suffix a (alpha), b (beta) or none (release).
 # Usage: pwsh tools/release.ps1 -TarballOnly <version>
 #   Only adds release.tar.gz to an existing release folder that has none.
+# A new release also gets html-install.lua, a one-file installer made by
+# tools/mkinstall.lua in the test container. files.txt does not list it.
 param(
   [Parameter(Position = 0)][string]$Version,
   [string]$TarballOnly
@@ -56,6 +58,37 @@ function New-ReleaseTarball($target) {
   Write-Host 'release.tar.gz:'
   $listed | ForEach-Object { Write-Host "  $_" }
   Write-Host "release.tar.gz size: $((Get-Item -LiteralPath $archive).Length) bytes"
+}
+
+# Runs a command in the test container with the sandbox flags of
+# tests/docker/test.ps1. The repository is mounted read-only.
+function Invoke-Sandbox {
+  $src = $root.Replace('\', '/')
+  docker run --rm --network none --read-only `
+    --cap-drop ALL --security-opt no-new-privileges --user 1000:1000 `
+    --memory 256m --pids-limit 64 `
+    -v "${src}:/src:ro" -w /src oc-html-test @args
+}
+
+# Creates releases/<version>/html-install.lua from files.txt with
+# tools/mkinstall.lua, then checks its syntax with luac5.3 and compares the
+# embedded files with the release copies.
+function New-ReleaseInstaller($version, $target) {
+  $installer = Join-Path $target 'html-install.lua'
+  if (Test-Path -LiteralPath $installer) { Fail 'html-install.lua already exists. It is never overwritten.' }
+  $tmp = "$installer.tmp"
+  # pwsh 7.4 and later keep the bytes of a native command redirected to a file.
+  Invoke-Sandbox lua5.3 tools/mkinstall.lua $version "releases/$version" > $tmp
+  if ($LASTEXITCODE -ne 0) {
+    Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    Fail 'tools/mkinstall.lua failed. No installer made.'
+  }
+  Move-Item -LiteralPath $tmp $installer
+  Invoke-Sandbox luac5.3 -p "releases/$version/html-install.lua"
+  if ($LASTEXITCODE -ne 0) { Fail 'html-install.lua failed the luac5.3 syntax check.' }
+  Invoke-Sandbox lua5.3 tools/mkinstall.lua --check $version "releases/$version"
+  if ($LASTEXITCODE -ne 0) { Fail 'html-install.lua differs from the release files.' }
+  Write-Host "html-install.lua size: $((Get-Item -LiteralPath $installer).Length) bytes"
 }
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
@@ -112,6 +145,7 @@ $utf8 = New-Object System.Text.UTF8Encoding($false)
 [IO.File]::WriteAllText((Join-Path $target 'files.txt'), (($files -join "`n") + "`n"), $utf8)
 
 New-ReleaseTarball $target
+New-ReleaseInstaller $version $target
 
 $link = Join-Path $releases 'latest'
 if (Test-Path -LiteralPath $link) { Remove-Item -LiteralPath $link -Recurse -Force }
@@ -143,5 +177,6 @@ if (-not $method) {
 Write-Host "release folder: releases/$version"
 Write-Host 'files:'
 $files | ForEach-Object { Write-Host "  $_" }
+Write-Host "installer: releases/$version/html-install.lua"
 Write-Host "built from commit: $commit"
 Write-Host "latest -> $version ($method)"

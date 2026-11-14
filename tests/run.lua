@@ -25,6 +25,22 @@ local function find_test_files()
   return files
 end
 
+-- Release folder names, listed once like the test files.
+local function find_release_versions()
+  local pipe = assert(io.popen("ls -1 releases", "r"))
+  local versions = {}
+  for name in pipe:lines() do
+    if name:match("^%d+%.%d+%.%d+[ab]?$") then
+      versions[#versions + 1] = name
+    end
+  end
+  pipe:close()
+  table.sort(versions)
+  return versions
+end
+
+local RELEASE_VERSIONS = find_release_versions()
+
 local SKIP = {}
 
 local function copy(t, except)
@@ -255,6 +271,41 @@ local function build_env()
       error(err, 0)
     end
     return chunk
+  end
+
+  -- Loads tools/<name>.lua as a text chunk in the env, without running it.
+  function test_api.load_tool(name)
+    if type(name) ~= "string" or not name:match("^[%w_]+$") then
+      error("load_tool: bad name " .. escape(name), 2)
+    end
+    local chunk, err = real_loadfile("tools/" .. name .. ".lua", "t", env)
+    if not chunk then
+      error(err, 0)
+    end
+    return chunk
+  end
+
+  -- The release folder names under releases/, sorted.
+  function test_api.release_versions()
+    return copy(RELEASE_VERSIONS)
+  end
+
+  -- Reads a file under releases/<version>/ or tools/, outside the env
+  -- io.open limit. Returns the content, or nil when the file is missing.
+  function test_api.read_repo(path)
+    local root = type(path) == "string" and (path:match("^releases/[^/]+/")
+      or path:match("^tools/"))
+    if not root or not path:match("^[%w_./-]+$") or path:find("..", 1, true)
+        or path:find("//", 1, true) then
+      error("read_repo: path not allowed " .. escape(path), 2)
+    end
+    local f = real_open(path, "rb")
+    if not f then
+      return nil
+    end
+    local s = f:read("a")
+    f:close()
+    return s
   end
 
   test_api.in_docker = in_docker

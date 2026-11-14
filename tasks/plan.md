@@ -75,6 +75,7 @@ Tasks with acceptance criteria are in `tasks/todo.md`.
 - `tests/real/` holds one GT:NH wiki page, one Wikipedia article and one plain documentation page.
 - Expected-output tests compare normalized text. The runner removes `\r`, removes trailing spaces and tabs on each line, and removes blank lines at the end of the output. Every other difference fails, including wrap points, leading spaces and blank lines between blocks.
 - The repository stores text files with LF line endings (`.gitattributes`: `* text=auto eol=lf`).
+- The one-file installer (`tools/installer.lua`, `tools/mkinstall.lua`, `releases/<version>/html-install.lua`) is release tooling, not part of Task 11 (entry point). It is built by `tools/release.ps1` for every release from 0.0.2a. See SPEC.md "Installer".
 
 ## Open Questions
 

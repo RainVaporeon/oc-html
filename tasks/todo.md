@@ -73,12 +73,12 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 
 **Acceptance criteria:**
 - [x] `tests/cases/basic.html` prints the expected text in the container.
-- [ ] In game on tier 3: `html basic.html` prints the text. A test page of about 100 KB finishes without a yield error.
+- [x] In game on tier 3: `html basic.html` prints the text. A test page of about 100 KB finishes without a yield error.
 - [ ] The free memory before and after, and the render time, are recorded in `tasks/plan.md` under a new "Measurements" section and compared with `docs/probe/FACTS.md`.
 
 **Verification:**
 - [x] Tests pass: `pwsh tests/docker/test.ps1`
-- [ ] Manual check (user, in game): run the two pages and report the numbers.
+- [x] Manual check (user, in game): run the two pages and report the numbers.
 
 **Dependencies:** Task 2
 
@@ -90,6 +90,7 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 - [ ] All tests pass.
 - [ ] The tracer bullet works in game.
 - [ ] Measurements confirm `docs/probe/FACTS.md`, or `FACTS.md` is updated.
+- [ ] In game with 0.0.2a: `tests/pages/large.html` (about 1 MB) renders or stops with the controlled memory message, and the stats files of it and of the Wikipedia page are returned (`docs/ingame/task3b.md`).
 - [ ] Review with the user before Phase 2.
 
 ## Phase 2: Parser robustness

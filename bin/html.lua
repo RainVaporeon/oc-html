@@ -17,14 +17,17 @@ local CHUNK = 4096
 local ERROR_LOG = "/tmp/html-error.log"
 -- /tmp is 64 KB.
 local ERROR_LOG_MAX = 8192
+-- Used when the screen width is not known.
+local DEFAULT_WIDTH = 80
 
 M.USAGE = [[
 Usage: html [options] <file>
 Renders a local HTML file as text.
 Options:
-  --width <n>  wrap lines at n columns (default: screen width)
-  --stats      print file size, line count, render time and free memory
-  --help       show this help]]
+  --width <n>         wrap lines at n columns (default: screen width)
+  --stats             print file size, line count, render time and memory
+  --stats-out <path>  also write the stats lines to a file (sets --stats)
+  --help              show this help]]
 
 -- Returns an options table, or nil and a controlled error message.
 function M.parse_args(argv)
@@ -36,6 +39,14 @@ function M.parse_args(argv)
       opts.help = true
     elseif a == "--stats" then
       opts.stats = true
+    elseif a == "--stats-out" then
+      i = i + 1
+      local p = argv[i]
+      if type(p) ~= "string" or p == "" then
+        return nil, "html: --stats-out needs a file path"
+      end
+      opts.stats = true
+      opts.stats_out = p
     elseif a == "--width" then
       i = i + 1
       local w = math.tointeger(tonumber(argv[i]))
@@ -85,34 +96,98 @@ function M.render(read, width)
   return lay.finish()
 end
 
-local function run(f, size, opts, deps)
-  local width = opts.width or deps.width
-  local free_before = opts.stats and guard.settled_free()
+-- Renders the file and prints the lines. Fills st with the stats values as
+-- it goes, so a render that stops still has the values up to that point.
+local function run(f, opts, deps, st)
+  if opts.stats then
+    st.free_before = guard.settled_free()
+  end
+  -- The lowest free reading starts here, after the settled reading.
   guard.reset()
   local clock0, wall0 = deps.clock(), deps.uptime and deps.uptime()
-  local lines = M.render(function() return f:read(CHUNK) end, width)
-  local clock1, wall1 = deps.clock(), deps.uptime and deps.uptime()
-  local free_after = opts.stats and guard.settled_free()
+  local lines = M.render(function() return f:read(CHUNK) end, st.width)
+  st.cpu = deps.clock() - clock0
+  if wall0 then
+    st.wall = deps.uptime() - wall0
+  end
+  st.lines = #lines
+  if opts.stats then
+    st.free_after = guard.settled_free()
+  end
   local out = deps.out
   for i = 1, #lines do
     guard.tick()
     out(plain(lines[i]))
   end
-  if opts.stats then
-    local err = deps.err
-    local used = free_before - free_after
-    err("stats: file=" .. tostring(size) .. " bytes")
-    err("stats: width=" .. width)
-    err("stats: lines=" .. #lines)
-    err(string.format("stats: cpu=%.3f s", clock1 - clock0))
-    if wall0 and wall1 then
-      err(string.format("stats: wall=%.2f s", wall1 - wall0))
-    end
-    err("stats: free_before=" .. free_before .. " bytes")
-    err("stats: free_after=" .. free_after .. " bytes")
-    err(string.format("stats: used=%d bytes (%.1f per line)", used,
-      used / math.max(1, #lines)))
+end
+
+local function per_line(bytes, lines)
+  if lines then
+    return string.format(" (%.1f per line)", bytes / math.max(1, lines))
   end
+  return ""
+end
+
+-- Returns the stats lines for the values in st. lowest is the lowest free
+-- memory reading of the guard, or nil.
+function M.stats_lines(st, lowest)
+  local s = {}
+  local function add(line)
+    s[#s + 1] = "stats: " .. line
+  end
+  add("file=" .. tostring(st.size) .. " bytes")
+  add("width=" .. tostring(st.width))
+  if st.lines then
+    add("lines=" .. st.lines)
+    add(string.format("cpu=%.3f s", st.cpu))
+    if st.wall then
+      add(string.format("wall=%.2f s", st.wall))
+    end
+  end
+  if st.free_before then
+    add("free_before=" .. st.free_before .. " bytes")
+    if st.free_after then
+      local delta = st.free_before - st.free_after
+      add("free_after=" .. st.free_after .. " bytes")
+      add(string.format("delta=%d bytes", delta) .. per_line(delta, st.lines))
+    end
+    lowest = lowest or st.free_after or st.free_before
+    local peak = st.free_before - lowest
+    add("lowest_free=" .. lowest .. " bytes")
+    add(string.format("peak_used=%d bytes", peak) .. per_line(peak, st.lines))
+  end
+  if st.stopped then
+    add("stopped=" .. st.stopped)
+  end
+  return s
+end
+
+-- Prints the stats lines to stderr and writes them to opts.stats_out.
+-- Returns false when the file write fails.
+local function report_stats(st, opts, deps)
+  local lines = M.stats_lines(st, st.free_before and guard.lowest_free())
+  for i = 1, #lines do
+    deps.err(lines[i])
+  end
+  if not opts.stats_out then
+    return true
+  end
+  local path = deps.resolve and deps.resolve(opts.stats_out) or opts.stats_out
+  local ok, done, why = false, nil, "no file access"
+  if deps.write_file then
+    ok, done, why = pcall(deps.write_file, path,
+      table.concat(lines, "\n") .. "\n")
+  end
+  if ok and done then
+    return true
+  end
+  if not ok then
+    why = done
+  end
+  why = tostring(why or "unknown reason"):match("^[^\n]*")
+  deps.err("html: cannot write stats file: " .. opts.stats_out .. " ("
+    .. why .. ")")
+  return false
 end
 
 -- Returns the file size from deps.size, or from seek.
@@ -137,6 +212,8 @@ end
 --   is_dir(path)           optional
 --   size(path)             optional, file size in bytes
 --   log(text)              optional, keeps the details of an unexpected error
+--   write_file(path, text) optional, for --stats-out. Returns true, or nil
+--                          and a reason
 -- Returns the exit code.
 function M.main(argv, deps)
   local opts, msg = M.parse_args(argv)
@@ -165,27 +242,35 @@ function M.main(argv, deps)
     end
     return traceback(tostring(e), 2)
   end
+  local st = { width = opts.width or deps.width or DEFAULT_WIDTH }
   local ok, result = xpcall(function()
-    run(f, file_size(f, path, deps), opts, deps)
+    st.size = file_size(f, path, deps)
+    run(f, opts, deps, st)
   end, handler)
   f:close()
-  if ok then
-    return 0
+  local code = 0
+  if not ok then
+    code = 1
+    if is_controlled(result) then
+      deps.err(result)
+      st.stopped = result
+    else
+      result = tostring(result)
+      local first = result:match("^[^\n]*")
+      if deps.log then
+        deps.log(result)
+        deps.err("html: unexpected error: " .. first .. " (details in "
+          .. ERROR_LOG .. ")")
+      else
+        deps.err("html: unexpected error: " .. first)
+      end
+      st.stopped = "html: unexpected error: " .. first
+    end
   end
-  if is_controlled(result) then
-    deps.err(result)
-    return 1
+  if opts.stats and not report_stats(st, opts, deps) then
+    code = 1
   end
-  result = tostring(result)
-  local first = result:match("^[^\n]*")
-  if deps.log then
-    deps.log(result)
-    deps.err("html: unexpected error: " .. first .. " (details in "
-      .. ERROR_LOG .. ")")
-  else
-    deps.err("html: unexpected error: " .. first)
-  end
-  return 1
+  return code
 end
 
 -- The links to OpenOS. Loaded only when the chunk runs as a program.
@@ -194,7 +279,7 @@ function M.game_deps()
   local filesystem = require("filesystem")
   local shell = require("shell")
   local term = require("term")
-  local width = 80
+  local width = DEFAULT_WIDTH
   local ok, w = pcall(term.getViewport)
   if ok and math.tointeger(w) and w > 0 then
     width = w
@@ -219,6 +304,18 @@ function M.game_deps()
         f:write(text)
         f:close()
       end
+    end,
+    write_file = function(path, text)
+      local f, why = io.open(path, "w")
+      if not f then
+        return nil, why
+      end
+      local done, werr = f:write(text)
+      f:close()
+      if not done then
+        return nil, werr
+      end
+      return true
     end,
   }
 end
