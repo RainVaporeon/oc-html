@@ -10,16 +10,18 @@ Source: `bin/html.lua`, `lib/html/viewer.lua`, `lib/html/guard.lua`. Index: `SPE
 4. It loads the modules, opens the source and renders. The status line shows the phase.
 
 - Print mode and the no-screen path do not open the TUI. They keep the order of `spec/cli.md`.
+- `html.fetch` loads before the TUI only when a local path is missing (it needs `looks_like_host`). For a URL argument it loads after the TUI opens, so an invalid URL (exit code 2) restores the screen and then prints its line.
 
 ## Status line during load
 
-- The status line shows the current phase:
-  - `loading modules`
-  - `connecting to <host>`
-  - `waiting for response`
-  - `redirect to <url>`
-  - `loading <name>` with a byte count: `12 KB`, or `12 KB of 98 KB` when the size is known (from the file size or `Content-Length`).
-- Status updates are rate-limited to one each 0.25 s.
+- The status line shows the current phase. The text is exact:
+  - `Loading <name>...` (the file argument or the URL argument, at once)
+  - `Loading modules...`
+  - `Connecting to <host>...`
+  - `Waiting for response...`
+  - `Redirect to <url>...`
+  - `Loading <name>... 12 KB` once bytes arrive, or `Loading <name>... 12 KB of 98 KB` when the size is known (from the file size or `Content-Length`). The count rounds up to whole KB. `<name>` is the final URL after a redirect.
+- Byte count updates are rate-limited to one each 0.25 s. A phase text shows at once. The last update at the end of the input shows the total and is not rate-limited.
 
 ## Content during load
 

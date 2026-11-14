@@ -190,8 +190,35 @@ local function new_screen(gpu, w, h)
   return s
 end
 
-local function view(lines, opts, gpu, pull)
-  local w, h = gpu.getResolution()
+-- Draws one line on row y: style pieces, then blanks to the right edge.
+local function draw_line(gpu, screen, color, w, line, y)
+  screen.bg(BLACK)
+  local x, pos, len = 1, 1, #line
+  local style = NORMAL
+  while pos <= len do
+    local b = byte(line, pos)
+    if b >= NORMAL and b <= PRE then
+      style = b
+      pos = pos + 1
+    else
+      local stop = find(line, STYLE_BYTES, pos)
+      local last = (stop or len + 1) - 1
+      local text = sub(line, pos, last)
+      screen.fg(color[style])
+      gpu.set(x, y, text)
+      x = x + wlen(text)
+      pos = last + 1
+    end
+  end
+  if x <= w then
+    gpu.fill(x, y, w - x + 1, 1, " ")
+  end
+end
+
+-- base: w, h, color and screen of the session (see M.open). start_prompt is
+-- true when the quit prompt is still on screen from the load.
+local function view(lines, opts, gpu, pull, base, start_prompt)
+  local w, h = base.w, base.h
   local rows = h - 1
   local count = #lines
   local max_top = math.max(1, count - rows + 1)
@@ -199,36 +226,14 @@ local function view(lines, opts, gpu, pull)
   local page = math.max(1, rows - 1)
   local top = 1
 
-  local color = gpu.getDepth() > 1 and COLORS or PLAIN
-  local screen = new_screen(gpu, w, h)
-  local set_fg, set_bg = screen.fg, screen.bg
+  local color = base.color
+  local screen = base.screen
 
   local title = opts.title or opts.file or ""
   title = title:gsub("%c", " ")
 
   local function draw_row(y)
-    local line = lines[top + y - 1] or ""
-    set_bg(BLACK)
-    local x, pos, len = 1, 1, #line
-    local style = NORMAL
-    while pos <= len do
-      local b = byte(line, pos)
-      if b >= NORMAL and b <= PRE then
-        style = b
-        pos = pos + 1
-      else
-        local stop = find(line, STYLE_BYTES, pos)
-        local last = (stop or len + 1) - 1
-        local text = sub(line, pos, last)
-        set_fg(color[style])
-        gpu.set(x, y, text)
-        x = x + wlen(text)
-        pos = last + 1
-      end
-    end
-    if x <= w then
-      gpu.fill(x, y, w - x + 1, 1, " ")
-    end
+    draw_line(gpu, screen, color, w, lines[top + y - 1] or "", y)
   end
 
   local function draw_rows(from, to)
@@ -334,6 +339,12 @@ local function view(lines, opts, gpu, pull)
   if opts.error and show_popup(opts.error) then
     return "interrupted"
   end
+  if start_prompt then
+    local result = confirm_quit()
+    if result then
+      return result
+    end
+  end
 
   local pending
   while true do
@@ -372,18 +383,29 @@ local function view(lines, opts, gpu, pull)
   end
 end
 
--- Shows lines until the user quits. Returns "quit" or "interrupted".
--- opts: title, file (shown when there is no title), no_rescale, error.
--- opts.error is a text shown in a popup over the first screen. Only Enter
--- closes it, then the user browses as usual.
--- An error inside restores the screen and is raised again.
-function M.run(lines, opts, deps)
+-- Opens a screen session: saves the GPU state, sets the resolution (unless
+-- opts.no_rescale) and reads the size. With opts.status it also clears the
+-- screen and draws that text on the status row. Returns a session:
+--   rows                     the number of line rows (the height minus 1)
+--   status(text)             redraws the status row only
+--   draw_lines(lines, count) draws the first screen from lines, which can
+--                            still grow. It reads lines[1] to lines[rows]
+--   poll()                   takes the queued events without waiting. Returns
+--                            "interrupted", "quit" (the user confirmed the
+--                            quit prompt) or nil. "q" shows the quit prompt
+--                            and the status row keeps it until the user
+--                            answers. Other keys are dropped
+--   show(lines, opts)        the interactive loop (see M.run). A quit prompt
+--                            still on screen is answered first
+--   close()                  restores the screen. A second call does nothing
+-- An error inside open restores the screen and is raised again.
+function M.open(deps, opts)
   opts = opts or {}
-  local gpu, term = deps.gpu, deps.term
+  local gpu, term, pull = deps.gpu, deps.term, deps.pull
   local old_w, old_h = gpu.getResolution()
   local old_fg, old_fg_palette = gpu.getForeground()
   local old_bg, old_bg_palette = gpu.getBackground()
-  local rescaled = false
+  local rescaled, closed = false, false
 
   local function restore()
     if rescaled then
@@ -396,7 +418,9 @@ function M.run(lines, opts, deps)
     term.setCursor(1, 1)
   end
 
-  local ok, result = pcall(function()
+  local base, s
+  local prompt, text = false, ""
+  local ok, err = pcall(function()
     if not opts.no_rescale then
       local max_w, max_h = gpu.maxResolution()
       if max_w ~= old_w or max_h ~= old_h then
@@ -404,11 +428,89 @@ function M.run(lines, opts, deps)
         gpu.setResolution(max_w, max_h)
       end
     end
-    return view(lines, opts, gpu, deps.pull)
+    local w, h = gpu.getResolution()
+    base = { w = w, h = h, screen = new_screen(gpu, w, h),
+      color = gpu.getDepth() > 1 and COLORS or PLAIN }
+    s = { rows = h - 1 }
+
+    function s.status(t)
+      text = t
+      if not prompt then
+        base.screen.status(t)
+      end
+    end
+
+    if opts.status then
+      base.screen.fg(WHITE)
+      base.screen.bg(BLACK)
+      gpu.fill(1, 1, w, h, " ")
+      s.status(opts.status)
+    end
   end)
+  if not ok then
+    pcall(restore)
+    error(err, 0)
+  end
 
-  local restored, restore_err = pcall(restore)
+  function s.draw_lines(lines, count)
+    for y = 1, s.rows do
+      draw_line(gpu, base.screen, base.color, base.w,
+        y <= count and lines[y] or "", y)
+    end
+  end
 
+  function s.poll()
+    if not pull then
+      return nil
+    end
+    while true do
+      local name, _, char, code = pull(0)
+      if name == nil then
+        return nil
+      end
+      if name == "interrupted"
+          or (name == "key_down" and char == CHAR_CTRL_C) then
+        return "interrupted"
+      end
+      if prompt then
+        if name == "key_down" then
+          if char == CHAR_Y or char == CHAR_UPPER_Y or is_enter(char, code) then
+            return "quit"
+          end
+          prompt = false
+          base.screen.status(text)
+        end
+      elseif classify(name, char, code) == "quit" then
+        prompt = true
+        base.screen.status(PROMPT)
+      end
+    end
+  end
+
+  function s.show(lines, o)
+    return view(lines, o or {}, gpu, pull, base, prompt)
+  end
+
+  function s.close()
+    if not closed then
+      closed = true
+      restore()
+    end
+  end
+
+  return s
+end
+
+-- Shows lines until the user quits. Returns "quit" or "interrupted".
+-- opts: title, file (shown when there is no title), no_rescale, error.
+-- opts.error is a text shown in a popup over the first screen. Only Enter
+-- closes it, then the user browses as usual.
+-- An error inside restores the screen and is raised again.
+function M.run(lines, opts, deps)
+  opts = opts or {}
+  local session = M.open(deps, { no_rescale = opts.no_rescale })
+  local ok, result = pcall(session.show, lines, opts)
+  local restored, restore_err = pcall(session.close)
   if not ok then
     error(result, 0)
   end

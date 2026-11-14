@@ -904,4 +904,211 @@ function T.waits_with_a_timeout()
   t.ok(pulls[1] > 0)
 end
 
+
+-- The screen session (spec/loading.md "Startup", "Content during load",
+-- "Keys during load" and "Exit") ---------------------------------------------
+
+local WHITE_BG = 0xFFFFFF
+
+-- Opens a session on a fake GPU. A function item in events ends one poll,
+-- and the viewer takes it at its next blocking pull.
+local function open_session(events, opts, dims)
+  local gpu, ctl = fake_gpu.new(dims or size(80, 10))
+  local term = fake_term()
+  local pull = queue(events or {}, ctl)
+  local s = viewer.open({ gpu = gpu, pull = pull, term = term }, opts)
+  return s, ctl, term, gpu
+end
+
+-- Ends a poll: the queue gives nil to pull(0) until the viewer pulls.
+local function gap() return function() end end
+
+-- The text of the status row, without trailing spaces.
+local function status_row(ctl, h)
+  return (ctl.row(h or 10):gsub("%s+$", ""))
+end
+
+function T.session_open_clears_and_draws_the_status_row()
+  local s, ctl = open_session({}, { status = "Loading a.html..." })
+  t.eq(s.rows, 9)
+  t.eq(status_row(ctl), "Loading a.html...")
+  local ch, fg, bg = ctl.cell(1, 10)
+  t.eq({ ch, fg, bg }, { "L", 0x000000, WHITE_BG })
+  for y = 1, 9 do
+    t.eq(ctl.row(y), string.rep(" ", 80), "row " .. y .. " is blank")
+  end
+  local first = ctl.calls
+  t.eq(first[#first][1], "set", "the status row is the last draw")
+end
+
+function T.session_open_without_status_draws_nothing()
+  local _, ctl = open_session({}, { no_rescale = true })
+  t.eq(ctl.count("set") + ctl.count("fill"), 0)
+end
+
+function T.session_status_redraws_only_the_status_row()
+  local s, ctl = open_session({}, { status = "one" })
+  ctl.clear_log()
+  s.status("two")
+  t.eq(status_row(ctl), "two")
+  t.eq(ctl.count("fill"), 0)
+  t.eq(ctl.count("copy"), 0)
+  for _, c in ipairs(ctl.find("set")) do
+    t.eq(c[3], 10, "set on the status row")
+  end
+end
+
+t.cases(T, "session_draw_lines", {
+  { "enough lines: rows 1 to 9, from the live table", { 20, 12 },
+    { rows = { "line 1", "line 2", "line 3", "line 4", "line 5", "line 6",
+      "line 7", "line 8", "line 9" }, status = "load" } },
+  { "more lines than rows: only the first rows draw",
+    { 30, 30 }, { rows = { "line 1", "line 2", "line 3", "line 4", "line 5",
+      "line 6", "line 7", "line 8", "line 9" }, status = "load" } },
+  { "fewer lines than rows: the rest is blank", { 3, 3 },
+    { rows = { "line 1", "line 2", "line 3", "", "", "", "", "", "" },
+      status = "load" } },
+}, function(input)
+  local s, ctl = open_session({}, { status = "load" })
+  local lines = make_lines(input[1])
+  s.draw_lines(lines, input[2])
+  local rows = {}
+  for y = 1, 9 do
+    rows[y] = (ctl.row(y):gsub("%s+$", ""))
+  end
+  return { rows = rows, status = status_row(ctl) }
+end)
+
+-- poll: "q" shows the quit prompt, y or Enter confirms, other keys cancel,
+-- other events and keys are dropped (spec/viewer.md "Quit").
+local PROMPT_TEXT = " Quit? (y/n)"
+
+t.cases(T, "session_poll", {
+  { "no events", {}, { nil, "load" } },
+  { "other keys and events are dropped", { key(DOWN), TOUCH, ESC, N },
+    { nil, "load" } },
+  { "q shows the prompt", { Q }, { nil, PROMPT_TEXT } },
+  { "q then y quits", { Q, Y }, { "quit", PROMPT_TEXT } },
+  { "q then Y (upper case) quits", { Q, key(21, 89) },
+    { "quit", PROMPT_TEXT } },
+  { "q then Enter quits", { Q, ENTER }, { "quit", PROMPT_TEXT } },
+  { "q then n cancels: the status comes back", { Q, N }, { nil, "load" } },
+  { "q then another key cancels", { Q, key(DOWN) }, { nil, "load" } },
+  { "a key_up does not answer the prompt", { Q, key_up(21, 121) },
+    { nil, PROMPT_TEXT } },
+  { "Ctrl+C", { CTRL_C }, { "interrupted", "load" } },
+  { "the interrupted event", { INTERRUPTED }, { "interrupted", "load" } },
+  { "Ctrl+C while the prompt shows", { Q, CTRL_C },
+    { "interrupted", PROMPT_TEXT } },
+  { "q while the prompt shows cancels it", { Q, Q }, { nil, "load" } },
+}, function(events)
+  local s, ctl = open_session(events, { status = "load" })
+  local result = s.poll()
+  return { result, status_row(ctl) }
+end)
+
+function T.session_status_keeps_the_prompt_until_the_user_answers()
+  local gpu, ctl = fake_gpu.new(size(80, 10))
+  local current = {}
+  local function pull()
+    local e = table.remove(current, 1)
+    if e then
+      return table.unpack(e)
+    end
+  end
+  local s = viewer.open({ gpu = gpu, pull = pull, term = fake_term() },
+    { status = "load" })
+  current = { Q }
+  t.eq(s.poll(), nil)
+  s.status("load 12 KB")
+  t.eq(status_row(ctl), PROMPT_TEXT, "the prompt stays")
+  current = { N }
+  t.eq(s.poll(), nil)
+  t.eq(status_row(ctl), "load 12 KB", "the newest status comes back")
+end
+
+function T.session_poll_without_pull_returns_nil()
+  local gpu = fake_gpu.new(size(80, 10))
+  local s = viewer.open({ gpu = gpu, term = fake_term() }, {})
+  t.eq(s.poll(), nil)
+end
+
+-- show answers a quit prompt that is still on screen from the load, then
+-- works as the interactive loop.
+t.cases(T, "session_show_after_a_prompt", {
+  { "y: quits at once", { Q, gap(), Y }, "quit" },
+  { "n: the page stays, then q and y quit", { Q, gap(), N, Q, Y }, "quit" },
+  { "Ctrl+C at the prompt", { Q, gap(), CTRL_C }, "interrupted" },
+}, function(events)
+  local s, ctl = open_session(events, { status = "load" })
+  s.poll()
+  local result = s.show(make_lines(30), { title = "T" })
+  return result
+end)
+
+function T.session_show_without_a_prompt_does_not_ask()
+  local s, ctl = open_session({ key(DOWN), Q, Y }, { status = "load" })
+  t.eq(s.show(make_lines(30), { title = "T" }), "quit")
+  t.eq(line_at(ctl, 1), 2, "scrolled by one line")
+end
+
+function T.session_show_shows_the_error_popup()
+  local s, ctl = open_session({ ENTER, Q, Y }, { status = "load" })
+  t.eq(s.show(make_lines(30), { title = "T", error = ERROR_TEXT }), "quit")
+  t.eq(line_at(ctl, 1), 1)
+end
+
+t.cases(T, "session_close", {
+  { "restores the resolution, colors and cursor once",
+    { dims = { width = 80, height = 25, max_width = 160, max_height = 50 },
+      closes = 2 },
+    { resolutions = { { 160, 50 }, { 80, 25 } }, cleared = 1,
+      cursor = { 1, 1 } } },
+  { "the same size: no resolution change, one restore",
+    { dims = size(80, 25), closes = 1 },
+    { resolutions = {}, cleared = 1, cursor = { 1, 1 } } },
+  { "no_rescale: no resolution change",
+    { dims = { width = 80, height = 25, max_width = 160, max_height = 50 },
+      opts = { no_rescale = true }, closes = 1 },
+    { resolutions = {}, cleared = 1, cursor = { 1, 1 } } },
+}, function(input)
+  local s, ctl, term = open_session({}, input.opts or { status = "x" },
+    input.dims)
+  for _ = 1, input.closes do
+    s.close()
+  end
+  local res = {}
+  for i, c in ipairs(ctl.find("setResolution")) do
+    res[i] = { c[2], c[3] }
+  end
+  return { resolutions = res, cleared = term.cleared, cursor = term.cursor }
+end)
+
+function T.session_open_error_restores_the_screen()
+  local gpu = fake_gpu.new({ width = 80, height = 25, max_width = 160,
+    max_height = 50 })
+  local broken = {}
+  for k, v in pairs(gpu) do
+    broken[k] = v
+  end
+  broken.getDepth = function() error("boom", 0) end
+  local term = fake_term()
+  t.raises(function()
+    viewer.open({ gpu = broken, term = term, pull = function() end },
+      { status = "x" })
+  end, "boom")
+  t.eq(term.cleared, 1)
+end
+
+function T.session_show_error_keeps_the_screen_for_close()
+  local s, _, term = open_session({}, { status = "x" })
+  t.raises(function()
+    -- The queue is empty, so the viewer raises at its first blocking pull.
+    s.show(make_lines(3), {})
+  end, "event queue empty")
+  t.eq(term.cleared, 0, "show does not restore")
+  s.close()
+  t.eq(term.cleared, 1)
+end
+
 return T

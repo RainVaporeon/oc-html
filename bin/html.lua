@@ -57,6 +57,9 @@ local DEFAULT_HOME = "/home"
 -- the worst case, so the check stops only a file that clearly cannot fit.
 -- The guard still protects the render of a smaller file.
 local SIZE_COST_MIN = 0.5
+-- Seconds between two key polls and two byte counts while loading. An event
+-- pull costs about 15 ms in game, so this is about 6% of the time.
+local LOAD_TICK = 0.25
 -- Exit codes.
 local EXIT_ERROR = 1
 local EXIT_USAGE = 2
@@ -223,13 +226,22 @@ local function plain(line)
 end
 
 -- Runs the tokenizer and layout over a reader. Returns the lines and the
--- document title or nil.
-function M.render(read, width)
+-- document title or nil. before_read(lines, count) is optional. It runs
+-- before each read, with the live lines table and the number of finished
+-- lines.
+function M.render(read, width, before_read)
   local loaded, why = load_modules()
   if not loaded then
     error(why, 0)
   end
   local lay = layout.new(width)
+  if before_read then
+    local inner = read
+    read = function()
+      before_read(lay.lines, lay.count())
+      return inner()
+    end
+  end
   local next_token = tokenizer.new(read, lay.count)
   local push = lay.push
   while true do
@@ -257,6 +269,11 @@ local function int_text(v)
   return tostring(math.tointeger(math.floor(v)) or v)
 end
 
+-- A byte count as whole kilobytes, rounded up: "12 KB".
+local function kb(n)
+  return int_text(math.ceil(n / 1024)) .. " KB"
+end
+
 -- Checks the input size, renders the input, and prints the lines or opens
 -- the viewer. source: read() (a chunk, or nil at the end; it raises on an
 -- error), size (bytes known before reading, or nil), kind ("file" or
@@ -264,18 +281,23 @@ end
 -- before the title, or nil) and tail_error() (optional, the error line of a
 -- body that ended at a read error, or nil). width is the output width: the
 -- layout wraps at width - 1 (see spec/cli.md "Output width"). done() is
--- called when the render ends. Returns the viewer result, or nil in print
--- mode.
-local function run(source, opts, deps, width, done)
-  local free = guard.settled_free()
+-- called when the render ends. ui is optional, for the loading screen:
+-- before_read(lines, count) and show(lines, opts) in place of deps.view.
+-- Returns the viewer result, or nil in print mode.
+local function run(source, opts, deps, width, done, ui)
   local size = source.size
-  if is_num(size) and size * SIZE_COST_MIN > free then
-    error("html: " .. source.kind .. " too large for available memory ("
-      .. int_text(size) .. " bytes, " .. int_text(free) .. " free)", 0)
+  -- Without a known size there is no check before reading, so no settle.
+  if is_num(size) then
+    local free = guard.settled_free()
+    if size * SIZE_COST_MIN > free then
+      error("html: " .. source.kind .. " too large for available memory ("
+        .. int_text(size) .. " bytes, " .. int_text(free) .. " free)", 0)
+    end
   end
   -- The lowest free reading starts here, after the settled reading.
   guard.reset()
-  local lines, title = M.render(source.read, width - 1)
+  local lines, title = M.render(source.read, width - 1,
+    ui and ui.before_read)
   done()
   local tail_error = source.tail_error and source.tail_error()
   if not opts.print then
@@ -285,7 +307,8 @@ local function run(source, opts, deps, width, done)
     if source.prefix then
       title = source.prefix .. (title or source.name)
     end
-    return deps.view(lines, { title = title, file = source.name,
+    return (ui and ui.show or deps.view)(lines, { title = title,
+      file = source.name,
       no_rescale = opts.no_rescale, error = tail_error })
   end
   local out = deps.out
@@ -376,7 +399,8 @@ end
 --   open(path, mode)       io.open
 --   traceback(msg)         debug.traceback, or a fake in the tests
 --   clock()                os.clock
---   uptime()               optional, wall time in seconds
+--   uptime()               optional, wall time in seconds. The loading
+--                          screen and the fetch use it in place of clock
 --   resolve(path)          optional, makes a path absolute
 --   home                   optional, the home directory for "~"
 --   exists(path)           optional
@@ -386,6 +410,10 @@ end
 --                          error. Returns true, or nil and a reason
 --   gpu                    optional, the GPU proxy. Without it, or without
 --                          a screen, the page prints as text
+--   open_screen(opts)      optional, opens the screen session with the
+--                          loading screen (see viewer.open). It takes
+--                          no_rescale and status. Without it, the viewer
+--                          opens after the render, through view
 --   view(lines, opts)      optional, runs the viewer (see viewer.run).
 --                          Returns "quit" or "interrupted"
 --   on_interrupt(fn)       optional, calls fn on Ctrl+C. Returns a function
@@ -413,19 +441,30 @@ function M.main(argv, deps)
     path = M.expand_home(arg, deps.home)
     path = deps.resolve and deps.resolve(path) or path
   end
+  -- The loading screen opens before the heavy modules load (see
+  -- spec/loading.md). Print mode and the no-screen path load them first.
+  local screen_w = not opts.print and (deps.view or deps.open_screen)
+    and screen_width(deps.gpu, opts.no_rescale)
+  local framed = screen_w and deps.open_screen ~= nil
   -- load_modules can fail while it builds its message (for example out of
   -- memory), so it runs protected and any failure gives one controlled line.
-  local called, loaded, load_why = pcall(load_modules)
-  if not called then
-    local built, line = pcall(function()
-      return "html: cannot load modules: " .. reason(loaded)
-    end)
-    loaded = nil
-    load_why = built and line or "html: cannot load modules"
+  local function load_all()
+    local called, loaded, load_why = pcall(load_modules)
+    if not called then
+      local built, line = pcall(function()
+        return "html: cannot load modules: " .. reason(loaded)
+      end)
+      loaded = nil
+      load_why = built and line or "html: cannot load modules"
+    end
+    return loaded, load_why
   end
-  if not loaded then
-    deps.err(load_why)
-    return EXIT_ERROR
+  if not framed then
+    local loaded, load_why = load_all()
+    if not loaded then
+      deps.err(load_why)
+      return EXIT_ERROR
+    end
   end
   if path and deps.exists and not deps.exists(path) then
     local fetch_loaded, fetch_why = load_fetch()
@@ -439,27 +478,35 @@ function M.main(argv, deps)
     end
     url, path, guessed = "http://" .. arg, nil, true
   end
-  if url then
+  -- Returns true, or nil, a controlled message and the exit code.
+  local function parse_target()
     local fetch_loaded, fetch_why = load_fetch()
     if not fetch_loaded then
-      deps.err(fetch_why)
-      return EXIT_ERROR
+      return nil, fetch_why, EXIT_ERROR
     end
     local u, why = fetch.parse_url(url)
     if not u then
-      deps.err(why)
-      return EXIT_USAGE
+      return nil, why, EXIT_USAGE
     end
     url = u.url
+    return true
+  end
+  if url then
+    if not framed then
+      local parsed, why, code = parse_target()
+      if not parsed then
+        deps.err(why)
+        return code
+      end
+    end
   elseif deps.is_dir and deps.is_dir(path) then
     deps.err("html: not a file: " .. arg)
     return EXIT_ERROR
   end
   local width = opts.width or deps.width or DEFAULT_WIDTH
   if not opts.print then
-    local w = deps.view and screen_width(deps.gpu, opts.no_rescale)
-    if w then
-      width = w
+    if screen_w then
+      width = screen_w
     else
       deps.err("html: no screen found, printing the text")
       opts.print = true
@@ -481,15 +528,27 @@ function M.main(argv, deps)
     end
   end
 
-  -- Ctrl+C during the render: the listener sets the flag during a yield,
-  -- and the next guard.tick raises INTERRUPTED.
-  local interrupted, remove = false, nil
+  -- Ctrl+C or a confirmed quit during load: the flags are set by the
+  -- listener or by the screen poll, and the next guard.tick raises
+  -- INTERRUPTED. A confirmed quit exits with code 0 and no message.
+  local interrupted, quit_requested, remove = false, false, nil
   if deps.on_interrupt then
     remove = deps.on_interrupt(function() interrupted = true end)
   end
-  guard.set_interrupt_check(function() return interrupted end)
+  local function stop_flag()
+    return interrupted or quit_requested
+  end
+  -- The guard loads with the other modules, so a framed run arms it later.
+  local function arm_guard()
+    guard.set_interrupt_check(stop_flag)
+  end
+  if not framed then
+    arm_guard()
+  end
   local function stop_listening()
-    guard.set_interrupt_check(nil)
+    if guard then
+      guard.set_interrupt_check(nil)
+    end
     if remove then
       local fn = remove
       remove = nil
@@ -529,9 +588,77 @@ function M.main(argv, deps)
     error(why, 0)
   end
 
+  -- The loading screen. The status line shows the phase (see
+  -- spec/loading.md). The status text is drawn only when it changes, and the
+  -- byte count at most once per LOAD_TICK. The same tick polls the keys.
+  local session
+  local name, total, bytes = arg, nil, 0
+  local in_body, phase_text, shown = false, "", nil
+  local last_tick, first_drawn = 0, false
+  local now = deps.uptime or deps.clock
+  local function load_text()
+    local text = "Loading " .. name .. "..."
+    if bytes > 0 then
+      text = text .. " " .. kb(bytes)
+      if is_num(total) then
+        text = text .. " of " .. kb(math.max(total, bytes))
+      end
+    end
+    return text
+  end
+  local function draw_status()
+    local text = in_body and load_text() or phase_text
+    if text ~= shown then
+      shown = text
+      session.status(text)
+    end
+  end
+  local function set_phase(text)
+    in_body, phase_text = false, text
+    draw_status()
+  end
+  local function tick_load()
+    local t = now()
+    if t - last_tick < LOAD_TICK then
+      return
+    end
+    last_tick = t
+    local key = session.poll()
+    if key == "interrupted" then
+      interrupted = true
+    elseif key == "quit" then
+      quit_requested = true
+    end
+    draw_status()
+  end
+  -- The phases of the fetch (see fetch.open).
+  local function progress(phase, u)
+    if phase == "connect" then
+      set_phase("Connecting to " .. u.host .. "...")
+    elseif phase == "response" then
+      set_phase("Waiting for response...")
+    elseif phase == "redirect" then
+      set_phase("Redirect to " .. u.url .. "...")
+    else
+      tick_load()
+    end
+  end
+  -- The first screen draws as soon as the lines fill it. After that only
+  -- the status line changes until the end of the input.
+  local ui = {
+    before_read = function(lines, count)
+      if not first_drawn and count >= session.rows then
+        first_drawn = true
+        session.draw_lines(lines, count)
+      end
+      tick_load()
+    end,
+  }
+
   -- Returns the source for run: the file, or the response of url.
   local function open_source()
     if not url then
+      name, total = arg, file_size(f, path, deps)
       return {
         read = function()
           local chunk, why = f:read(CHUNK)
@@ -540,19 +667,24 @@ function M.main(argv, deps)
           if chunk == nil and why then
             error("html: read error: " .. reason(why), 0)
           end
+          if chunk then
+            bytes = bytes + #chunk
+          end
           return chunk
         end,
-        size = file_size(f, path, deps), kind = "file", name = arg,
+        size = total, kind = "file", name = arg,
       }
     end
     local why
     resp, why = fetch.open(url, { internet = deps.internet,
       clock = fetch_clock, sleep = deps.sleep or os.sleep,
-      interrupted = function() return interrupted end }, info)
+      interrupted = stop_flag, progress = session and progress or nil },
+      info)
     if not resp then
       fetch_error(why)
     end
     open_file = resp
+    name, total = resp.final_url, resp.length
     local status = "HTTP " .. int_text(resp.status)
     if resp.is_error and opts.print then
       -- A notice, not an error: the body renders (decision D2).
@@ -565,6 +697,7 @@ function M.main(argv, deps)
         if chunk == nil and err then
           fetch_error(err)
         end
+        bytes = resp.bytes
         return chunk
       end,
       size = resp.length, kind = "page", name = resp.final_url,
@@ -577,11 +710,36 @@ function M.main(argv, deps)
     }
   end
 
+  local bad_code
   local ok, result = xpcall(function()
+    if framed then
+      session = deps.open_screen({ no_rescale = opts.no_rescale,
+        status = "Loading " .. name .. "..." })
+      shown = "Loading " .. name .. "..."
+      last_tick = now()
+      ui.show = session.show
+      set_phase("Loading modules...")
+      local loaded, why = load_all()
+      if not loaded then
+        error(why, 0)
+      end
+      arm_guard()
+      if url then
+        local parsed, parse_why, code = parse_target()
+        if not parsed then
+          bad_code = code
+          error(parse_why, 0)
+        end
+      end
+    end
     local source = open_source()
+    in_body = true
+    if session then
+      draw_status()
+    end
     return run(source, opts, deps, width, function()
       close_file()
-      if interrupted then
+      if stop_flag() then
         error(INTERRUPTED, 0)
       end
       -- The viewer handles Ctrl+C itself. Print mode keeps the check for
@@ -589,16 +747,29 @@ function M.main(argv, deps)
       if not opts.print then
         stop_listening()
       end
-    end)
+      if session then
+        draw_status()
+      end
+    end, session and ui or nil)
   end, handler)
   -- Each step runs alone, so a failure in one does not skip the other.
   pcall(stop_listening)
   pcall(close_file)
+  -- The screen is restored before any error line prints.
+  local restored, restore_err = true, nil
+  if session then
+    restored, restore_err = pcall(session.close)
+  end
 
   local code = 0
   if not ok and result == "interrupted" then
     -- A bare "interrupted" error is Ctrl+C from the event system.
     result = INTERRUPTED
+  end
+  if not ok and result == INTERRUPTED and quit_requested and not interrupted
+      then
+    -- The user confirmed the quit prompt during load.
+    ok, result = true, "quit"
   end
   if not ok then
     code = EXIT_ERROR
@@ -606,12 +777,17 @@ function M.main(argv, deps)
       deps.err(result)
       if result == INTERRUPTED then
         code = EXIT_INTERRUPTED
+      elseif bad_code then
+        code = bad_code
       end
     else
       report_unexpected(result, deps)
     end
   elseif result == "interrupted" then
     code = EXIT_INTERRUPTED
+  elseif not restored then
+    code = EXIT_ERROR
+    report_unexpected(restore_err, deps)
   end
   return code
 end
@@ -666,6 +842,10 @@ function M.game_deps()
     gpu = gpu,
     internet = internet,
     sleep = os.sleep,
+    open_screen = function(opts)
+      local viewer = need("html.viewer")
+      return viewer.open({ gpu = gpu, pull = event.pull, term = term }, opts)
+    end,
     view = function(lines, opts)
       local viewer = need("html.viewer")
       return viewer.run(lines, opts, { gpu = gpu, pull = event.pull,

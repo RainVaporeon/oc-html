@@ -315,4 +315,63 @@ function T.chunk_clears_package_loaded_before_require()
   t.eq(loaded_names(loaded), KEPT)
 end
 
+
+-- spec/loading.md "Content during load": render calls before_read(lines,
+-- count) before each read. lines is the live table that render returns at the
+-- end, and count is the number of finished lines in it.
+local function reader(text, size, counter)
+  local pos = 1
+  return function()
+    counter.reads = counter.reads + 1
+    if pos > #text then
+      return nil
+    end
+    local piece = text:sub(pos, pos + size - 1)
+    pos = pos + size
+    return piece
+  end
+end
+
+local PARAGRAPHS = string.rep("<p>alpha beta gamma delta</p>", 40)
+
+t.cases(T, "render_before_read", {
+  { "one chunk: a call before each of the 2 reads",
+    { text = "<p>one</p>", size = 4096 },
+    { 2, 2, true, true, true, true } },
+  { "many small chunks: one call per read, counts never fall",
+    { text = PARAGRAPHS, size = 7 },
+    { math.ceil(#PARAGRAPHS / 7) + 1, math.ceil(#PARAGRAPHS / 7) + 1,
+      true, true, true, true } },
+  { "empty input: one call with count 0",
+    { text = "", size = 10 },
+    { 1, 1, true, true, false, true } },
+  { "the hook does not change the lines",
+    { text = PARAGRAPHS, size = 13 },
+    { 1 + math.ceil(#PARAGRAPHS / 13), 1 + math.ceil(#PARAGRAPHS / 13), true, true, true, true } },
+}, function(input)
+  local counter = { reads = 0 }
+  local calls, counts, live, steady = 0, {}, nil, true
+  local lines, title = html.render(reader(input.text, input.size, counter),
+    20, function(table_, count)
+      calls = calls + 1
+      counts[calls] = count
+      live = live or table_
+      if table_ ~= live or #table_ ~= count then
+        steady = false
+      end
+    end)
+  local plain_counter = { reads = 0 }
+  local plain, plain_title = html.render(reader(input.text, input.size,
+    plain_counter), 20)
+  for i = 2, #counts do
+    if counts[i] < counts[i - 1] then
+      steady = false
+    end
+  end
+  return { calls, counter.reads, live == lines, steady,
+    counts[#counts] > counts[1],
+    table.concat(lines, "\n") == table.concat(plain, "\n")
+      and title == plain_title }
+end)
+
 return T

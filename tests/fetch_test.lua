@@ -720,4 +720,46 @@ t.cases(T, "error_status_body", {
   return out
 end)
 
+
+-- spec/loading.md "Status line during load": fetch.open reports its phases to
+-- an optional progress callback. "connect" and "redirect" come with the parsed
+-- URL, "response" when the connection is up, and "wait" before each sleep.
+
+local progress_rows = {
+  { "connect and response", { script = { body = { "x" } } },
+    { "connect " .. URL, "response" } },
+  { "slow connect: a wait for each poll",
+    { script = { connect_polls = 2, body = { "x" } } },
+    { "connect " .. URL, "wait", "wait", "response" } },
+  { "slow response: the wait comes after the response phase",
+    { script = { response_polls = 2, body = { "x" } } },
+    { "connect " .. URL, "response", "wait", "wait" } },
+  { "redirect: the target comes with the redirect phase",
+    { routes = { [URL] = { code = 302, headers = { Location = { "/b" } } },
+      ["http://example.com/b"] = { body = { "x" } } } },
+    { "connect " .. URL, "response", "redirect http://example.com/b",
+      "response" } },
+  { "a gap in the body is a wait",
+    { script = { body = { "a", "", "b" } }, read = true },
+    { "connect " .. URL, "response", "wait" } },
+  { "an error before the body still reports the phases",
+    { script = { connect_error = "refused" } }, { "connect " .. URL } },
+}
+
+t.cases(T, "progress_phases", progress_rows, function(input)
+  local card, ctl = internet.new({ default = input.script,
+    routes = input.routes })
+  local seen = {}
+  local l = links(card)
+  l.progress = function(phase, u)
+    seen[#seen + 1] = phase .. (u and (" " .. u.url) or "")
+  end
+  local resp = fetch.open(URL, l, {})
+  if resp and input.read then
+    read_all(resp)
+  end
+  finish(resp, ctl)
+  return seen
+end)
+
 return T

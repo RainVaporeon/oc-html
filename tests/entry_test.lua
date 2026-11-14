@@ -726,4 +726,557 @@ t.cases(T, "arguments_without_a_scheme", {
     { nf .. "~/example.com", 1 } },
 }, classify)
 
+
+-- The loading screen (spec/loading.md) ---------------------------------------
+-- These runs use the real viewer session over the fake GPU. The screen is 80
+-- columns by 10 rows: 9 line rows and the status row. A fake event queue
+-- gives each key poll its events (ticks). The clock moves by step seconds at
+-- each read, so each read can cause a poll.
+
+local viewer = require("html.viewer")
+local fake_screen = require("gpu")
+
+local ROWS, STATUS_ROW = 9, 10
+local BIG = "<title>Big</title>" .. LONG
+local KEY_Q = { "key_down", "kbd", 113, 16, "player" }
+local KEY_Y = { "key_down", "kbd", 121, 21, "player" }
+local KEY_N = { "key_down", "kbd", 110, 49, "player" }
+local KEY_ENTER = { "key_down", "kbd", 13, 28, "player" }
+local KEY_DOWN = { "key_down", "kbd", 0, 208, "player" }
+local KEY_CTRL_C = { "key_down", "kbd", 3, 46, "player" }
+local EV_INTERRUPTED = { "interrupted" }
+local QUIT_PROMPT = "Quit? (y/n)"
+
+-- The status texts so far that are not a byte count or the prompt, without
+-- repeats.
+local function phases(statuses)
+  local out = {}
+  for _, s in ipairs(statuses) do
+    if not s:find(" KB", 1, true) and not s:find(QUIT_PROMPT, 1, true)
+        and out[#out] ~= s then
+      out[#out + 1] = s
+    end
+  end
+  return out
+end
+
+local function index_of(list, value)
+  for i, v in ipairs(list) do
+    if v == value then
+      return i
+    end
+  end
+  return nil
+end
+
+local function is_plain(line)
+  return (line:gsub("[\1-\5]", ""):gsub("%s+$", ""))
+end
+
+-- Runs a fresh main (so the module upvalues start empty) with the real
+-- session. o: args, text (a local page), card (card options, for a URL),
+-- step (clock seconds per read), ticks (events for each key poll), show
+-- (events for the interactive loop, default q then y), on_read(n), deps.
+-- Returns the record.
+local function framed(o)
+  computer.test.reset()
+  local rec = { trace = {}, statuses = {}, err = {} }
+  local polls = 0
+  local function trace(x)
+    rec.trace[#rec.trace + 1] = x
+  end
+  local function advance()
+    if o.step then
+      computer.test.advance(o.step)
+    end
+  end
+  local gpu, gctl = fake_screen.new({ width = 80, height = STATUS_ROW,
+    max_width = 80, max_height = STATUS_ROW })
+  rec.gctl = gctl
+  local set = gpu.set
+  gpu.set = function(x, y, s)
+    if y == STATUS_ROW then
+      local text = s:gsub("%s+$", "")
+      trace("status")
+      if not rec.shown then
+        rec.statuses[#rec.statuses + 1] = text
+        if rec.body_started and (text:find("^Connecting")
+            or text:find("^Waiting") or text:find("^Redirect")) then
+          rec.late_phase = true
+        end
+      end
+    else
+      trace("row")
+    end
+    return set(x, y, s)
+  end
+  local term = { clear = function() trace("restore") end,
+    setCursor = function() end }
+
+  -- The queue: each poll (pull(0) until nil) gets o.ticks[n].
+  local batch, at = nil, 1
+  local show_events = o.show or { KEY_Q, KEY_Y }
+  local show_at = 1
+  local function pull(timeout)
+    if timeout ~= 0 then
+      local e = show_events[show_at]
+      show_at = show_at + 1
+      if not e then
+        error("test: no event for the viewer", 0)
+      end
+      return table.unpack(e)
+    end
+    if not batch then
+      polls = polls + 1
+      batch, at = (o.ticks or {})[polls] or {}, 1
+    end
+    local e = batch[at]
+    at = at + 1
+    if e then
+      return table.unpack(e)
+    end
+    batch = nil
+    return nil
+  end
+
+  local file, state = fake_file(o.text or PAGE, function(n)
+    advance()
+    if o.on_read then
+      o.on_read(n)
+    end
+  end)
+  rec.file = state
+  local file_read = file.read
+  file.read = function(self, n)
+    local chunk = file_read(self, n)
+    if chunk == nil then
+      trace("eof")
+    end
+    return chunk
+  end
+
+  local deps = {
+    out = function() end,
+    err = function(line)
+      trace("err")
+      rec.err[#rec.err + 1] = without_position(line)
+    end,
+    width = 50, open = function() return file end,
+    traceback = function(msg) return msg .. "\nstack traceback: (fake)" end,
+    clock = os.clock, uptime = computer.uptime, sleep = os.sleep,
+    gpu = gpu,
+    open_screen = function(so)
+      local s = viewer.open({ gpu = gpu, pull = pull, term = term }, so)
+      local show = s.show
+      s.show = function(lines, opts)
+        trace("show")
+        if not rec.shown then
+          -- The screen the load left, before the viewer draws.
+          rec.screen = gctl.screen()
+          rec.shown = { lines = lines, opts = opts }
+        end
+        return show(lines, opts)
+      end
+      return s
+    end,
+  }
+  if o.card then
+    local card, ctl = internet.new(o.card)
+    rec.ctl = ctl
+    local request = card.request
+    card.request = function(...)
+      trace("request")
+      local h, why = request(...)
+      if h then
+        local read = h.read
+        h.read = function(...)
+          advance()
+          local s, e = read(...)
+          if s == nil and e == nil then
+            trace("eof")
+          elseif s ~= nil and not rec.body_started then
+            rec.body_started = true
+            trace("body")
+          end
+          return s, e
+        end
+      end
+      return h, why
+    end
+    deps.internet = card
+  end
+  for k, v in pairs(o.deps or {}) do
+    deps[k] = v
+  end
+
+  local chunk = t.load_bin("html")({})
+  local real_require = _G.require
+  _G.require = function(name)
+    if name == "html.tokenizer" then
+      trace("require")
+    end
+    return real_require(name)
+  end
+  local args = {}
+  for i, a in ipairs(o.args or { "page.html" }) do
+    args[i] = a
+  end
+  args.n = #args
+  local ok, code = pcall(chunk.main, args, deps)
+  _G.require = real_require
+  if not ok then
+    error(code, 0)
+  end
+  rec.code = code
+  rec.duration = computer.uptime()
+  return rec
+end
+
+-- The markers of the exit: the screen restore and the stderr lines.
+local function exit_marks(rec)
+  local out = {}
+  for _, x in ipairs(rec.trace) do
+    if x == "restore" or x == "err" then
+      out[#out + 1] = x
+    end
+  end
+  return out
+end
+
+-- The KB numbers of the byte-count statuses, and the last such status.
+local function counts(rec)
+  local nums, last = {}, nil
+  for _, s in ipairs(rec.statuses) do
+    local n = s:match("(%d+) KB")
+    if n then
+      nums[#nums + 1] = tonumber(n)
+      last = s
+    end
+  end
+  return nums, last
+end
+
+-- The values that a row can name, from one run.
+local function observe(rec)
+  local nums, last = counts(rec)
+  local rising = #nums > 1
+  for i = 2, #nums do
+    if nums[i] < nums[i - 1] then
+      rising = false
+    end
+  end
+  local request_at = index_of(rec.trace, "request")
+  local require_at = index_of(rec.trace, "require")
+  local status_at = index_of(rec.trace, "status")
+  local first_row = index_of(rec.trace, "row")
+  local eof_at = index_of(rec.trace, "eof")
+  local show_at = index_of(rec.trace, "show")
+  local rows_equal = true
+  if rec.screen then
+    for y = 1, ROWS do
+      if is_plain(rec.screen[y]) ~= is_plain(rec.shown.lines[y] or "") then
+        rows_equal = false
+      end
+    end
+  end
+  local before_show = 0
+  for i, x in ipairs(rec.trace) do
+    if show_at and i >= show_at then
+      break
+    end
+    if x == "row" then
+      before_show = before_show + 1
+    end
+  end
+  local closed = true
+  for _, h in ipairs(rec.ctl and rec.ctl.handles or {}) do
+    if h.closed ~= 1 then
+      closed = false
+    end
+  end
+  return {
+    code = rec.code,
+    err = rec.err,
+    phases = phases(rec.statuses),
+    first_status = rec.statuses[1],
+    status_first = status_at ~= nil
+      and (not require_at or status_at < require_at)
+      and (not request_at or status_at < request_at),
+    marks = exit_marks(rec),
+    early_draw = before_show > 0 and (eof_at == nil or first_row < eof_at),
+    early_rows_equal = rows_equal,
+    row_draws_before_show = before_show,
+    shown = rec.shown ~= nil,
+    title = rec.shown and rec.shown.opts.title or false,
+    last_kb = last,
+    kb_rising = rising,
+    updates = #nums,
+    within_rate = #nums - 1 <= rec.duration / 0.25 + 1,
+    phases_before_body = not rec.late_phase,
+    handles_closed = closed,
+    sleeps = computer.test.sleeps(),
+    reads = rec.file.reads,
+  }
+end
+
+-- Registers T[name], a table test over framed runs. Each row compares only
+-- the fields that its expected table names.
+local function framed_cases(name, rows)
+  for _, row in ipairs(rows) do
+    local keys = {}
+    for k in pairs(row[3]) do
+      keys[#keys + 1] = k
+    end
+    row[2].keys = keys
+  end
+  t.cases(T, name, rows, function(input)
+    local obs, out = observe(framed(input)), {}
+    for _, k in ipairs(input.keys) do
+      out[k] = obs[k]
+    end
+    return out
+  end)
+end
+
+-- A page script served in pieces of size bytes. extra replaces fields.
+local function served(body, size, extra)
+  local s = { headers = { ["Content-Type"] = { "text/html" } },
+    body = internet.pieces(body, size, false) }
+  for k, v in pairs(extra or {}) do
+    s[k] = v
+  end
+  return s
+end
+
+local function with_length(body, size)
+  return served(body, size, { headers = { ["Content-Type"] = { "text/html" },
+    ["Content-Length"] = { tostring(#body) } } })
+end
+
+-- "Startup" rule 3: the status line draws before the modules load and before
+-- the request. "Status line during load": the phases.
+local URL_FIRST = "Loading " .. URL .. "..."
+framed_cases("loading_startup_order_and_phases", {
+  { "local file: status first, then modules, then the page",
+    { text = PAGE },
+    { code = 0, status_first = true, first_status = "Loading page.html...",
+      phases = { "Loading page.html...", "Loading modules...",
+        "Loading page.html..." } } },
+  { "URL: status first, before the request and the modules",
+    { args = { URL }, card = { default = served(PAGE, 10) } },
+    { code = 0, status_first = true, first_status = URL_FIRST,
+      phases = { URL_FIRST, "Loading modules...",
+        "Connecting to example.com...", "Waiting for response...",
+        URL_FIRST } } },
+  { "URL: the phases come before the body, also on a slow server",
+    { args = { URL }, step = 0.1, card = { default = served(PAGE, 10,
+      { connect_polls = 3, response_polls = 3 }) } },
+    { code = 0, phases_before_body = true,
+      phases = { URL_FIRST, "Loading modules...",
+        "Connecting to example.com...", "Waiting for response...",
+        URL_FIRST } } },
+  { "redirect: its target shows before the body",
+    { args = { URL }, card = { routes = {
+        [URL] = { code = 302, headers = { Location = { "/next" } } },
+        ["http://example.com/next"] = served(PAGE, 10),
+      } } },
+    { code = 0, phases_before_body = true,
+      phases = { URL_FIRST, "Loading modules...",
+        "Connecting to example.com...", "Waiting for response...",
+        "Redirect to http://example.com/next...",
+        "Waiting for response...", "Loading http://example.com/next..." } } },
+  { "guessed URL: the frame shows the argument",
+    { args = { "example.com" }, deps = { exists = no },
+      card = { routes = { ["http://example.com"] = served(PAGE, 10) } } },
+    { code = 0, status_first = true, first_status = "Loading example.com..." } },
+})
+
+-- "Status line during load": byte counts, with the size from the file or from
+-- Content-Length, and the rate limit of one update each 0.25 s. The last
+-- update is not limited: it shows the total.
+local KB = #BIG // 1024 + 1
+local OF = " " .. KB .. " KB of " .. KB .. " KB"
+framed_cases("loading_byte_counts", {
+  { "file: the size is known, the last count is the size",
+    { text = BIG, step = 0.1 },
+    { code = 0, kb_rising = true, within_rate = true,
+      last_kb = "Loading page.html..." .. OF } },
+  { "page with Content-Length: the last count is the size",
+    { args = { URL }, step = 0.1, card = { default = with_length(BIG, 1000) } },
+    { code = 0, kb_rising = true, within_rate = true,
+      last_kb = "Loading " .. URL .. "..." .. OF } },
+  { "page without Content-Length: a count and no total",
+    { args = { URL }, step = 0.1, card = { default = served(BIG, 1000) } },
+    { code = 0, kb_rising = true, within_rate = true,
+      last_kb = "Loading " .. URL .. "... " .. KB .. " KB" } },
+  { "a fast read: the counts do not run faster than the limit",
+    { text = BIG, step = 0.01 },
+    { code = 0, within_rate = true, updates = 1 } },
+  { "a small page: one update, at the end",
+    { text = PAGE, step = 0.01 },
+    { code = 0, updates = 1 } },
+})
+
+-- "Content during load": the first screen draws when the lines fill it, and
+-- not before. A page with fewer lines than rows draws once, at the end.
+framed_cases("loading_first_screen", {
+  { "file: draws before the end of input, rows equal the final rows",
+    { text = BIG, step = 0.01 },
+    { code = 0, early_draw = true, early_rows_equal = true, shown = true,
+      title = "Big" } },
+  { "large page in small pieces: draws before the end of input",
+    { args = { URL }, step = 0.01, card = { default = served(BIG, 100) } },
+    { code = 0, early_draw = true, early_rows_equal = true, shown = true } },
+  { "small page: no draw before the viewer",
+    { text = PAGE },
+    { code = 0, early_draw = false, row_draws_before_show = 0,
+      shown = true } },
+  { "a page that does not fill the screen: no draw before the viewer",
+    { text = string.rep("<p>x</p>", 4), step = 0.01 },
+    { code = 0, early_draw = false, row_draws_before_show = 0 } },
+})
+
+-- "Keys during load": Ctrl+C exits at once with code 130. The screen is
+-- restored before the stderr line (spec "Exit").
+local INTERRUPT_EXIT = { code = 130, err = { "html: interrupted" },
+  marks = { "restore", "err" }, shown = false, handles_closed = true }
+framed_cases("loading_ctrl_c", {
+  { "during connect: key_down char 3",
+    { args = { URL }, card = { default = { connect_polls = 1000 } },
+      ticks = { { KEY_CTRL_C } } }, INTERRUPT_EXIT },
+  { "during the wait for the response: the interrupted event",
+    { args = { URL }, card = { default = { response_polls = 1000 } },
+      ticks = { { EV_INTERRUPTED } } }, INTERRUPT_EXIT },
+  { "during the body",
+    { args = { URL }, step = 0.1, card = { default = served(BIG, 500) },
+      ticks = { {}, { KEY_CTRL_C } } }, INTERRUPT_EXIT },
+  { "during the render of a file",
+    { text = BIG, step = 0.3, ticks = { { EV_INTERRUPTED } } },
+    INTERRUPT_EXIT },
+  { "while the quit prompt shows",
+    { text = BIG, step = 0.3, ticks = { { KEY_Q }, { KEY_CTRL_C } } },
+    INTERRUPT_EXIT },
+})
+
+-- "Keys during load": q shows the prompt and loading goes on. y or Enter stops
+-- loading with code 0. Any other key cancels and loading goes on. Other keys
+-- are dropped.
+framed_cases("loading_quit_prompt", {
+  { "q then y: loading stops, exit 0, no error line",
+    { text = BIG, step = 0.3, ticks = { { KEY_Q }, { KEY_Y } } },
+    { code = 0, err = {}, marks = { "restore" }, shown = false,
+      reads = 3 } },
+  { "q then Enter: loading stops",
+    { text = BIG, step = 0.3, ticks = { { KEY_Q }, { KEY_ENTER } } },
+    { code = 0, err = {}, marks = { "restore" }, shown = false } },
+  { "q and y in one poll: loading stops",
+    { text = BIG, step = 0.3, ticks = { { KEY_Q, KEY_Y } } },
+    { code = 0, shown = false } },
+  { "q then n: loading goes on and the page shows",
+    { text = BIG, step = 0.3, ticks = { { KEY_Q }, { KEY_N } } },
+    { code = 0, err = {}, shown = true, title = "Big",
+      marks = { "restore" }, reads = 9 } },
+  { "q then another key cancels",
+    { text = BIG, step = 0.3, ticks = { { KEY_Q }, { KEY_DOWN } } },
+    { code = 0, shown = true, title = "Big" } },
+  { "other keys alone are dropped, no prompt",
+    { text = BIG, step = 0.3, ticks = { { KEY_DOWN, KEY_N } } },
+    { code = 0, shown = true, title = "Big" } },
+  { "the prompt is still open at the end of the load: the viewer asks",
+    { text = PAGE, step = 0.3, ticks = { { KEY_Q } }, show = { KEY_Y } },
+    { code = 0, shown = true, marks = { "restore" } } },
+  { "the prompt at the end of the load, cancelled: the page shows",
+    { text = PAGE, step = 0.3, ticks = { { KEY_Q } },
+      show = { KEY_N, KEY_Q, KEY_Y } },
+    { code = 0, shown = true, marks = { "restore" } } },
+  { "q then y during a download: the handle closes",
+    { args = { URL }, step = 0.1, card = { default = served(BIG, 500) },
+      ticks = { { KEY_Q }, { KEY_Y } } },
+    { code = 0, shown = false, handles_closed = true } },
+})
+
+-- "Exit": the screen is restored before the error line, on every error path.
+framed_cases("loading_error_exits", {
+  { "fetch error: the frame showed, restore, then one line",
+    { args = { URL }, card = { default = { connect_error = "refused" } } },
+    { code = 1, marks = { "restore", "err" }, shown = false,
+      first_status = URL_FIRST,
+      err = { "html: cannot connect: " .. URL .. ": refused" } } },
+  { "memory stop after the first screen: restore, then one line",
+    { text = BIG, step = 0.01,
+      on_read = function(n)
+        if n == 4 then
+          computer.test.set_free(100 * 1024)
+        end
+      end },
+    { code = 1, marks = { "restore", "err" }, early_draw = true,
+      shown = false } },
+  { "unexpected error in the render: restore, then one line",
+    { text = BIG, step = 0.01,
+      on_read = function(n)
+        if n == 3 then
+          error("boom", 0)
+        end
+      end },
+    { code = 1, marks = { "restore", "err" },
+      err = { "html: unexpected error: boom" } } },
+  { "read error of a file: restore, then one line",
+    { text = BIG, deps = { open = function()
+        local f = fake_file(BIG)
+        f.read = function() return nil, "disk gone" end
+        return f
+      end } },
+    { code = 1, marks = { "restore", "err" },
+      err = { "html: read error: disk gone" } } },
+  { "invalid URL (parsed after the frame): restore, exit 2",
+    { args = { "http://" }, card = { default = served(PAGE, 10) } },
+    { code = 2, marks = { "restore", "err" },
+      err = { "html: invalid URL: http://" } } },
+  { "a failed fetch for a guessed URL names the argument",
+    { args = { "example.com" }, deps = { exists = no },
+      card = { default = { connect_error = "refused" } } },
+    { code = 1, marks = { "restore", "err" },
+      err = { "html: cannot connect: http://example.com: refused "
+        .. "(no local file named example.com)" } } },
+})
+
+-- "Startup": print mode and the no-screen path do not open the screen.
+local function print_run(args, no_gpu)
+  local gpu, gctl = fake_screen.new({ width = 80, height = STATUS_ROW })
+  local opened = false
+  local code, rec = run(args, nil, {
+    gpu = (not no_gpu) and gpu or false,
+    open_screen = function() opened = true end,
+  })
+  local draws = 0
+  for _, name in ipairs({ "set", "fill", "copy", "setResolution",
+    "setForeground", "setBackground" }) do
+    draws = draws + gctl.count(name)
+  end
+  return { code = code, calls = draws, opened = opened,
+    views = #rec.views, text = #rec.out > 0 }
+end
+
+local NO_DRAW = { code = 0, calls = 0, opened = false, views = 0, text = true }
+
+t.cases(T, "loading_print_draws_nothing", {
+  { "--print", { "--print", "page.html" }, NO_DRAW },
+  { "--width turns on --print", { "--width", "20", "page.html" }, NO_DRAW },
+}, function(args) return print_run(args, false) end)
+
+t.cases(T, "loading_no_screen_draws_nothing", {
+  { "no GPU: the text prints", { "page.html" }, NO_DRAW },
+}, function(args) return print_run(args, true) end)
+
+-- spec/guard.md "Size check before reading": with no known size there is no
+-- check before reading, so no settle (each settle sleeps).
+framed_cases("loading_settle_only_with_a_known_size", {
+  { "page without Content-Length: no settle sleeps",
+    { args = { URL }, card = { default = served(PAGE, 100) } },
+    { code = 0, sleeps = 0 } },
+  { "page with Content-Length: the settle sleeps",
+    { args = { URL }, card = { default = with_length(PAGE, 100) } },
+    { code = 0, sleeps = 11 } },
+})
+
 return T

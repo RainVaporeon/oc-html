@@ -190,4 +190,87 @@ page_rows[#page_rows + 1] = { "large page through the card",
 
 t.cases(T, "real_pages_render", page_rows, check_page)
 
+
+-- C2: the loading screen does not change the page (spec/loading.md "Content
+-- during load"). A viewer run with the screen session gives the same lines
+-- and title as a run that opens the viewer after the render, from a file and
+-- from the card.
+
+-- Runs a document in viewer mode. framed: the screen session opens before the
+-- render, and the session stub keeps the final lines. Returns the plain text,
+-- the title and the exit code.
+local function run_view(doc, framed, size, source)
+  local got = {}
+  local deps = {
+    out = function() end,
+    err = function(line) got.err = line end,
+    width = 80,
+    traceback = function(msg) return msg end,
+    clock = os.clock, uptime = computer.uptime, sleep = os.sleep,
+    gpu = gpu(41),
+  }
+  local function keep(lines, opts)
+    got.lines, got.title = lines, opts.title
+    return "quit"
+  end
+  if framed then
+    deps.open_screen = function()
+      return { rows = 24, status = function() end,
+        draw_lines = function() end, poll = function() end, show = keep,
+        close = function() end }
+    end
+  else
+    deps.view = keep
+  end
+  local args
+  if source == "local" then
+    args = { "page.html" }
+    deps.open = function() return (chunked_file(doc, size)) end
+  else
+    args = { URL }
+    deps.internet = internet.new({ default = { headers = {
+      ["Content-Type"] = { "text/html" } },
+      body = internet.pieces(doc, size, true) } })
+    deps.open = function() error("a URL opens no file") end
+  end
+  args.n = #args
+  local code = html.main(args, deps)
+  local text = {}
+  for i, line in ipairs(got.lines or {}) do
+    text[i] = line:gsub("[\1-\5]", "")
+  end
+  return table.concat(text, "\n"), got.title, code
+end
+
+local framed_rows = {}
+for _, name in ipairs(t.list_cases()) do
+  framed_rows[#framed_rows + 1] = { name .. " (expected text)",
+    { doc = read_file("tests/cases/" .. name .. ".html"),
+      expected = normalize(read_file("tests/cases/" .. name .. ".txt")) },
+    { same = true, matches = true } }
+end
+for _, name in ipairs({ "wiki", "wikipedia", "manual" }) do
+  framed_rows[#framed_rows + 1] = { name .. " (real page)",
+    { doc = read_file("tests/real/" .. name .. ".html") },
+    { same = true, matches = true } }
+end
+
+t.cases(T, "framed_run_gives_the_same_page", framed_rows,
+  function(input, size)
+    local same, matches = true, true
+    for _, source in ipairs({ "local", "card" }) do
+      local text, title, code = run_view(input.doc, true, size, source)
+      local old_text, old_title, old_code = run_view(input.doc, false, size,
+        source)
+      if text ~= old_text or title ~= old_title or code ~= old_code
+          or code ~= 0 then
+        same = false
+      end
+      if input.expected and normalize(text) ~= input.expected then
+        matches = false
+      end
+    end
+    return { same = same, matches = matches }
+  end, { sizes = { 1, 4096 } })
+
 return T

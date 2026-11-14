@@ -209,6 +209,9 @@ local function wait_response(h, url, links)
     if clock() - t0 > CONNECT_TIMEOUT then
       return "html: timed out connecting to " .. url
     end
+    if links.progress then
+      links.progress("wait")
+    end
     links.sleep(WAIT_STEP)
     return nil
   end
@@ -225,6 +228,9 @@ local function wait_response(h, url, links)
     if stop then
       return false, stop
     end
+  end
+  if links.progress then
+    links.progress("response")
   end
   while true do
     local ok, code, message, headers = pcall(h.response)
@@ -343,6 +349,9 @@ local function make_response(h, u, code, message, headers, links, info)
         return nil, "html: timed out reading " .. u.url .. " ("
           .. resp.bytes .. " bytes received)"
       end
+      if links.progress then
+        links.progress("wait")
+      end
       links.sleep(WAIT_STEP)
     end
   end
@@ -396,7 +405,10 @@ end
 
 -- Opens url with the card in links.internet and follows redirects.
 -- links: internet (the card proxy), clock() (wall time in seconds),
--- sleep(seconds), interrupted() (true after Ctrl+C).
+-- sleep(seconds), interrupted() (true after Ctrl+C), and an optional
+-- progress(phase, u): "connect" (u is the parsed URL), "redirect" (u is the
+-- parsed target), "response" (the connection is up) and "wait" (a wait loop
+-- is about to sleep). It does not stop the fetch: use interrupted() for that.
 -- info is filled as the request goes: url, redirects, status, started and
 -- ended (clock values).
 -- Returns a response (status, message, is_error, length, content_type,
@@ -422,6 +434,9 @@ function M.open(url, links, info)
       return nil, why
     end
     info.url = u.url
+    if links.progress then
+      links.progress(info.redirects == 0 and "connect" or "redirect", u)
+    end
     local ok, h, reason = pcall(card.request, u.url, nil, HEADERS)
     if not ok or not h then
       return nil, "html: cannot fetch " .. u.url .. ": "
