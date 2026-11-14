@@ -1,4 +1,10 @@
+# Editor files
 *.un~
 *.swp
+*~
+# Test output written by the container
 tests/fuzz-failures/
+# In-game data the user copies back (local only)
 datacollection/
+# Temporary installer output of tools/release.ps1
+*.tmp

@@ -1,10 +1,12 @@
-# Implementation Plan: oc-html MVP
+# Implementation Plan: oc-html MVP (archived)
+
+Status: closed. The MVP shipped as 0.1.0a, then 0.1.1a. This file was `tasks/plan.md`. New work is in `tasks/todo.md`.
 
 ## Overview
 
 Build the MVP in `SPEC.md`: `html <file>` renders a local HTML file as text on an OpenComputers screen and never crashes on bad input. The plan builds the test sandbox first, then a thin end-to-end path to test in game early, then hardens the parser, then the layout, then the viewer.
 
-Tasks with acceptance criteria are in `tasks/todo.md`.
+Tasks with acceptance criteria are in `tasks/archive/mvp-todo.md` (was `tasks/todo.md`).
 
 ## Architecture Decisions
 
@@ -41,13 +43,13 @@ Tasks with acceptance criteria are in `tasks/todo.md`.
 - [x] Task 8: Whitespace, pre and word wrap
 - [x] Task 9: Test corpus with expected output and real pages
 
-### Checkpoint 3: Correct text output
+### Checkpoint 3: Correct text output — done (the in-game real-page check is open, see `tasks/todo.md`)
 
 ### Phase 4: Viewer and entry point
 - [x] Task 10: Viewer: drawing, status line, scrolling, colors by depth
 - [x] Task 11: Entry point: quit prompt, error boundary, screen restore, usage
 
-### Checkpoint 4: MVP complete (all SPEC.md success criteria)
+### Checkpoint 4: MVP complete (all SPEC.md success criteria) — closed by the user on 2026-11-14
 
 ## Parallel Work
 

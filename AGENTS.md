@@ -2,6 +2,10 @@
 
 A minimalistic and lightweight HTML viewer, intended for OpenComputers running on Lua 5.3 architecture to access and browse HTML files.
 
+## status
+
+Release 0.1.1a renders local files only. Remote files, navigation and the subfeatures below are planned; see `tasks/todo.md`. Specification: `SPEC.md`. Handoff for a new session: `docs/HANDOFF.md`.
+
 ## scope
 
 Local files can be rendered by: `html ./index.html`
@@ -28,6 +32,8 @@ Inside the interface, the following features are available:
 ## install
 
 The script works out of the box. Simply run `html --help` to get started with the info.
+
+In game, install a release with its one-file installer: fetch `releases/<version>/html-install.lua` (for example with `wget`) and run it. It writes `/home/bin/html.lua` and `/home/lib/html/*.lua`. See `SPEC.md` "Installer".
 
 ## requirements
 

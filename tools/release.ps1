@@ -226,18 +226,21 @@ try {
       $method = $null
     }
   }
+  # The index always gets the new link, also when the file-system link
+  # exists. Without this entry git shows a staged delete and an untracked
+  # link. With it, git shows releases/latest as one staged modification.
+  $tmp = [IO.Path]::GetTempFileName()
+  try {
+    [IO.File]::WriteAllBytes($tmp, $utf8.GetBytes($version))
+    $hash = (git hash-object -w $tmp)
+    if ($LASTEXITCODE -ne 0 -or -not $hash) { throw 'git hash-object failed.' }
+    $hash = $hash.Trim()
+  } finally {
+    Remove-Item -LiteralPath $tmp -Force
+  }
+  git update-index --add --cacheinfo "120000,$hash,releases/latest"
+  if ($LASTEXITCODE -ne 0) { throw 'could not record releases/latest in the git index.' }
   if (-not $method) {
-    $tmp = [IO.Path]::GetTempFileName()
-    try {
-      [IO.File]::WriteAllBytes($tmp, $utf8.GetBytes($version))
-      $hash = (git hash-object -w $tmp)
-      if ($LASTEXITCODE -ne 0 -or -not $hash) { throw 'git hash-object failed.' }
-      $hash = $hash.Trim()
-    } finally {
-      Remove-Item -LiteralPath $tmp -Force
-    }
-    git update-index --add --cacheinfo "120000,$hash,releases/latest"
-    if ($LASTEXITCODE -ne 0) { throw 'could not record releases/latest in the git index.' }
     $method = 'git index only'
     Write-Host 'note: releases/latest exists in git only. No file-system link was made.'
   }

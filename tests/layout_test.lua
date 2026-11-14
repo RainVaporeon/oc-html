@@ -487,7 +487,7 @@ function T.styles_and_width_hold_for_many_widths()
 end
 
 -- Expected-output cases in tests/cases. The comparison removes "\r",
--- trailing spaces and tabs, and blank lines at the end (tasks/plan.md).
+-- trailing spaces and tabs, and blank lines at the end (tasks/archive/mvp-plan.md).
 
 local tokenizer = require("html.tokenizer")
 

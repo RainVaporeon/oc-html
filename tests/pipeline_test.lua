@@ -7,7 +7,7 @@ local T = {}
 
 local html = t.load_bin("html")({})
 
--- The expected-output comparison from tasks/plan.md: removes "\r",
+-- The expected-output comparison from tasks/archive/mvp-plan.md: removes "\r",
 -- trailing spaces and tabs, and blank lines at the end.
 local function normalize(s)
   local lines = {}

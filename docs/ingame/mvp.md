@@ -1,5 +1,7 @@
 # In-game checklist: MVP 0.1.0a
 
+Result (2026-11-14): the user accepted the checks of Task 10 (sections 3 and 7) and Task 11 (sections 3, 5 and 8). The boxes in sections 3, 7 and 8 are marked from that decision. No measured values are recorded here. Sections 4 and 6 have no recorded result.
+
 `<BASE>` is your raw URL of the repository.
 
 Report back: a short pass or fail per step, the file `stats-large.txt` in `./datacollection/`, and any error text or a screenshot of a wrong screen.
@@ -20,16 +22,16 @@ Do not test Ctrl+Alt+C.
 
 Run `html wiki.html`. Check:
 
-- [ ] Colors for headings, links, emphasis and pre.
-- [ ] The status line shows the title, the percent and the key hint.
-- [ ] Scrolling works with the arrow keys, PgUp, PgDn, Home and End.
-- [ ] The same works with the NumPad keys with NumLock off.
-- [ ] With NumLock on, the NumPad digits do NOT scroll.
-- [ ] `q` shows "Quit? (y/n)".
-- [ ] `n` cancels the prompt.
-- [ ] `y` quits.
-- [ ] Ctrl+C quits at once.
-- [ ] After exit, the resolution, the colors and the shell prompt are back to normal.
+- [x] Colors for headings, links, emphasis and pre.
+- [x] The status line shows the title, the percent and the key hint.
+- [x] Scrolling works with the arrow keys, PgUp, PgDn, Home and End.
+- [x] The same works with the NumPad keys with NumLock off.
+- [x] With NumLock on, the NumPad digits do NOT scroll.
+- [x] `q` shows "Quit? (y/n)".
+- [x] `n` cancels the prompt.
+- [x] `y` quits.
+- [x] Ctrl+C quits at once.
+- [x] After exit, the resolution, the colors and the shell prompt are back to normal.
 
 ## 4. `--no-rescale`
 
@@ -51,13 +53,13 @@ Run `html --print --width 40 basic.html` only if `basic.html` is still on the ma
 
 For each screen:
 
-- [ ] Open `wiki.html`.
-- [ ] Depth 4: the colors are readable.
-- [ ] Depth 1: the text is plain.
-- [ ] Quit cleanly.
+- [x] Open `wiki.html`.
+- [x] Depth 4: the colors are readable.
+- [x] Depth 1: the text is plain.
+- [x] Quit cleanly.
 
 ## 8. Errors
 
-- [ ] `html nofile.html` prints one line: file not found.
-- [ ] `html /home` prints one line: not a file.
-- [ ] Press Ctrl+C during the render of `large.html`. It prints one line `html: interrupted`. The prompt is usable.
+- [x] `html nofile.html` prints one line: file not found.
+- [x] `html /home` prints one line: not a file.
+- [x] Press Ctrl+C during the render of `large.html`. It prints one line `html: interrupted`. The prompt is usable.
