@@ -138,6 +138,13 @@ function T.zero_width_removed()
   t.eq(text.clean("a\xE2\x80\x8Fb"), "ab", "U+200F")
 end
 
+function T.variation_selectors_removed()
+  t.eq(text.clean("a\xEF\xB8\x80b"), "ab", "U+FE00")
+  t.eq(text.clean("\xE2\x98\xBA\xEF\xB8\x8F!"), "\xE2\x98\xBA!", "U+FE0F")
+  t.eq(text.clean("a\xEF\xB8\x90b"), "a\xEF\xB8\x90b", "U+FE10 kept")
+  t.eq(text.clean("a\xEF\xB7\xBFb"), "a\xEF\xB7\xBFb", "U+FDFF kept")
+end
+
 function T.control_bytes_removed()
   t.eq(text.clean("a\0b\1c\2d\3e\4f\5g\6h\27i\31j"), "abcdefghij")
   t.eq(text.clean("line\r\nnext"), "line\nnext", "CR")

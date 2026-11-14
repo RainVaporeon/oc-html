@@ -133,7 +133,7 @@ function T.unexpected_error_gives_one_line_and_log()
   }
   local code, out, err = main({ "x.html" }, {
     open = function() return fake_file end,
-    log = function(text) logged = text end,
+    log = function(text) logged = text return true end,
   })
   t.eq(code, 1)
   t.eq(out, {})
@@ -247,6 +247,104 @@ function T.stats_out_write_failure_gives_one_line()
       errors[1])
     t.eq(err[#err], errors[1], "error after the stats lines")
   end
+end
+
+function T.unexpected_error_log_failure_gives_one_line()
+  local fake_file = {
+    read = function() error("boom") end,
+    seek = function() return 10 end,
+    close = function() end,
+  }
+  for _, log in ipairs({
+    function() return nil, "not enough space" end,
+    function() error("log boom\nsecond line") end,
+  }) do
+    local code, out, err = main({ "x.html" }, {
+      open = function() return fake_file end,
+      log = log,
+    })
+    t.eq(code, 1)
+    t.eq(out, {})
+    t.eq(#err, 1)
+    t.ok(err[1]:find("^html: unexpected error: .*boom %(cannot write "
+      .. "/tmp/html%-error%.log: .+%)$"), err[1])
+  end
+end
+
+-- A fake file. fail names the call that fails: "write", "flush" or "close".
+local function fake_writer(fail, calls)
+  local f = {}
+  local function step(name)
+    return function(self)
+      calls[#calls + 1] = name
+      if name == fail then
+        return nil, "not enough space"
+      end
+      return name == "close" or self
+    end
+  end
+  f.write, f.flush, f.close = step("write"), step("flush"), step("close")
+  return f
+end
+
+function T.write_text_checks_write_flush_and_close()
+  for _, fail in ipairs({ "write", "flush", "close" }) do
+    local calls = {}
+    local done, why = html.write_text(function()
+      return fake_writer(fail, calls)
+    end, "/tmp/x", "text")
+    t.eq(done, nil, fail)
+    t.eq(why, "not enough space", fail)
+    t.eq(calls[#calls], "close", "always closed after " .. fail)
+  end
+  local calls = {}
+  t.eq(html.write_text(function() return fake_writer(nil, calls) end,
+    "/tmp/x", "text"), true)
+  t.eq(calls, { "write", "flush", "close" })
+  t.eq({ html.write_text(function() return nil, "no such dir" end,
+    "/x/y", "") }, { nil, "no such dir" })
+end
+
+function T.stats_out_flush_failure_gives_one_line()
+  local code, _, err = main({ "--stats-out", "/tmp/s.txt",
+    "tests/cases/basic.html" }, {
+      write_file = function(path, text)
+        return html.write_text(function()
+          return fake_writer("flush", {})
+        end, path, text)
+      end,
+    })
+  t.eq(code, 1)
+  t.eq(err[#err], "html: cannot write stats file: /tmp/s.txt "
+    .. "(not enough space)")
+end
+
+function T.expand_home_rules()
+  t.eq(html.expand_home("~", "/home"), "/home")
+  t.eq(html.expand_home("~/a.html", "/home"), "/home/a.html")
+  t.eq(html.expand_home("~/a.html", "/home/"), "/home/a.html")
+  t.eq(html.expand_home("~/a.html", nil), "/home/a.html", "default home")
+  t.eq(html.expand_home("~/a.html", ""), "/home/a.html", "empty home")
+  t.eq(html.expand_home("~/x", "/usr/me"), "/usr/me/x")
+  t.eq(html.expand_home("a/~/b", "/home"), "a/~/b", "not leading")
+  t.eq(html.expand_home("~user/a", "/home"), "~user/a", "no user form")
+  t.eq(html.expand_home("/abs.html", "/home"), "/abs.html")
+end
+
+function T.file_and_stats_out_expand_home_before_resolve()
+  local resolved, opened, got = {}, nil, nil
+  main({ "--stats-out", "~/s.txt", "~/page.html" }, {
+    home = "/home/me",
+    resolve = function(p) resolved[#resolved + 1] = p return p end,
+    open = function(p, mode)
+      opened = p
+      return io.open("tests/cases/basic.html", mode)
+    end,
+    write_file = function(path) got = path return true end,
+  })
+  t.eq(opened, "/home/me/page.html")
+  t.eq(got, "/home/me/s.txt")
+  t.eq(resolved, { "/home/me/page.html", "/home/me/s.txt" })
 end
 
 function T.stats_out_needs_a_path()

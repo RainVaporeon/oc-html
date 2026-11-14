@@ -49,9 +49,10 @@ local function sequence(s, i, b)
   return need + 1
 end
 
--- True for C1 controls (U+0080..U+009F), the soft hyphen (U+00AD) and
--- zero-width or invisible characters (U+200B..U+200F, U+FEFF).
--- unicode.wlen counts U+200B as width 2.
+-- True for C1 controls (U+0080..U+009F), the soft hyphen (U+00AD),
+-- zero-width or invisible characters (U+200B..U+200F, U+FEFF) and the
+-- variation selectors (U+FE00..U+FE0F). unicode.wlen counts U+200B and
+-- U+FE0F as width 2 (measured).
 local function removed(s, i, len)
   local b1, b2, b3 = byte(s, i, i + 2)
   if len == 2 then
@@ -60,6 +61,7 @@ local function removed(s, i, len)
   if len == 3 then
     return (b1 == 0xE2 and b2 == 0x80 and b3 >= 0x8B and b3 <= 0x8F)
       or (b1 == 0xEF and b2 == 0xBB and b3 == 0xBF)
+      or (b1 == 0xEF and b2 == 0xB8 and b3 >= 0x80 and b3 <= 0x8F)
   end
   return false
 end

@@ -36,6 +36,29 @@ local TEXT = {
     sub = "\xE2\x80\x8B" },
 }
 
+-- Probe v2 strings and the measured len and wlen (probe2: text.<name>.*).
+-- wlen equals the screen columns.
+local WIDTHS = {
+  { "tab", "a\tb", len = 3, wlen = 4 },
+  { "vs16", "\xE2\x98\xBA\xEF\xB8\x8F", len = 2, wlen = 3 },
+  { "hangul", "\xED\x95\x9C\xEA\xB5\xAD\xEC\x96\xB4", len = 3, wlen = 6 },
+  { "fullwidth", "\xEF\xBC\xA1", len = 1, wlen = 2 },
+  { "combining", "e\xCC\x81", len = 2, wlen = 2 },
+  { "arabic", "\xD8\xB9\xD8\xB1\xD8\xA8\xD9\x8A", len = 4, wlen = 4 },
+  { "box", "\xE2\x94\x8C\xE2\x94\x80\xE2\x94\x90", len = 3, wlen = 3 },
+  { "greek", "\xCE\xB1\xCE\xB2\xCE\xB3", len = 3, wlen = 3 },
+}
+
+function T.unicode_matches_probe2_widths()
+  for _, row in ipairs(WIDTHS) do
+    t.eq(unicode.len(row[2]), row.len, row[1] .. " len")
+    t.eq(unicode.wlen(row[2]), row.wlen, row[1] .. " wlen")
+  end
+  t.eq(unicode.len("\t"), 1, "tab len")
+  t.eq(unicode.wlen("\t"), 2, "tab wlen")
+  t.eq(unicode.wlen("\xEF\xB8\x8F"), 2, "U+FE0F wlen")
+end
+
 function T.unicode_matches_probe_text_table()
   for _, row in ipairs(TEXT) do
     local name, s = row[1], row[2]

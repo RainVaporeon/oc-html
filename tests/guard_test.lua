@@ -164,8 +164,9 @@ end
 
 function T.trace_text_stays_short()
   local guard = setup()
+  -- Free memory stays over the reserve for 2^20 table slots (18.6 M).
   for i = 1, 5000 do
-    computer.test.set_free(2097152 + i)
+    computer.test.set_free(20000000 + i)
     guard.tick(900000 + i)
   end
   local text = guard.trace_text()
@@ -240,7 +241,8 @@ function T.raw_dip_with_plenty_of_memory_does_not_stop()
 end
 
 -- Runs a render model: ticks per line, live and garbage cost per line in
--- scaled units, and 1 ms CPU time per line. Returns the line count reached,
+-- scaled units, and 1 ms CPU time per line. With opts.table, every line is
+-- also stored in the model's lines table, which doubles its array. Returns the line count reached,
 -- the error or nil, and the simulated settle wall time.
 local function run_model(guard, clock, opts)
   computer.test.model({
@@ -259,6 +261,9 @@ local function run_model(guard, clock, opts)
         computer.test.work()
         clock.advance(0.001 / opts.ticks)
         guard.tick(i)
+      end
+      if opts.table then
+        computer.test.append(i)
       end
     end
   end)
@@ -307,6 +312,48 @@ function T.rate_limit_keeps_settles_few_on_a_full_run()
     guard.settle_yields(), wall))
   t.ok(guard.settles() <= 20, "settles " .. guard.settles())
   t.ok(wall < 2, "settle wall " .. wall .. " s")
+end
+
+function T.reserve_covers_the_next_table_doubling()
+  local guard = setup()
+  t.eq(guard.reserve(), RESERVE, "1024 slots need less than the base")
+  guard.tick(8192)
+  t.eq(guard.reserve(), RESERVE, "8192 slots need 145636")
+  guard.tick(8193)
+  t.eq(math.floor(guard.reserve()), math.floor(32 * 16384 / 1.8))
+  guard.reset()
+  t.eq(guard.reserve(), RESERVE)
+end
+
+-- About 70 units per line, as measured, with little garbage. Free memory
+-- stays over the base reserve up to line 16384, but the doubling from 16384
+-- to 32768 slots needs 291271 units at once.
+local DOUBLING_RUN = { lines = 20000, ticks = 4, live = 70, garbage = 200,
+  table = true }
+
+function T.shim_doubling_without_the_term_runs_out_of_memory()
+  computer.test.model({ capacity = CAPACITY, live = OVERHEAD,
+    live_per_work = 70 })
+  local line = 0
+  local ok, err = pcall(function()
+    for i = 1, 20000 do
+      line = i
+      computer.test.work()
+      computer.test.append(i)
+    end
+  end)
+  t.eq(ok, false)
+  t.eq(err, "not enough memory")
+  t.eq(line, 16385, "fails at the doubling")
+end
+
+function T.run_past_16384_lines_stops_before_the_doubling()
+  local guard, clock = setup()
+  local line, err = run_model(guard, clock, DOUBLING_RUN)
+  t.ok(err and err:find("^html: page too large"), tostring(err))
+  t.ok(line <= 16384, "stopped at " .. line)
+  t.ok(line > 15000, "stopped at " .. line)
+  t.eq(computer.test.model_state().slots, 16384)
 end
 
 return T

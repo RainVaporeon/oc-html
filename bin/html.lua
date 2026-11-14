@@ -49,6 +49,8 @@ local ERROR_LOG = "/tmp/html-error.log"
 local ERROR_LOG_MAX = 8192
 -- Used when the screen width is not known.
 local DEFAULT_WIDTH = 80
+-- Used for "~" when HOME is not set. OpenOS sets HOME to /home.
+local DEFAULT_HOME = "/home"
 
 M.USAGE = [[
 Usage: html [options] <file>
@@ -97,6 +99,51 @@ function M.parse_args(argv)
     opts.help = true
   end
   return opts
+end
+
+-- shell.resolve does not expand "~" (measured: it gives "/home/~"). Returns
+-- path with a leading "~/" or a bare "~" replaced by home.
+function M.expand_home(path, home)
+  if type(home) ~= "string" or home == "" then
+    home = DEFAULT_HOME
+  end
+  if path == "~" then
+    return home
+  end
+  if sub(path, 1, 2) == "~/" then
+    if sub(home, -1) == "/" then
+      return home .. sub(path, 3)
+    end
+    return home .. sub(path, 2)
+  end
+  return path
+end
+
+-- Writes text to a new file at path. Checks write, flush and close, because
+-- a full /tmp reports "not enough space" only at flush or close (measured).
+-- Returns true, or nil and a reason.
+function M.write_text(open, path, text)
+  local f, why = open(path, "w")
+  if not f then
+    return nil, why or "cannot open"
+  end
+  local done, err = f:write(text)
+  if done then
+    done, err = f:flush()
+  end
+  local closed, cerr = f:close()
+  if not done then
+    return nil, err or "write failed"
+  end
+  if not closed then
+    return nil, cerr or "close failed"
+  end
+  return true
+end
+
+-- The first line of a failure reason.
+local function reason(why)
+  return (tostring(why or "unknown reason"):match("^[^\n]*"))
 end
 
 local function is_controlled(e)
@@ -273,7 +320,8 @@ local function report_stats(st, opts, deps)
   if not opts.stats_out then
     return true
   end
-  local path = deps.resolve and deps.resolve(opts.stats_out) or opts.stats_out
+  local path = M.expand_home(opts.stats_out, deps.home)
+  path = deps.resolve and deps.resolve(path) or path
   local ok, done, why = false, nil, "no file access"
   if deps.write_file then
     ok, done, why = pcall(deps.write_file, path,
@@ -285,9 +333,8 @@ local function report_stats(st, opts, deps)
   if not ok then
     why = done
   end
-  why = tostring(why or "unknown reason"):match("^[^\n]*")
   deps.err("html: cannot write stats file: " .. opts.stats_out .. " ("
-    .. why .. ")")
+    .. reason(why) .. ")")
   return false
 end
 
@@ -310,9 +357,11 @@ end
 --   clock()                os.clock
 --   uptime()               optional, wall time in seconds
 --   resolve(path)          optional, makes a path absolute
+--   home                   optional, the home directory for "~"
 --   is_dir(path)           optional
 --   size(path)             optional, file size in bytes
---   log(text)              optional, keeps the details of an unexpected error
+--   log(text)              optional, keeps the details of an unexpected
+--                          error. Returns true, or nil and a reason
 --   write_file(path, text) optional, for --stats-out. Returns true, or nil
 --                          and a reason
 -- Returns the exit code.
@@ -326,7 +375,8 @@ function M.main(argv, deps)
     deps.out(M.USAGE)
     return 0
   end
-  local path = deps.resolve and deps.resolve(opts.file) or opts.file
+  local path = M.expand_home(opts.file, deps.home)
+  path = deps.resolve and deps.resolve(path) or path
   if deps.is_dir and deps.is_dir(path) then
     deps.err("html: not a file: " .. opts.file)
     return 1
@@ -359,9 +409,17 @@ function M.main(argv, deps)
       result = tostring(result)
       local first = result:match("^[^\n]*")
       if deps.log then
-        deps.log(result)
-        deps.err("html: unexpected error: " .. first .. " (details in "
-          .. ERROR_LOG .. ")")
+        local called, done, why = pcall(deps.log, result)
+        if called and done then
+          deps.err("html: unexpected error: " .. first .. " (details in "
+            .. ERROR_LOG .. ")")
+        else
+          if not called then
+            why = done
+          end
+          deps.err("html: unexpected error: " .. first .. " (cannot write "
+            .. ERROR_LOG .. ": " .. reason(why) .. ")")
+        end
       else
         deps.err("html: unexpected error: " .. first)
       end
@@ -394,29 +452,17 @@ function M.game_deps()
     clock = os.clock,
     uptime = computer.uptime,
     resolve = shell.resolve,
+    home = os.getenv("HOME"),
     is_dir = filesystem.isDirectory,
     size = filesystem.size,
     log = function(text)
       if #text > ERROR_LOG_MAX then
         text = sub(text, -ERROR_LOG_MAX)
       end
-      local f = io.open(ERROR_LOG, "w")
-      if f then
-        f:write(text)
-        f:close()
-      end
+      return M.write_text(io.open, ERROR_LOG, text)
     end,
     write_file = function(path, text)
-      local f, why = io.open(path, "w")
-      if not f then
-        return nil, why
-      end
-      local done, werr = f:write(text)
-      f:close()
-      if not done then
-        return nil, werr
-      end
-      return true
+      return M.write_text(io.open, path, text)
     end,
   }
 end

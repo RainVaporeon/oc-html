@@ -74,7 +74,7 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 **Acceptance criteria:**
 - [x] `tests/cases/basic.html` prints the expected text in the container.
 - [x] In game on tier 3: `html basic.html` prints the text. A test page of about 100 KB finishes without a yield error.
-- [ ] The free memory before and after, and the render time, are recorded in `tasks/plan.md` under a new "Measurements" section and compared with `docs/probe/FACTS.md`.
+- [x] The free memory before and after, and the render time, are recorded in `tasks/plan.md` under a new "Measurements" section and compared with `docs/probe/FACTS.md`.
 
 **Verification:**
 - [x] Tests pass: `pwsh tests/docker/test.ps1`
@@ -87,11 +87,11 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 **Estimated scope:** Medium
 
 ### Checkpoint 1: Foundation and in-game confirmation of FACTS.md
-- [ ] All tests pass.
-- [ ] The tracer bullet works in game.
-- [ ] Measurements confirm `docs/probe/FACTS.md`, or `FACTS.md` is updated.
-- [ ] In game with 0.0.2a: `tests/pages/large.html` (about 1 MB) renders or stops with the controlled memory message, and the stats files of it and of the Wikipedia page are returned (`docs/ingame/task3b.md`).
-- [ ] Review with the user before Phase 2.
+- [x] All tests pass.
+- [x] The tracer bullet works in game.
+- [x] Measurements confirm `docs/probe/FACTS.md`, or `FACTS.md` is updated.
+- [x] In game with 0.0.2a: `tests/pages/large.html` (about 1 MB) renders or stops with the controlled memory message, and the stats files of it and of the Wikipedia page are returned (`docs/ingame/task3b.md`). Note: the 0.0.4a run (probe v2) replaces this item. It rendered all 11302 lines of large.html and the whole Wikipedia page.
+- [x] Review with the user before Phase 2. The user approved the revisions from the probe v2 results.
 
 ## Phase 2: Parser robustness
 
@@ -104,6 +104,7 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 - [ ] The tokenizer uses only plain `string.find` and `string.byte` to scan. No `gsub` or `gmatch` runs over a chunk.
 - [ ] Every test passes with chunk sizes 1, 2, 7 and 4096.
 - [ ] No input raises an uncontrolled error.
+- [ ] Scan choice follows the measured costs (probe v2): plain `find` (about 3.2 us per call) for long jumps (text runs, `-->`, `</script`), `byte` (about 61 ns) inside tags, `sub` (about 260 ns for 80 bytes) to cut the text, and `t[#t+1] = v` for appends (twice as fast as `table.insert`).
 
 **Verification:**
 - [ ] Tests pass: `pwsh tests/docker/test.ps1`
@@ -187,6 +188,7 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 - [ ] Wrapped lines never exceed the width, including with wide characters.
 - [ ] Style bytes do not count toward the width.
 - [ ] Styles stay correct across a wrap.
+- [ ] Inside `pre`, each tab expands to spaces up to the next 8-column stop before the width is measured (the game draws a tab as a 2-cell glyph). Outside `pre`, the whitespace collapse removes tabs.
 
 **Verification:**
 - [ ] Tests pass: `pwsh tests/docker/test.ps1`
@@ -235,7 +237,11 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 - [ ] On start, the resolution is set to maxResolution unless `--no-rescale` is given. Tested with a fake GPU that starts at 120x60.
 - [ ] Depth 8 and 4 show colors as RGB values. Depth 1 shows plain text. No palette indices are used.
 - [ ] `setForeground` and `setBackground` are called only when the color changes.
-- [ ] A one-line scroll uses `gpu.copy` and draws only the new row.
+- [ ] A one-line scroll uses `gpu.copy` and draws only the new row. `copy` leaves the source row, so the new row is always drawn.
+- [ ] Keys: the standard codes 199, 200, 201, 207, 208 and 209 are always accepted. The NumPad codes 71, 72, 73, 79, 80 and 81 are Home, Up, PgUp, End, Down and PgDn only when char is 0. Tests: NumPad codes with char 0 navigate. NumPad codes with a digit char (for example code 73 with char 57) do not.
+- [ ] Queued scroll events are added up before a redraw (key repeat: about 28 events per second).
+- [ ] The color cache keeps the current foreground and background. Same-color calls are skipped.
+- [ ] On exit, the viewer restores the screen, calls `term.clear()` and sets the cursor.
 
 **Verification:**
 - [ ] Tests pass: `pwsh tests/docker/test.ps1` (tested with a fake GPU at depth 8, 4 and 1, and at 120x60, 80x25 and 50x16)
@@ -259,6 +265,9 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 - [ ] A string error with the prefix `html: ` prints as it is. Any other error prints one line and writes the traceback to `/tmp/html-error.log`.
 - [ ] `bin/html.lua` takes the traceback function as a parameter. The tests pass a fake one, because the sandbox has no `debug`.
 - [ ] `/tmp/html-error.log` never exceeds 8 KB. The newest content is kept.
+- [ ] Ctrl+C: the viewer quits on `key_down` char 3 and on the "interrupted" event from `event.pull` (measured: both arrive, and neither is an error).
+- [ ] The error log and `--stats-out` writes check `write`, `flush` and `close` (a full `/tmp` fails only at flush or close). Done in bin/html.lua for the stdout mode. Keep it when the viewer is connected.
+- [ ] The `--stats` lines print after the screen restore.
 
 **Verification:**
 - [ ] Tests pass: `pwsh tests/docker/test.ps1`

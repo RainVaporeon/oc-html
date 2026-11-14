@@ -5,9 +5,11 @@ local M = {}
 
 local REPLACEMENT = 0xFFFD
 
--- Approximation of the game's wide character table. U+200B is wide in the
--- game (measured), so it is listed here.
+-- Approximation of the game's wide character table. U+200B, U+FE0F and the
+-- tab are wide in the game (measured), so they are listed here. A combining
+-- mark takes its own cell of width 1 (measured).
 local WIDE = {
+  { 0x09, 0x09 },       -- tab, drawn as a 2-cell glyph
   { 0x1100, 0x115F },   -- Hangul Jamo
   { 0x200B, 0x200B },   -- zero width space, measured as width 2
   { 0x2E80, 0x303E },   -- CJK radicals, punctuation
@@ -17,6 +19,7 @@ local WIDE = {
   { 0xA000, 0xA4CF },   -- Yi
   { 0xAC00, 0xD7A3 },   -- Hangul syllables
   { 0xF900, 0xFAFF },   -- CJK compatibility ideographs
+  { 0xFE0F, 0xFE0F },   -- variation selector 16, measured as width 2
   { 0xFE30, 0xFE4F },   -- CJK compatibility forms
   { 0xFF00, 0xFF60 },   -- fullwidth forms
   { 0xFFE0, 0xFFE6 },   -- fullwidth signs

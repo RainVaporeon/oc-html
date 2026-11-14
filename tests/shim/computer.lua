@@ -10,6 +10,10 @@ local TOTAL_MEMORY = 2097152
 local FREE_MEMORY = 1800000
 -- Measured readings after the low first one differ by about 6 KB.
 local SMALL_NOISE = 6116
+-- freeMemory() units are real bytes / RAM_SCALE (measured 1.800).
+local RAM_SCALE = 1.8
+-- Real bytes per array slot of a Lua table.
+local SLOT_BYTES = 16
 
 local state
 
@@ -132,6 +136,7 @@ function M.test.model(opts)
     seed = opts.seed or 12345,
     full_gcs = 0,
     incremental_gcs = 0,
+    slots = 0,
   }
   next_incremental(m)
   state.model = m
@@ -162,6 +167,29 @@ function M.test.work(n)
       m.incremental_gcs = m.incremental_gcs + 1
       next_incremental(m)
     end
+  end
+end
+
+-- Stores entry n in the model's lines table. When n is over the capacity c,
+-- the array doubles to 2c: the new slots are allocated while the old ones are
+-- still live, then the old slots become garbage. Like work(), a doubling
+-- that does not fit raises "not enough memory".
+function M.test.append(n)
+  local m = state.model
+  while n > m.slots do
+    local c = m.slots
+    local new = math.max(1, 2 * c) * SLOT_BYTES / RAM_SCALE
+    local old = c * SLOT_BYTES / RAM_SCALE
+    if m.live + m.garbage + new > m.capacity then
+      m.garbage = 0
+      m.full_gcs = m.full_gcs + 1
+    end
+    if m.live + new > m.capacity then
+      error("not enough memory", 0)
+    end
+    m.live = m.live + new - old
+    m.garbage = math.min(m.garbage + old, m.capacity - m.live)
+    m.slots = math.max(1, 2 * c)
   end
 end
 

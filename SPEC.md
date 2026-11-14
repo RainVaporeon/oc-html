@@ -51,6 +51,7 @@ html --stats-out <path> <file>
                            also write the stats lines to <path> (overwrite). Sets --stats
 html --help          show usage
 html                 (no arguments) show usage. Later: start a new session
+html ~/page.html     a leading "~/" (or a bare "~") is the home directory
 html-install [--prefix <dir>] [--dry-run]
                      install a release from its one-file installer (see "Releases")
 ```
@@ -80,7 +81,8 @@ stats: trace=<line>:<free><mark>,<line>:<free><mark>,...
 - `delta` (free_before - free_after) is unreliable. The game has no `collectgarbage`, so a reading includes garbage, and garbage from earlier work (module loading) can be collected during the run. Measured: delta was -164198 bytes on a 98891-byte page.
 - `peak_used` is an upper bound of the peak memory use. `lowest_free` includes garbage that is not collected yet.
 - When the render stops with a controlled error, the stats lines still follow the error line. They hold the values known at that point (file, width, free_before, lowest_free, peak_used without the per-line value) and a last line `stats: stopped=<error message>`.
-- `--stats-out` writes the same lines with LF endings. A write failure prints one line `html: cannot write stats file: <path> (<reason>)` after the stats lines and gives exit code 1. The page output and the stats on stderr are not affected.
+- `--stats-out` writes the same lines with LF endings. A write failure prints one line `html: cannot write stats file: <path> (<reason>)` after the stats lines and gives exit code 1. The page output and the stats on stderr are not affected. The write checks the results of `write`, `flush` and `close` (see "Limits and graceful failure").
+- `shell.resolve` does not expand `~` (measured: it gives `/home/~`). So `bin/html.lua` replaces a leading `~/` or a bare `~` in the file argument and in the `--stats-out` path with the home directory before `shell.resolve`. The home directory is `os.getenv("HOME")`, or `/home` when it is not set. `~user` is not expanded.
 
 On the host (from the project root, Docker Desktop running):
 ```
@@ -149,7 +151,7 @@ wget -f <BASE>/releases/<version>/html-install.lua /home/html-install.lua
   - free space (`spaceTotal() - spaceUsed()`) is at least the sum of the file sizes, plus the largest file (for the temporary copy), plus 1024 bytes per file. Old files that the install replaces are not counted.
 - Write order:
   1. Each file goes to `<target>.new` in the target folder. The installer reads it back and compares it with the embedded content.
-  2. When all temporary files are correct, each old file moves to `<target>.old`, and `<target>.new` is renamed to `<target>`. (OpenComputers does not rename over an existing file.)
+  2. When all temporary files are correct, each old file moves to `<target>.old`, and `<target>.new` is renamed to `<target>`. Rename over an existing file replaces it (measured on tmpfs and on the HDD). The move-aside step is kept as a safe rollback.
   3. The `.old` files are removed.
 - On any failure, the installer removes its temporary files, puts the old files back, and prints one line `html-install: <reason>; old files kept`. An unexpected error also prints one `html-install: ` line. The exit code is 1 (2 for bad arguments).
 - Loaded with a table as the first argument, the chunk returns its module: `VERSION`, `files` (relative path to content), `sizes` and `main(argv, deps)`. The tests use this with a fake filesystem.
@@ -212,6 +214,8 @@ Modules load only when needed. A stage releases its data when the next stage no 
    - `bin/html.lua` removes every `package.loaded` key that starts with `html.` when the chunk loads, before its first `require`. `M.run_program` runs `main` in `pcall` and removes the keys again on every exit path (normal, error, Ctrl+C), then raises the error again. This loads the current code after an update and frees the module memory after a run.
    - `M.clear_modules(loaded)` does the removal and returns the count. Other keys stay.
 2. `tokenizer` reads the file with `io` in 4096-byte chunks and produces tokens one at a time: start tag, end tag, text, comment, doctype. It is built on plain `string.find` and `string.byte`. It never runs `gsub` or `gmatch` over large strings (measured: `gsub` 94 KB/s, plain `find` 6338 KB/s).
+   - Measured costs (probe v2): plain `find` about 3.2 us per call (6821 KB/s), `string.byte` of 1 byte about 61 ns, `sub` of 80 bytes about 260 ns, `t[#t+1] = v` 17.2 M ops/s against `table.insert` 9.0 M.
+   - Use plain `find` for long jumps: to the end of a text run (`<`), to `-->` and to `</script`. Use `byte` inside tags, where the parts are short. Use `sub` to cut the text of a token. Use `t[#t+1] = v` for appends.
 3. `layout` consumes tokens, keeps a small stack of open elements, and appends finished lines. A line is one string with inline style control bytes (measured: 80 bytes per line; a table of styled pieces used 322).
    - Bytes 0x01 to 0x05 select a style: normal, heading, emphasis, link, preformatted. A style lasts until the next style byte.
    - Text never contains these bytes, because cleaning removes control bytes first (see "Text cleaning").
@@ -258,6 +262,8 @@ The tokenizer and layout never call `component`. They take `guard` as their only
 
 Whitespace collapses to one space outside `pre`. Lines wrap at word boundaries to the screen width. Width uses `unicode.wlen` on the cleaned text so wide characters fit.
 
+Tabs: the game draws a tab as a 2-cell glyph (measured: `wlen("a\tb")` = 4). Inside `pre`, the layout expands each tab to spaces up to the next 8-column stop before it measures the width. Outside `pre`, the whitespace collapse removes tabs.
+
 ### Text cleaning
 
 `unicode.*` never throws on bad bytes. It turns them into U+FFFD and can count a wrong width. `utf8.len` accepts encoded surrogates. So the program cleans all text before any `unicode.*` call:
@@ -266,6 +272,7 @@ Whitespace collapses to one space outside `pre`. Lines wrap at word boundaries t
 - One `?` replaces each maximal invalid subpart (Unicode recommended practice). So an encoded surrogate gives 3 `?` (the game shows one U+FFFD).
 - DEL 0x7F and the C1 controls U+0080 to U+009F are removed.
 - The removed zero-width and invisible characters are U+00AD, U+200B, U+200C, U+200D, U+200E, U+200F and U+FEFF. (`unicode.wlen` counts U+200B as width 2.)
+- The variation selectors U+FE00 to U+FE0F are removed. (U+FE0F is wide in the game: `wlen` 2, measured.)
 - Control bytes below 0x20 are removed, except tab and newline. `\r` is removed.
 - Decoded entities pass through the same rules.
 - The tokenizer calls `entities.decode(text.clean(s))`. A partial UTF-8 sequence or entity at a chunk end is held back with `text.split_tail` and joined to the next chunk.
@@ -274,35 +281,40 @@ Whitespace collapses to one space outside `pre`. Lines wrap at word boundaries t
 
 - The last screen row is a status line: page title (or file name), scroll position in percent, and a key hint.
 - Keys: Up/Down one line, PgUp/PgDn one screen, Home/End to the start and end, `q` to quit.
+- Key codes. The standard codes 199 (Home), 200 (Up), 201 (PgUp), 207 (End), 208 (Down) and 209 (PgDn) are always accepted. The NumPad codes 71 (Home), 72 (Up), 73 (PgUp), 79 (End), 80 (Down) and 81 (PgDn) are accepted only when the `key_down` char is 0. A NumPad digit (NumLock on, for example code 73 with char '9') never acts as a navigation key. Measured: the user's keyboard sends PgUp, PgDn, Home and End as NumPad codes with char 0.
 - `q` shows a prompt: quit or cancel.
+- Ctrl+C quits at once, without the prompt. It arrives as `key_down` with char 3, then an "interrupted" event from `event.pull` (measured, not an error). The viewer quits on either one.
+- Key repeat sends about 28 events per second after 500 ms (measured). Before a redraw, the viewer takes all queued scroll events and adds them up, so one redraw covers them.
 - On start, the viewer sets the resolution to `gpu.maxResolution()` if the current resolution is different. `--no-rescale` skips this.
 - The viewer then reads the size with `gpu.getResolution()`.
 - On every exit path, the viewer restores the resolution it found at start.
 - Measured: t3 had 120x60 on a GPU with a 160x50 maximum. This was a user-set resolution.
 - Colors depend on `gpu.getDepth()`. Depth 8 and 4 use colors for headings, links and emphasis, given as RGB values. Depth 1 uses plain text. Palette indices are not used.
-- The viewer caches the current foreground and background. It calls `setForeground` and `setBackground` only on a change (measured: a call costs as much as a `fill`, also with the same color).
-- Scrolling moves the screen content with `gpu.copy` and draws only the new rows. A jump (PgUp, PgDn, Home, End) redraws the screen.
+- The viewer caches the current foreground and background. It calls `setForeground` and `setBackground` only on a change (measured: a call costs as much as a `fill`, also with the same color). Both calls return the old color (measured).
+- Scrolling moves the screen content with `gpu.copy` and draws only the new rows. `copy` leaves the source row as it was (measured), so the viewer always draws the new row. A jump (PgUp, PgDn, Home, End) redraws the screen.
 - One `gpu.set` call draws one same-style piece of a line. A call costs the same for 1 or 160 characters.
-- On exit (normal or error) the screen colors are restored and the cursor goes below the output.
+- On exit (normal, error or Ctrl+C) the viewer restores the colors and the resolution, calls `term.clear()` and sets the cursor. The `term` cursor is stale after direct GPU drawing (measured), so the viewer must set it.
+- `--stats` lines print after the screen restore, so they stay on the screen.
 
 ### Limits and graceful failure
 
 There are no fixed size caps. The program measures and stops before damage happens.
 
 - `guard.tick()` is called in every loop of the tokenizer and layout. It measures time with `os.clock()`, which has sub-millisecond steps (`computer.uptime()` moves in 50 ms steps). It yields with `os.sleep(0)` when more than `YIELD_INTERVAL` (1 s) has passed since the last yield. This is well below the 5 second OpenOS timeout. `guard.reset()` restarts the yield timer, and the tests use it. `guard.settled_free()` is public. It runs one settle (up to 11 yields, see below) and returns the highest `freeMemory()` reading. `guard.settles()`, `guard.gc_seen()` and `guard.settle_yields()` return the settle counters. `reset()` clears them. `guard.lowest_free()` returns the lowest `freeMemory()` reading that `tick()` and `settled_free()` saw since the last `reset()`, or nil. `reset()` clears it. `--stats` uses it for `lowest_free` and `peak_used`. `guard.trace_text()` returns the memory trace (see the `trace` stats line), or "" when it is empty. `reset()` clears it too.
-- `guard.tick()` also checks `computer.freeMemory()` against `MEMORY_RESERVE` (192 KB, in `freeMemory()` units, which are real bytes / ramScale). A raw reading can be up to about 1.3 MB too low (measured), because garbage is not collected yet. The readings form a saw-tooth, because the incremental GC frees garbage during the render. Garbage never makes an allocation fail: a failed allocation runs a full GC and retries.
+- `guard.tick()` also checks `computer.freeMemory()` against the effective reserve, in `freeMemory()` units (real bytes / ramScale, measured ramScale 1.800). The effective reserve is max(`MEMORY_RESERVE`, next_doubling). `MEMORY_RESERVE` is 192 KB. next_doubling = 32 * c / 1.8, where c is the smallest power of two >= the current line count (at least 1024). Reason: the lines table holds one slot per line. When it is full, Lua doubles its array from c to 2c slots and keeps the old slots until the copy ends, so the doubling needs 2c slots of 16 real bytes at once. Measured: the 8192 to 16384 doubling cost 72818 units, and on large.html free memory hit 0 at that doubling (0.0.4a). For c = 8192 the term is 145636 (under the base reserve). For c = 16384 it is 291271. `guard.reserve()` returns the effective reserve. A raw reading can be up to about 1.3 MB too low (measured), because garbage is not collected yet. The readings form a saw-tooth, because the incremental GC frees garbage during the render. Garbage never makes an allocation fail: a failed allocation runs a full GC and retries.
 - Settle (guard v2). The OpenOS kernel runs a full GC on every 10th resume of the main coroutine (measured). A settle yields with `os.sleep(0)` up to 11 times and reads `freeMemory()` after each yield. A rise above the previous reading by more than max(16384, 5% of the previous reading) is a GC. The settle stops at the first GC and returns the highest reading. When it sees no GC in 11 yields, it returns the highest reading and records that it saw no GC. A settle costs up to about 110 ms wall time (10 ms per yield).
-- Settle rule in `tick()`. A raw reading under the reserve settles only when the rate limit allows it. After a settle at line L with result F, the wait is gap = max(25, (F - reserve) / (2 * B)). B is the live cost per line in `freeMemory()` units: 410 at the start (the highest cost measured in 0.0.3a), then the highest cost measured between two settles that saw a GC, but at least 160 (the lowest measured cost). At B per line, one gap uses at most half of the headroom F - reserve. The next settle comes when the line count grew by gap, or when it grew by gap / 2 and a raw reading is under reserve / 2. The second case covers lines that cost up to 2 * B. A `tick()` without a line count uses the tick count in place of the line count.
+- Settle rule in `tick()`. A raw reading under the reserve settles only when the rate limit allows it. After a settle at line L with result F, the wait is gap = max(25, (F - reserve) / (2 * B)). B is the live cost per line in `freeMemory()` units: 100 at the start, then the highest cost measured between two settles that saw a GC, but at least 80. Measured in 0.0.4a: about 66.5 per line on large.html, 46 to 76 between settles that saw a GC. (The 0.0.3a values of 160 and 410 were a wrong estimate.) At B per line, one gap uses at most half of the headroom F - reserve. The next settle comes when the line count grew by gap, or when it grew by gap / 2 and a raw reading is under reserve / 2. The second case covers lines that cost up to 2 * B. A `tick()` without a line count uses the tick count in place of the line count.
 - Between settles, a raw reading under the reserve does not stop the render. A raw reading under reserve / 2 after a settle that saw no GC stops the render at once: without a GC, no settle lifts it over the reserve. Otherwise only a settle result under the reserve raises the controlled error "html: page too large for available memory (rendered N lines before stopping)".
-- Rule change from the first draft: the first draft settled on every raw reading under reserve / 2 and kept B at 410 or more. On a simulated 11302-line run with the measured saw-tooth, that gave 37 settles and 3.7 s of settle yields. The rule above gives 9 settles and 88 yields (0.9 s).
+- Rule change from the first draft: the first draft settled on every raw reading under reserve / 2 and kept B at 410 or more. On a simulated 11302-line run with the measured saw-tooth, that gave 37 settles and 3.7 s of settle yields. The rule above gives 9 settles and 88 yields (0.9 s). With the doubling term and the new cost constants it gives 13 settles and 127 yields (1.3 s): the higher reserve above 8192 lines adds settles. In game, 0.0.4a gave 12 settles and 118 yields on large.html.
 - Fail-safe. Every settle saw a GC or used all 11 yields. If OpenOS ever stops the 10th-yield GC, a settle cannot lift a low reading, so the guard stops early with the controlled message. It never crashes and never loops. The tests check this with the GC turned off in the shim.
 - Decision against a forced GC: the guard does not force a GC with an oversized allocation. The measured kernel GC on every 10th yield is enough. The trick depends on the behavior of a failed allocation, which is not measured in game.
 - The program never calls `collectgarbage`. OpenComputers removes it on purpose.
 - Before parsing, `bin/html.lua` compares the file size with free memory. If the file clearly cannot fit, it stops before reading.
 - Controlled errors are strings with the prefix `html: `, raised with `error("html: <reason>", 0)`. `bin/html.lua` prints such a message as it is. Any other error value is unexpected: `bin/html.lua` prints one line and writes the full traceback to `/tmp/html-error.log`. This design does not depend on how error tables pass through `pcall` and `xpcall` (see `docs/probe/FACTS.md`, run t3), This is simpler than error tables.
 - `/tmp` is only 64 KB. `/tmp/html-error.log` is capped at 8 KB. When the log would grow past the cap, the oldest content is dropped and the newest is kept.
+- On a full `/tmp`, `write` returns success because it is buffered. The error "not enough space" shows at `flush` or `close` (measured). So every file write (the error log, `--stats-out`) checks the results of `write`, `flush` and `close`. A failure gives one `html: ` line. When the error log cannot be written, the unexpected error line ends with `(cannot write /tmp/html-error.log: <reason>)` in place of `(details in /tmp/html-error.log)`.
 - `bin/html.lua` takes the traceback function as a parameter, because the test sandbox removes `debug`. In game it gets `debug.traceback`.
-- Ctrl+C (interrupted) exits cleanly and restores the screen.
+- Ctrl+C (`key_down` char 3, or the "interrupted" event) exits cleanly and restores the screen.
 
 ## Code Style
 

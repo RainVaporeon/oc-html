@@ -6,6 +6,17 @@ local M = {}
 local YIELD_INTERVAL = 1
 -- In freeMemory() units (real bytes / ramScale).
 local MEMORY_RESERVE = 192 * 1024
+-- freeMemory() units are real bytes / RAM_SCALE (measured 1.800 in probe v2).
+local RAM_SCALE = 1.8
+-- The caller keeps one table slot per line. Lua doubles the array part of a
+-- table when it is full: from capacity c to 2c it allocates 2c new slots of
+-- 16 real bytes while the old slots are still live, so the doubling needs
+-- 32 * c / RAM_SCALE free units at once. On large.html free memory hit 0 at
+-- the 8192 to 16384 doubling. So the effective reserve is
+-- max(MEMORY_RESERVE, 32 * c / RAM_SCALE), where c is the smallest power of
+-- two >= the line count, at least TABLE_SLOTS_MIN.
+local SLOT_DOUBLING = 32 / RAM_SCALE
+local TABLE_SLOTS_MIN = 1024
 -- A raw freeMemory() reading can be up to about 1.3 MB too low (measured),
 -- because it includes garbage that is not collected yet. The OpenOS kernel
 -- runs a full GC on every 10th resume of the main coroutine, so 11 yields
@@ -16,9 +27,11 @@ local GC_RISE_MIN = 16384
 local GC_RISE_PART = 0.05
 -- The rate limit waits at least this many lines between two settles.
 local SETTLE_GAP_MIN = 25
--- The lowest and highest measured live cost per line in 0.0.3a (scaled).
-local LINE_COST_MIN = 160
-local LINE_COST_START = 410
+-- Live cost per line in scaled units. Probe v2 measured about 66.5 per line
+-- on large.html in 0.0.4a, and 46 to 76 between settles that saw a GC. The
+-- start value and the floor stay a little above these values.
+local LINE_COST_MIN = 80
+local LINE_COST_START = 100
 -- The stats trace line must stay under about 1000 characters.
 local TRACE_MAX = 60
 
@@ -45,6 +58,9 @@ local settle_at, settle_result, settle_gc
 local gc_line, gc_free
 local line_cost = LINE_COST_START
 local cost_measured = false
+-- The table capacity c for the last line count and the effective reserve.
+local slots = TABLE_SLOTS_MIN
+local reserve = math.max(MEMORY_RESERVE, SLOT_DOUBLING * slots)
 
 local function trace_add(free, mark)
   local n = #trace_lines
@@ -154,6 +170,13 @@ function M.reset()
   gc_line, gc_free = nil, nil
   line_cost = LINE_COST_START
   cost_measured = false
+  slots = TABLE_SLOTS_MIN
+  reserve = math.max(MEMORY_RESERVE, SLOT_DOUBLING * slots)
+end
+
+-- The effective reserve for the current line count. See SLOT_DOUBLING.
+function M.reserve()
+  return reserve
 end
 
 local function stop(lines)
@@ -164,11 +187,12 @@ local function stop(lines)
   error("html: page too large for available memory" .. progress, 0)
 end
 
--- Settle rule. A raw reading under the reserve settles only when the rate
+-- Settle rule. "reserve" is the effective reserve (see SLOT_DOUBLING).
+-- A raw reading under the reserve settles only when the rate
 -- limit allows it. After a settle at progress P with result F, the wait is
--- gap = max(25, (F - reserve) / (2 * B)). B is the live cost per line: 410
+-- gap = max(25, (F - reserve) / (2 * B)). B is the live cost per line: 100
 -- at the start, then the highest cost measured between two settles that saw
--- a GC, but at least 160. At B per line, one gap uses at most half of the
+-- a GC, but at least 80. At B per line, one gap uses at most half of the
 -- headroom F - reserve. The next settle comes when progress grew by gap, or
 -- when progress grew by gap / 2 and a raw reading is under reserve / 2. The
 -- second case covers lines that cost up to 2 * B. Between settles, a raw
@@ -184,12 +208,12 @@ local function check(free, lines)
     if progress < settle_at then
       settle_at = progress
     end
-    local low = free < MEMORY_RESERVE / 2
+    local low = free < reserve / 2
     if low and not settle_gc then
       stop(lines)
     end
     local gap = math.max(SETTLE_GAP_MIN,
-      (settle_result - MEMORY_RESERVE) / (2 * line_cost))
+      (settle_result - reserve) / (2 * line_cost))
     if low then
       gap = math.max(SETTLE_GAP_MIN, gap / 2)
     end
@@ -199,7 +223,7 @@ local function check(free, lines)
   end
   local best, gc = settle()
   trace_add(best, gc and "S" or "s")
-  if best < MEMORY_RESERVE then
+  if best < reserve then
     stop(lines)
   end
   settle_at, settle_result, settle_gc = progress, best, gc
@@ -223,13 +247,19 @@ function M.tick(lines)
   end
   if lines then
     last_lines = lines
+    if lines > slots then
+      repeat
+        slots = slots * 2
+      until slots >= lines
+      reserve = math.max(MEMORY_RESERVE, SLOT_DOUBLING * slots)
+    end
   end
   local free = read_free()
   trace_ticks = trace_ticks + 1
   if trace_ticks % trace_every == 0 then
     trace_add(free, "")
   end
-  if free < MEMORY_RESERVE then
+  if free < reserve then
     check(free, lines)
   end
 end
