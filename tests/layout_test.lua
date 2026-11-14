@@ -92,6 +92,10 @@ end
 local LAYOUT_BLOCKS = {
   { "br gives one line break", "a<br>b", { "a", "b" } },
   { "two br give one empty line", "a<br><br>b", { "a", "", "b" } },
+  { "br at the start gives no blank line", "<br>x", { "x" } },
+  { "two br at the start give no blank line", "<br><br>x", { "x" } },
+  { "br pair after text keeps the empty line", "x<br><br>y",
+    { "x", "", "y" } },
   { "hr fills the width", { "a<hr>b", width = 5 },
     { "a", string.rep("\xE2\x94\x80", 5), "b" } },
   { "hr inside emphasis", { "<b>a<hr>b</b>", width = 3 },

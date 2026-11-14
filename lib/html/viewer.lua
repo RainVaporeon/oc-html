@@ -49,8 +49,6 @@ local NUMPAD_KEYS = {
 local CHAR_CTRL_C = 3
 local CHAR_ENTER = 13
 local CODE_ENTER = 28
-local CHAR_ESC = 27
-local CODE_ESC = 1
 local CHAR_Q, CHAR_UPPER_Q = 113, 81
 local CHAR_Y, CHAR_UPPER_Y = 121, 89
 
@@ -62,7 +60,7 @@ local SHORT_HINT = "q:quit"
 -- The full hint is used only when the title keeps this many columns.
 local TITLE_MIN = 20
 local PROMPT = " Quit? (y/n)"
-local POPUP_HINT = "Enter: close"
+local POPUP_BUTTON = "[OK]"
 
 -- Returns "interrupted", "quit", a navigation name, or nil for other events.
 local function classify(name, char, code)
@@ -310,10 +308,10 @@ local function view(lines, opts, gpu, pull)
     end
   end
 
-  -- Shows the popup until Enter or Esc. Other keys are ignored. Returns
+  -- Shows the popup until Enter. Other keys are ignored. Returns
   -- "interrupted" on Ctrl+C, else nil.
   local function show_popup(text)
-    local first, last = screen.popup(text .. "\n\n" .. POPUP_HINT)
+    local first, last = screen.popup(text .. "\n\n" .. POPUP_BUTTON)
     while true do
       local name, _, char, code = pull(IDLE_TIMEOUT)
       if name == "interrupted" then
@@ -323,7 +321,7 @@ local function view(lines, opts, gpu, pull)
         if char == CHAR_CTRL_C then
           return "interrupted"
         end
-        if is_enter(char, code) or char == CHAR_ESC or code == CODE_ESC then
+        if is_enter(char, code) then
           draw_rows(first, last)
           return nil
         end
@@ -376,7 +374,7 @@ end
 
 -- Shows lines until the user quits. Returns "quit" or "interrupted".
 -- opts: title, file (shown when there is no title), no_rescale, error.
--- opts.error is a text shown in a popup over the first screen. Enter or Esc
+-- opts.error is a text shown in a popup over the first screen. Only Enter
 -- closes it, then the user browses as usual.
 -- An error inside restores the screen and is raised again.
 function M.run(lines, opts, deps)

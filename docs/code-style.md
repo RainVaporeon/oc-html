@@ -8,7 +8,7 @@ local computer = require("computer")
 local M = {}
 
 -- OpenOS kills a program that runs for 5 s without yielding.
-local YIELD_INTERVAL = 1
+local YIELD_INTERVAL = 0.25
 local MEMORY_RESERVE = 192 * 1024
 
 local last_yield = os.clock()

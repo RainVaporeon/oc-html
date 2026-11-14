@@ -776,9 +776,10 @@ local POPUP = {
   popup_row("the popup shows at start", { PROBE }, "quit", true, 1, false),
   popup_row("Enter closes the popup", { ENTER, PROBE }, "quit", false, 1,
     false),
-  popup_row("Esc closes the popup", { ESC, PROBE }, "quit", false, 1, false),
-  popup_row("Esc with char 0 closes the popup", { key(1, 0), PROBE }, "quit",
-    false, 1, false),
+  popup_row("Esc is ignored while the popup shows", { ESC, PROBE }, "quit",
+    true, 1, false),
+  popup_row("Esc with char 0 is ignored while the popup shows",
+    { key(1, 0), PROBE }, "quit", true, 1, false),
   popup_row("Down is ignored while the popup shows", { key(DOWN), PROBE },
     "quit", true, 1, false),
   popup_row("PgDn and End are ignored while the popup shows",
@@ -838,6 +839,20 @@ function T.popup_shows_over_the_page()
   t.eq(rows[24]:match("^line %d+"), "line 24")
   t.ok(rows[25]:find("^ T "), rows[25])
   t.ok(popup_shown({ row = function(y) return rows[y] end }, 25))
+end
+
+-- The popup shows an [OK] button under the error text and no Enter hint.
+function T.popup_shows_an_ok_button()
+  local rows
+  run({ lines = make_lines(100), opts = { title = "T", error = ERROR_TEXT },
+    events = { function(ctl) rows = ctl.screen() end, ENTER, Q, Y } })
+  local text_y, ok_y
+  for y = 1, 24 do
+    if rows[y]:find(ERROR_TEXT, 1, true) then text_y = y end
+    if rows[y]:find("[OK]", 1, true) then ok_y = y end
+  end
+  t.ok(text_y and ok_y and ok_y > text_y, "[OK] below the text")
+  t.ok(not table.concat(rows, "\n"):find("Enter: close", 1, true))
 end
 
 -- After the popup closes, the screen equals the page without a popup.

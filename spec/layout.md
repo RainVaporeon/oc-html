@@ -32,7 +32,7 @@ The layout consumes tokens, keeps a small stack of open elements, and appends fi
 - Unknown tags are treated as inline. Their content is kept.
 - A dropped element ends at its own end tag or when a parent closes. A dropped element nested in the same dropped element (`svg` in `svg`) needs its own end tag. A stray end tag of a dropped element is ignored.
 - There is no blank line at the start or the end of the output.
-- Each `br` gives one line break. Two `br` in a row give one empty line.
+- Each `br` gives one line break. Two `br` in a row give one empty line. A `br` before any content at the start gives no line.
 
 ## The open-element stack
 

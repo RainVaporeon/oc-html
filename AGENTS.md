@@ -14,6 +14,10 @@ Remote files can be rendered by: `html http(s)://example.com/`
 
 Note: Javascript and CSS is not considered when rendering, this intends to be a minimalistic implementation of a HTML viewer/browser.
 
+## subagents
+
+Prioritize using Sonnet for code writing and other mechanical work. Opus should be reserved only for planning, not for writing code or documentations.
+
 ## features
 
 This script aims to be capable of rendering basic HTML pages, make web requests and browse the web (internet card needed.)

@@ -186,7 +186,7 @@ function T.f4_huge_width_is_controlled()
 end
 
 function T.f5_restore_closure_outside_pcall()
-  t.skip("not testable here: building the closure at viewer.lua:306 cannot "
+  t.skip("not testable here: building the closure at viewer.lua:399 cannot "
     .. "raise except by out of memory, and the sandbox has no way to force "
     .. "that at one exact allocation")
 end

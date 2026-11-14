@@ -501,7 +501,9 @@ function M.new(width)
       end
       return
     end
-    local own, pre = false, in_pre
+    ---@type string|false
+    local own = false
+    local pre = in_pre
     if HEADING[name] then
       block()
       blank()
@@ -515,7 +517,10 @@ function M.new(width)
     elseif name == "br" then
       commit()
       space = false
-      end_line()
+      -- A br before any content gives no blank first line.
+      if n > 0 or np > 0 then
+        end_line()
+      end
     elseif name == "hr" then
       block()
       hr_line = hr_line or M.NORMAL .. rep("─", width)
