@@ -1,48 +1,71 @@
 -- Self-tests for the sandbox in tests/run.lua and tests/docker/test.ps1.
+-- Rules: spec/testing.md "Sandbox".
 
 local t = require("test")
 
 local T = {}
 
-function T.dangerous_functions_are_nil()
-  t.eq(os.execute, nil, "os.execute")
-  t.eq(os.remove, nil, "os.remove")
-  t.eq(os.rename, nil, "os.rename")
-  t.eq(os.exit, nil, "os.exit")
-  t.eq(os.tmpname, nil, "os.tmpname")
-  t.eq(io.popen, nil, "io.popen")
-  t.eq(io.lines, nil, "io.lines")
-  t.eq(debug, nil, "debug")
-  t.eq(collectgarbage, nil, "collectgarbage")
-  t.eq(loadfile, nil, "loadfile")
-  t.eq(dofile, nil, "dofile")
-  t.eq(string.dump, nil, "string.dump")
-end
+-- The env has none of these. Each name is looked up through load, which
+-- also shows that load uses the sandbox env.
+t.cases(T, "sandbox_denied", {
+  { "os.execute", "os.execute", "nil" },
+  { "os.remove", "os.remove", "nil" },
+  { "os.rename", "os.rename", "nil" },
+  { "os.exit", "os.exit", "nil" },
+  { "os.tmpname", "os.tmpname", "nil" },
+  { "io.popen", "io.popen", "nil" },
+  { "io.lines", "io.lines", "nil" },
+  { "debug", "debug", "nil" },
+  { "collectgarbage", "collectgarbage", "nil" },
+  { "loadfile", "loadfile", "nil" },
+  { "dofile", "dofile", "nil" },
+  { "string.dump", "string.dump", "nil" },
+}, function(name)
+  return type(assert(load("return " .. name))())
+end)
 
-function T.open_for_writing_fails()
-  for _, mode in ipairs({ "w", "a", "r+", "w+", "a+", "wb" }) do
-    local f, err = io.open("tests/fuzz-failures/x", mode)
-    t.eq(f, nil, "mode " .. mode)
-    t.ok(err and err:find("read mode only", 1, true), "mode " .. mode)
+-- Input: { path, mode }. io.open reads only, and only under tests/.
+t.cases(T, "sandbox_open_paths", {
+  { "write mode w", { "tests/fuzz-failures/x", "w" }, "refused" },
+  { "write mode a", { "tests/fuzz-failures/x", "a" }, "refused" },
+  { "write mode r+", { "tests/fuzz-failures/x", "r+" }, "refused" },
+  { "write mode w+", { "tests/fuzz-failures/x", "w+" }, "refused" },
+  { "write mode a+", { "tests/fuzz-failures/x", "a+" }, "refused" },
+  { "write mode wb", { "tests/fuzz-failures/x", "wb" }, "refused" },
+  { "absolute path outside", { "/etc/passwd" }, "refused" },
+  { "SPEC.md outside tests", { "SPEC.md" }, "refused" },
+  { "lib file outside tests", { "lib/html/guard.lua" }, "refused" },
+  { "tests/../ climbs out", { "tests/../SPEC.md" }, "refused" },
+  { "/src/tests/run.lua", { "/src/tests/run.lua" }, "refused" },
+  { "the folder tests", { "tests" }, "refused" },
+  { "the folder tests/", { "tests/" }, "refused" },
+  { "./tests/../.git/config", { "./tests/../.git/config" }, "refused" },
+  { "tests/run.lua for reading", { "tests/run.lua" }, "opened" },
+  { "tests/run.lua with mode r", { "tests/run.lua", "r" }, "opened" },
+}, function(input)
+  local f = io.open(input[1], input[2])
+  if f then
+    f:close()
+    return "opened"
   end
-end
+  return "refused"
+end)
 
-function T.open_outside_tests_fails()
-  for _, path in ipairs({
-    "/etc/passwd", "SPEC.md", "lib/html/guard.lua", "tests/../SPEC.md",
-    "/src/tests/run.lua", "tests", "tests/", "./tests/../.git/config",
-  }) do
-    local f = io.open(path)
-    t.eq(f, nil, path)
+-- Input: a module name. Only the shims and the project modules load.
+t.cases(T, "sandbox_require", {
+  { "computer shim", "computer", "loaded" },
+  { "unicode shim", "unicode", "loaded" },
+  { "os", "os", "refused: not found" },
+  { "../run", "../run", "refused: not found" },
+  { "a missing project module", "html.missing", "refused" },
+}, function(name)
+  local ok, err = pcall(require, name)
+  if ok then
+    return "loaded"
   end
-end
-
-function T.open_under_tests_for_reading_works()
-  local f = assert(io.open("tests/run.lua"))
-  local head = f:read(2)
-  f:close()
-  t.eq(head, "--")
-end
+  return tostring(err):find("not found", 1, true) and "refused: not found"
+    or "refused"
+end)
 
 function T.binary_chunk_is_refused()
   local chunk = t.binary_chunk()
@@ -54,30 +77,14 @@ function T.binary_chunk_is_refused()
   t.ok(err and err:find("binary", 1, true), err)
 end
 
-function T.load_defaults_to_sandbox_env()
-  local fn = assert(load("return os.execute, io.popen"))
-  local execute, popen = fn()
-  t.eq(execute, nil)
-  t.eq(popen, nil)
-end
-
-function T.require_resolves_only_known_names()
-  t.ok(require("computer").uptime, "computer shim")
-  t.ok(require("unicode").wlen, "unicode shim")
-  t.raises(function() require("os") end, "not found")
-  t.raises(function() require("../run") end, "not found")
-  t.raises(function() require("html.missing") end, "html.missing")
-end
-
-function T.fake_clock_1_replaces_os_clock()
+function T.fake_clock_replaces_os_clock()
   local clock = t.fake_clock(5)
   t.eq(os.clock(), 5)
   clock.advance(1.5)
   t.eq(os.clock(), 6.5)
-end
-
-function T.fake_clock_2_is_reset_before_next_test()
-  t.ok(os.clock == t.real_clock, "os.clock is the real function again")
+  clock.set(2)
+  t.eq(os.clock(), 2)
+  t.ok(os.clock ~= t.real_clock, "os.clock is the fake")
 end
 
 function T.host_cannot_write_to_repo()

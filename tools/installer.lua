@@ -123,8 +123,9 @@ local function call(deps, name, ...)
 end
 
 -- Phase 1: writes every file to <target>.new and compares the read-back
--- copy with the embedded content. Returns the temporary paths written.
-local function write_temps(plan, deps)
+-- copy with the embedded content. Returns the temporary paths written and
+-- a failure reason. state.started becomes true at the first write.
+local function write_temps(plan, deps, state)
   local written = {}
   for _, item in ipairs(plan) do
     local dir = dir_of(item.target)
@@ -136,7 +137,9 @@ local function write_temps(plan, deps)
       if not ok then
         return written, "cannot create " .. dir .. " (" .. tostring(why) .. ")"
       end
+      state.started = true
     end
+    state.started = true
     written[#written + 1] = item.temp
     local ok, why = call(deps, "write", item.temp, item.content)
     if not ok then
@@ -227,12 +230,14 @@ local function install(opts, deps)
     deps.out("dry run: would install " .. #plan .. " files")
     return
   end
-  local written, why = write_temps(plan, deps)
+  local state = {}
+  local written, why = write_temps(plan, deps, state)
   if why then
     for _, temp in ipairs(written) do
       call(deps, "remove", temp)
     end
-    fail(why .. "; old files kept")
+    -- Before the first write nothing changed, so the line has no suffix.
+    fail(state.started and why .. "; old files kept" or why)
   end
   why = swap(plan, deps)
   if why then

@@ -1,4 +1,6 @@
 -- Checks the shims against docs/probe/FACTS.md.
+-- Rules: spec/testing.md "Environment" (the shims copy the measured
+-- behavior exactly), docs/probe/FACTS.md.
 
 local t = require("test")
 local unicode = require("unicode")
@@ -8,90 +10,85 @@ local T = {}
 
 local FFFD = "\xEF\xBF\xBD"
 
--- Probe strings and the measured values (probe key text.<name>.*).
-local TEXT = {
-  { "ascii", "abc", len = 3, wlen = 3, width = 1, wide = false, sub = "ab" },
-  { "e_acute", "\xC3\xA9", len = 1, wlen = 1, width = 1, wide = false,
-    sub = "\xC3\xA9" },
-  { "box", "\xE2\x94\x80", len = 1, wlen = 1, width = 1, wide = false,
-    sub = "\xE2\x94\x80" },
-  { "zh", "\xE4\xB8\xAD\xE6\x96\x87", len = 2, wlen = 4, width = 2,
-    wide = true, sub = "\xE4\xB8\xAD\xE6\x96\x87" },
-  { "ja", "\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E\xE3\x83\x86\xE3\x82\xAD"
-    .. "\xE3\x82\xB9\xE3\x83\x88", len = 7, wlen = 14, width = 2, wide = true,
-    sub = "\xE6\x97\xA5\xE6\x9C\xAC" },
-  { "emoji", "\xF0\x9F\x98\x80", len = 1, wlen = 2, width = 2, wide = true,
-    sub = "\xF0\x9F\x98\x80" },
-  { "combining", "e\xCC\x81", len = 2, wlen = 2, width = 1, wide = false,
-    sub = "e\xCC\x81" },
-  { "lone_cont", "\x80", len = 1, wlen = 1, width = 1, wide = false,
-    sub = FFFD },
-  { "truncated", "\xE4\xB8", len = 1, wlen = 1, width = 1, wide = false,
-    sub = FFFD },
-  { "overlong", "\xC0\xAF", len = 2, wlen = 2, width = 1, wide = false,
-    sub = FFFD .. FFFD },
-  { "surrogate", "\xED\xA0\x80", len = 1, wlen = 1, width = 1, wide = false,
-    sub = FFFD },
-  { "zwsp", "\xE2\x80\x8B", len = 1, wlen = 2, width = 2, wide = true,
-    sub = "\xE2\x80\x8B" },
-}
+-- Probe strings and the measured values (probe key text.<name>.*). A row is
+-- { name, { string, fields }, values }. fields lists what the row checks, in
+-- order: len, wlen, width (charWidth), wide (isWide), sub (sub(s, 1, 2)). A
+-- row with fewer fields has no measured value for the others.
+local ALL = { "len", "wlen", "width", "wide", "sub" }
+local LEN_WLEN = { "len", "wlen" }
 
--- Probe v2 strings and the measured len and wlen (probe2: text.<name>.*).
--- wlen equals the screen columns.
-local WIDTHS = {
-  { "tab", "a\tb", len = 3, wlen = 4 },
-  { "vs16", "\xE2\x98\xBA\xEF\xB8\x8F", len = 2, wlen = 3 },
-  { "hangul", "\xED\x95\x9C\xEA\xB5\xAD\xEC\x96\xB4", len = 3, wlen = 6 },
-  { "fullwidth", "\xEF\xBC\xA1", len = 1, wlen = 2 },
-  { "combining", "e\xCC\x81", len = 2, wlen = 2 },
-  { "arabic", "\xD8\xB9\xD8\xB1\xD8\xA8\xD9\x8A", len = 4, wlen = 4 },
-  { "box", "\xE2\x94\x8C\xE2\x94\x80\xE2\x94\x90", len = 3, wlen = 3 },
-  { "greek", "\xCE\xB1\xCE\xB2\xCE\xB3", len = 3, wlen = 3 },
-}
+local function fact(name, s, fields, ...)
+  return { name, { s, fields }, { ... } }
+end
 
-function T.unicode_matches_probe2_widths()
-  for _, row in ipairs(WIDTHS) do
-    t.eq(unicode.len(row[2]), row.len, row[1] .. " len")
-    t.eq(unicode.wlen(row[2]), row.wlen, row[1] .. " wlen")
+t.cases(T, "unicode_facts", {
+  fact("ascii", "abc", ALL, 3, 3, 1, false, "ab"),
+  fact("e_acute", "\xC3\xA9", ALL, 1, 1, 1, false, "\xC3\xA9"),
+  fact("box", "\xE2\x94\x80", ALL, 1, 1, 1, false, "\xE2\x94\x80"),
+  fact("zh", "\xE4\xB8\xAD\xE6\x96\x87", ALL, 2, 4, 2, true,
+    "\xE4\xB8\xAD\xE6\x96\x87"),
+  fact("ja", "\xE6\x97\xA5\xE6\x9C\xAC\xE8\xAA\x9E\xE3\x83\x86\xE3\x82\xAD"
+    .. "\xE3\x82\xB9\xE3\x83\x88", ALL, 7, 14, 2, true,
+    "\xE6\x97\xA5\xE6\x9C\xAC"),
+  fact("emoji", "\xF0\x9F\x98\x80", ALL, 1, 2, 2, true, "\xF0\x9F\x98\x80"),
+  fact("combining", "e\xCC\x81", ALL, 2, 2, 1, false, "e\xCC\x81"),
+  fact("lone_cont", "\x80", ALL, 1, 1, 1, false, FFFD),
+  fact("truncated", "\xE4\xB8", ALL, 1, 1, 1, false, FFFD),
+  fact("overlong", "\xC0\xAF", ALL, 2, 2, 1, false, FFFD .. FFFD),
+  fact("surrogate", "\xED\xA0\x80", ALL, 1, 1, 1, false, FFFD),
+  fact("zwsp", "\xE2\x80\x8B", ALL, 1, 2, 2, true, "\xE2\x80\x8B"),
+  -- Probe v2: wlen equals the screen columns.
+  fact("tab in text", "a\tb", LEN_WLEN, 3, 4),
+  fact("tab alone", "\t", LEN_WLEN, 1, 2),
+  fact("vs16", "\xE2\x98\xBA\xEF\xB8\x8F", LEN_WLEN, 2, 3),
+  fact("U+FE0F alone", "\xEF\xB8\x8F", { "wlen" }, 2),
+  fact("hangul", "\xED\x95\x9C\xEA\xB5\xAD\xEC\x96\xB4", LEN_WLEN, 3, 6),
+  fact("fullwidth", "\xEF\xBC\xA1", LEN_WLEN, 1, 2),
+  fact("arabic", "\xD8\xB9\xD8\xB1\xD8\xA8\xD9\x8A", LEN_WLEN, 4, 4),
+  fact("box line", "\xE2\x94\x8C\xE2\x94\x80\xE2\x94\x90", LEN_WLEN, 3, 3),
+  fact("greek", "\xCE\xB1\xCE\xB2\xCE\xB3", LEN_WLEN, 3, 3),
+}, function(input)
+  local s = input[1]
+  local get = {
+    len = function() return unicode.len(s) end,
+    wlen = function() return unicode.wlen(s) end,
+    width = function() return unicode.charWidth(s) end,
+    wide = function() return unicode.isWide(s) end,
+    sub = function() return unicode.sub(s, 1, 2) end,
+  }
+  local r = {}
+  for i, field in ipairs(input[2]) do
+    r[i] = get[field]()
   end
-  t.eq(unicode.len("\t"), 1, "tab len")
-  t.eq(unicode.wlen("\t"), 2, "tab wlen")
-  t.eq(unicode.wlen("\xEF\xB8\x8F"), 2, "U+FE0F wlen")
-end
+  return r
+end)
 
-function T.unicode_matches_probe_text_table()
-  for _, row in ipairs(TEXT) do
-    local name, s = row[1], row[2]
-    t.eq(unicode.len(s), row.len, name .. " len")
-    t.eq(unicode.wlen(s), row.wlen, name .. " wlen")
-    t.eq(unicode.charWidth(s), row.width, name .. " charWidth")
-    t.eq(unicode.isWide(s), row.wide, name .. " isWide")
-    t.eq(unicode.sub(s, 1, 2), row.sub, name .. " sub(1, 2)")
-  end
-end
+-- Input: { function name, arguments }.
+t.cases(T, "unicode_functions", {
+  { "char ASCII", { "char", { 0x41 } }, "A" },
+  { "char U+2500", { "char", { 0x2500 } }, "\xE2\x94\x80" },
+  { "char U+1F600", { "char", { 0x1F600 } }, "\xF0\x9F\x98\x80" },
+  { "char above U+10FFFF", { "char", { 0x110000 } },
+    "error: Not a valid Unicode code point: 0x110000" },
+  { "sub with a negative start", { "sub", { "abcdef", -2 } }, "ef" },
+  { "sub counts characters", { "sub", { "\xE4\xB8\xAD\xE6\x96\x87", 2 } },
+    "\xE6\x96\x87" },
+  { "reverse", { "reverse", { "a\xE4\xB8\xADb" } }, "b\xE4\xB8\xADa" },
+  { "upper", { "upper", { "abc\xC3\xA9" } }, "ABC\xC3\x89" },
+  { "lower", { "lower", { "ABC\xC3\x89" } }, "abc\xC3\xA9" },
+  { "wtrunc cuts before a wide character that does not fit",
+    { "wtrunc", { "\xE4\xB8\xAD\xE6\x96\x87abc", 3 } }, "\xE4\xB8\xAD" },
+  { "wtrunc ASCII", { "wtrunc", { "abcdef", 4 } }, "abc" },
+}, function(input)
+  local ok, r = pcall(unicode[input[1]], table.unpack(input[2]))
+  return ok and r or ("error: " .. tostring(r))
+end)
 
-function T.unicode_char_matches_probe()
-  t.eq(unicode.char(0x41), "A")
-  t.eq(unicode.char(0x2500), "\xE2\x94\x80")
-  t.eq(unicode.char(0x1F600), "\xF0\x9F\x98\x80")
-  t.raises(function() unicode.char(0x110000) end,
-    "^Not a valid Unicode code point: 0x110000$")
-end
-
-function T.unicode_wtrunc_matches_probe()
-  t.eq(unicode.wtrunc("\xE4\xB8\xAD\xE6\x96\x87abc", 3), "\xE4\xB8\xAD")
-end
-
-function T.unicode_other_functions()
-  t.eq(unicode.sub("abcdef", -2), "ef")
-  t.eq(unicode.sub("\xE4\xB8\xAD\xE6\x96\x87", 2), "\xE6\x96\x87")
-  t.eq(unicode.reverse("a\xE4\xB8\xADb"), "b\xE4\xB8\xADa")
-  t.eq(unicode.upper("abc\xC3\xA9"), "ABC\xC3\x89")
-  t.eq(unicode.lower("ABC\xC3\x89"), "abc\xC3\xA9")
-  t.eq(unicode.wtrunc("abcdef", 4), "abc")
-end
+-- Each test below resets the computer shim first, so it does not depend on
+-- an earlier test.
 
 function T.uptime_moves_in_50ms_steps()
+  computer.test.reset()
   computer.test.set_clock(1.0)
   t.eq(computer.uptime(), 1.0)
   computer.test.advance(0.049)
@@ -101,11 +98,13 @@ function T.uptime_moves_in_50ms_steps()
 end
 
 function T.memory_defaults()
+  computer.test.reset()
   t.eq(computer.totalMemory(), 2097152)
   t.ok(computer.freeMemory() > 1700000, "about 1.8 MB free")
 end
 
 function T.memory_jitter_first_reading_lowest()
+  computer.test.reset()
   computer.test.set_free(1808337)
   computer.test.set_jitter(213499)
   local first = computer.freeMemory()
@@ -115,12 +114,21 @@ function T.memory_jitter_first_reading_lowest()
   end
 end
 
-function T.shim_state_resets_between_tests()
+-- The reset puts back the state that a test changed. The test changes the
+-- state itself first.
+function T.shim_reset_restores_the_state()
+  computer.test.set_clock(7.0)
+  computer.freeMemory()
+  os.sleep(0)
+  t.eq(computer.test.readings(), 1, "state is changed")
+  computer.test.reset()
   t.eq(computer.uptime(), 0)
   t.eq(computer.test.readings(), 0)
+  t.eq(computer.test.sleeps(), 0)
 end
 
 function T.os_sleep_advances_uptime()
+  computer.test.reset()
   os.sleep(0)
   t.eq(computer.test.sleeps(), 1)
   os.sleep(1)

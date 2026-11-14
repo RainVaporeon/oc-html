@@ -1,5 +1,6 @@
 -- Tests for the installer template (tools/installer.lua), its generator
 -- (tools/mkinstall.lua) and the installers in releases/.
+-- Rules: spec/installer.md, spec/release.md.
 
 local t = require("test")
 
@@ -88,216 +89,290 @@ local function fake_fs(opts)
   return fs
 end
 
-local function run(M, fs, args)
-  args = args or {}
-  args.n = #args
-  return M.main(args, fs.deps)
-end
-
--- Paths in fs that end with .new or .old.
-local function leftovers(fs)
-  local found = {}
-  for p in pairs(fs.files) do
-    if p:find("%.new$") or p:find("%.old$") then
-      found[#found + 1] = p
+-- Everything a run leaves behind, as a list of lines: the exit code, the
+-- number of writes, the output, the error output, the files and the
+-- folders (the root is left out).
+local function render(fs, code)
+  local r = { "exit " .. code, "writes " .. fs.writes }
+  for _, line in ipairs(fs.out) do
+    r[#r + 1] = "out " .. line
+  end
+  for _, line in ipairs(fs.err) do
+    r[#r + 1] = "err " .. line
+  end
+  local files, dirs = {}, {}
+  for p, c in pairs(fs.files) do
+    files[#files + 1] = "file " .. p .. " " .. string.format("%q", c)
+  end
+  for d in pairs(fs.dirs) do
+    if d ~= "/" then
+      dirs[#dirs + 1] = "dir " .. d
     end
   end
-  table.sort(found)
-  return found
+  table.sort(files)
+  table.sort(dirs)
+  for _, line in ipairs(files) do
+    r[#r + 1] = line
+  end
+  for _, line in ipairs(dirs) do
+    r[#r + 1] = line
+  end
+  return r
+end
+
+-- The expected list for render. files is a map of path to content, dirs a
+-- list of paths.
+local function expect(code, writes, out, err, files, dirs)
+  local r = { "exit " .. code, "writes " .. writes }
+  for _, line in ipairs(out) do
+    r[#r + 1] = "out " .. line
+  end
+  for _, line in ipairs(err) do
+    r[#r + 1] = "err " .. line
+  end
+  local fl, dl = {}, {}
+  for p, c in pairs(files) do
+    fl[#fl + 1] = "file " .. p .. " " .. string.format("%q", c)
+  end
+  for _, d in ipairs(dirs) do
+    dl[#dl + 1] = "dir " .. d
+  end
+  table.sort(fl)
+  table.sort(dl)
+  for _, line in ipairs(fl) do
+    r[#r + 1] = line
+  end
+  for _, line in ipairs(dl) do
+    r[#r + 1] = line
+  end
+  return r
+end
+
+local function copy(list)
+  local c = {}
+  for k, v in pairs(list or {}) do
+    c[k] = v
+  end
+  return c
 end
 
 local OLD = {
   ["/home/bin/html.lua"] = "old html\n",
   ["/home/lib/html/guard.lua"] = "old guard\n",
 }
+local OLD_DIRS = { "/home", "/home/bin", "/home/lib", "/home/lib/html" }
+local HEADER = "html-install: oc-html 9.9.9a"
+local BIN, GUARD = SAMPLE["bin/html.lua"], SAMPLE["lib/html/guard.lua"]
+-- 14 + 10 for the files, 2 * 1024 margin, 14 for the temporary copy of the
+-- largest file.
+local NEED = 14 + 10 + 2 * 1024 + 14
 
-local function old_fs(opts)
-  opts.files = OLD
-  opts.dirs = { "/home", "/home/bin", "/home/lib", "/home/lib/html" }
-  return fake_fs(opts)
+local function installed(prefix)
+  return {
+    [prefix .. "/bin/html.lua"] = BIN,
+    [prefix .. "/lib/html/guard.lua"] = GUARD,
+  }
 end
 
-local function assert_old_kept(fs)
-  t.eq(fs.files, OLD, "old files kept, nothing else left")
-end
-
--- Template: main with a fake filesystem.
-
-function T.installs_into_default_prefix()
-  local fs = fake_fs({ dirs = { "/home" } })
-  t.eq(run(template_module(), fs), 0)
-  t.eq(fs.files, {
-    ["/home/bin/html.lua"] = SAMPLE["bin/html.lua"],
-    ["/home/lib/html/guard.lua"] = SAMPLE["lib/html/guard.lua"],
-  })
-  t.eq(fs.out, {
-    "html-install: oc-html 9.9.9a",
-    "/home/bin/html.lua 14 bytes",
-    "/home/lib/html/guard.lua 10 bytes",
-    "installed 2 files",
-  })
-  t.eq(fs.err, {})
-end
-
-function T.prefix_option()
-  local fs = fake_fs()
-  t.eq(run(template_module(), fs, { "--prefix", "/mnt/ab/" }), 0)
-  t.eq(fs.files["/mnt/ab/bin/html.lua"], SAMPLE["bin/html.lua"])
-  t.eq(fs.out[#fs.out], "installed 2 files")
-end
-
-function T.relative_prefix_is_resolved()
-  local fs = fake_fs()
-  fs.deps.resolve = function(p) return "/home/" .. p end
-  t.eq(run(template_module(), fs, { "--prefix", "x" }), 0)
-  t.ok(fs.files["/home/x/bin/html.lua"], "resolved")
-end
-
-function T.dry_run_writes_nothing()
-  local fs = fake_fs({ dirs = { "/home" } })
-  t.eq(run(template_module(), fs, { "--dry-run" }), 0)
-  t.eq(fs.writes, 0)
-  t.eq(fs.files, {})
-  t.eq(fs.dirs["/home/bin"], nil, "no directory made")
-  t.eq(fs.out[#fs.out], "dry run: would install 2 files")
-end
-
-function T.upgrade_replaces_old_files()
-  local fs = old_fs({})
-  t.eq(run(template_module(), fs), 0)
-  t.eq(fs.files["/home/bin/html.lua"], SAMPLE["bin/html.lua"])
-  t.eq(fs.files["/home/lib/html/guard.lua"], SAMPLE["lib/html/guard.lua"])
-  t.eq(leftovers(fs), {})
-end
-
-function T.stale_old_file_is_replaced()
-  local fs = old_fs({})
-  fs.files["/home/bin/html.lua.old"] = "stale"
-  t.eq(run(template_module(), fs), 0)
-  t.eq(leftovers(fs), {})
-end
-
-function T.short_space_stops_before_writing()
-  -- Need: 14 + 10 + 2 * 1024 margin + 14 for the largest temporary copy.
-  local need = 14 + 10 + 2 * 1024 + 14
-  local fs = old_fs({ free = need - 1 })
-  t.eq(run(template_module(), fs), 1)
-  t.eq(fs.writes, 0)
-  t.eq(fs.err, { "html-install: not enough space for /home/bin/html.lua: need "
-    .. need .. " bytes, " .. (need - 1) .. " bytes free" })
-  assert_old_kept(fs)
-  fs = old_fs({ free = need })
-  t.eq(run(template_module(), fs), 0)
-end
-
-function T.short_space_stops_dry_run_too()
-  local fs = fake_fs({ free = 10 })
-  t.eq(run(template_module(), fs, { "--dry-run" }), 1)
-  t.eq(#fs.err, 1)
-end
-
-function T.read_only_filesystem_stops()
-  local fs = old_fs({ read_only = true })
-  t.eq(run(template_module(), fs), 1)
-  t.eq(fs.err, { "html-install: read-only filesystem: /home/bin/html.lua" })
-  assert_old_kept(fs)
-end
-
-function T.write_failure_keeps_old_files()
-  local fs = old_fs({ fail_write = function(p) return p:find("guard") end })
-  t.eq(run(template_module(), fs), 1)
-  t.eq(#fs.err, 1)
-  t.ok(fs.err[1]:find("^html%-install: cannot write /home/lib/html/guard%.lua%.new"),
-    fs.err[1])
-  assert_old_kept(fs)
-end
-
-function T.read_back_difference_keeps_old_files()
-  local fs = old_fs({ corrupt = function(p) return p:find("%.new$") end })
-  t.eq(run(template_module(), fs), 1)
-  t.eq(fs.err, { "html-install: read-back differs: /home/bin/html.lua.new; "
-    .. "old files kept" })
-  assert_old_kept(fs)
-end
-
-function T.rename_failure_puts_old_files_back()
-  local fs = old_fs({ fail_rename = function(a)
-    return a == "/home/lib/html/guard.lua.new"
-  end })
-  t.eq(run(template_module(), fs), 1)
-  t.eq(#fs.err, 1)
-  t.ok(fs.err[1]:find("^html%-install: cannot rename "), fs.err[1])
-  assert_old_kept(fs)
-end
-
-function T.directory_in_the_way_stops()
-  local fs = fake_fs({ dirs = { "/home/bin/html.lua" } })
-  t.eq(run(template_module(), fs), 1)
-  t.eq(fs.err, { "html-install: a directory is in the way: /home/bin/html.lua" })
-end
-
-function T.size_mismatch_stops()
+-- Runs main on a fake filesystem. The row input is a table: args, fs (the
+-- fake_fs options), old (true: the old files exist), sizes (changes to the
+-- recorded sizes), hook(fs) (changes the fake before the run).
+local function installer_run(input)
   local M = template_module()
-  M.sizes["bin/html.lua"] = 99
-  local fs = fake_fs()
-  t.eq(run(M, fs), 1)
-  t.ok(fs.err[1]:find("expected 99 %(download again%)$"), fs.err[1])
-  t.eq(fs.writes, 0)
-end
-
-function T.unexpected_error_is_one_line()
-  local fs = fake_fs()
-  fs.deps.space = function() error("boom\nmore") end
-  t.eq(run(template_module(), fs), 1)
-  t.eq(#fs.err, 1)
-  t.ok(fs.err[1]:find("^html%-install: unexpected error: .*boom$"), fs.err[1])
-end
-
-function T.bad_arguments_and_help()
-  local M = template_module()
-  for _, args in ipairs({ { "--nope" }, { "--prefix" }, { "x" } }) do
-    local fs = fake_fs()
-    t.eq(run(M, fs, args), 2)
-    t.eq(#fs.err, 1)
-    t.ok(fs.err[1]:find("^html%-install: "), fs.err[1])
+  for path, size in pairs(input.sizes or {}) do
+    M.sizes[path] = size
   end
-  local fs = fake_fs()
-  t.eq(run(M, fs, { "--help" }), 0)
-  t.eq(fs.out, { M.USAGE })
+  local o = copy(input.fs)
+  if input.old then
+    o.files, o.dirs = OLD, OLD_DIRS
+  end
+  local fs = fake_fs(o)
+  if input.hook then
+    input.hook(fs)
+  end
+  local args = copy(input.args)
+  args.n = #args
+  return render(fs, M.main(args, fs.deps))
 end
 
--- Generator.
+-- A successful install below prefix. dirs lists the folders left behind.
+local function ok_result(prefix, dirs)
+  local out = { HEADER, prefix .. "/bin/html.lua 14 bytes",
+    prefix .. "/lib/html/guard.lua 10 bytes", "installed 2 files" }
+  return expect(0, 2, out, {}, installed(prefix), dirs)
+end
+
+-- spec/installer.md "Behavior": output, prefix, --dry-run, write order.
+t.cases(T, "installer_success", {
+  { "default prefix /home", { fs = { dirs = { "/home" } } },
+    ok_result("/home", OLD_DIRS) },
+  { "--prefix with a trailing slash",
+    { args = { "--prefix", "/mnt/ab/" } },
+    ok_result("/mnt/ab", { "/mnt", "/mnt/ab", "/mnt/ab/bin", "/mnt/ab/lib",
+      "/mnt/ab/lib/html" }) },
+  { "relative --prefix goes through resolve",
+    { args = { "--prefix", "x" },
+      hook = function(fs)
+        fs.deps.resolve = function(p) return "/home/" .. p end
+      end },
+    ok_result("/home/x", { "/home", "/home/x", "/home/x/bin", "/home/x/lib",
+      "/home/x/lib/html" }) },
+  { "--dry-run lists the files and writes nothing",
+    { args = { "--dry-run" }, fs = { dirs = { "/home" } } },
+    expect(0, 0, { HEADER, "/home/bin/html.lua 14 bytes",
+      "/home/lib/html/guard.lua 10 bytes", "dry run: would install 2 files" },
+      {}, {}, { "/home" }) },
+  { "upgrade replaces the old files and leaves no .old or .new",
+    { old = true }, ok_result("/home", OLD_DIRS) },
+  { "a stale .old file is replaced",
+    { old = true,
+      hook = function(fs) fs.files["/home/bin/html.lua.old"] = "stale" end },
+    ok_result("/home", OLD_DIRS) },
+  { "free space equal to the need is enough",
+    { old = true, fs = { free = NEED } }, ok_result("/home", OLD_DIRS) },
+}, installer_run)
+
+-- The state after a failure that keeps the old files.
+local function old_state(writes, out, err)
+  return expect(1, writes, out, err, OLD, OLD_DIRS)
+end
+
+local function help_out()
+  return { template_module().USAGE }
+end
+
+-- spec/installer.md "Behavior": checks before any write (no suffix),
+-- failures after writing started ("; old files kept"), exit codes 1 and 2.
+t.cases(T, "installer_failures", {
+  { "free space one byte short",
+    { old = true, fs = { free = NEED - 1 } },
+    old_state(0, { HEADER }, { "html-install: not enough space for "
+      .. "/home/bin/html.lua: need " .. NEED .. " bytes, " .. (NEED - 1)
+      .. " bytes free" }) },
+  { "free space one byte short with --dry-run",
+    { args = { "--dry-run" }, fs = { free = 10 } },
+    expect(1, 0, { HEADER }, { "html-install: not enough space for "
+      .. "/home/bin/html.lua: need " .. NEED .. " bytes, 10 bytes free" },
+      {}, {}) },
+  { "read-only filesystem",
+    { old = true, fs = { read_only = true } },
+    old_state(0, { HEADER },
+      { "html-install: read-only filesystem: /home/bin/html.lua" }) },
+  { "a directory is in the way",
+    { fs = { dirs = { "/home/bin/html.lua" } } },
+    expect(1, 0, {}, { "html-install: a directory is in the way: "
+      .. "/home/bin/html.lua" }, {}, { "/home/bin/html.lua" }) },
+  { "embedded size differs from the recorded size",
+    { sizes = { ["bin/html.lua"] = 99 } },
+    expect(1, 0, {}, { "html-install: embedded file bin/html.lua has 14 "
+      .. "bytes, expected 99 (download again)" }, {}, {}) },
+  { "a parent of the first file is a file (no write yet, no suffix)",
+    { fs = { files = { ["/home/bin"] = "x" }, dirs = { "/home" } } },
+    expect(1, 0, { HEADER }, { "html-install: not a directory: /home/bin" },
+      { ["/home/bin"] = "x" }, { "/home" }) },
+  { "the first folder cannot be made (no write yet, no suffix)",
+    { fs = { files = { ["/home"] = "x" } } },
+    expect(1, 0, { HEADER }, { "html-install: cannot create /home/bin "
+      .. "(file in the way)" }, { ["/home"] = "x" }, {}) },
+  { "a parent of a later file is a file (after the first write)",
+    { fs = { files = { ["/home/lib/html"] = "x" },
+        dirs = { "/home", "/home/lib" } } },
+    expect(1, 1, { HEADER }, { "html-install: not a directory: "
+      .. "/home/lib/html; old files kept" }, { ["/home/lib/html"] = "x" },
+      { "/home", "/home/bin", "/home/lib" }) },
+  { "a later folder cannot be made (after the first write)",
+    { fs = { files = { ["/home/lib"] = "x" }, dirs = { "/home" } } },
+    expect(1, 1, { HEADER }, { "html-install: cannot create "
+      .. "/home/lib/html (file in the way); old files kept" },
+      { ["/home/lib"] = "x" }, { "/home", "/home/bin" }) },
+  { "the first write fails",
+    { old = true,
+      fs = { fail_write = function(p) return p:find("bin") end } },
+    old_state(0, { HEADER }, { "html-install: cannot write "
+      .. "/home/bin/html.lua.new (disk error); old files kept" }) },
+  { "a later write fails, temporary files are removed",
+    { old = true,
+      fs = { fail_write = function(p) return p:find("guard") end } },
+    old_state(1, { HEADER }, { "html-install: cannot write "
+      .. "/home/lib/html/guard.lua.new (disk error); old files kept" }) },
+  { "read-back differs",
+    { old = true,
+      fs = { corrupt = function(p) return p:find("%.new$") end } },
+    old_state(1, { HEADER }, { "html-install: read-back differs: "
+      .. "/home/bin/html.lua.new; old files kept" }) },
+  { "moving an old file aside fails, old files are put back",
+    { old = true, fs = { fail_rename = function(a)
+      return a == "/home/lib/html/guard.lua"
+    end } },
+    old_state(2, { HEADER }, { "html-install: cannot move "
+      .. "/home/lib/html/guard.lua (rename error); old files kept" }) },
+  { "renaming a new file in place fails, old files are put back",
+    { old = true, fs = { fail_rename = function(a)
+      return a == "/home/lib/html/guard.lua.new"
+    end } },
+    old_state(2, { HEADER }, { "html-install: cannot rename "
+      .. "/home/lib/html/guard.lua.new (rename error); old files kept" }) },
+  { "an unexpected error is one line",
+    { hook = function(fs)
+      fs.deps.space = function() error("boom\nmore", 0) end
+    end },
+    expect(1, 0, { HEADER }, { "html-install: unexpected error: boom" },
+      {}, {}) },
+  { "unknown option exits 2", { args = { "--nope" } },
+    expect(2, 0, {}, { "html-install: unknown argument: --nope "
+      .. "(see html-install --help)" }, {}, {}) },
+  { "--prefix without a value exits 2", { args = { "--prefix" } },
+    expect(2, 0, {}, { "html-install: --prefix needs a directory "
+      .. "(see html-install --help)" }, {}, {}) },
+  { "--prefix with an empty value exits 2", { args = { "--prefix", "" } },
+    expect(2, 0, {}, { "html-install: --prefix needs a directory "
+      .. "(see html-install --help)" }, {}, {}) },
+  { "a bare word exits 2", { args = { "x" } },
+    expect(2, 0, {}, { "html-install: unknown argument: x "
+      .. "(see html-install --help)" }, {}, {}) },
+  { "--help prints the usage", { args = { "--help" } },
+    expect(0, 0, help_out(), {}, {}, {}) },
+}, installer_run)
+
+-- Generator: spec/installer.md "How it is built".
 
 local TRICKY = {
   "", "\n", "\n\nx\n", "a]]b", "]]", "]=]", "x]", "x]=", "x]==", "]==]=]",
   "[[", "[==[", "end]]\n", "\0\1\255", "]=]==]===]",
 }
 
-function T.long_string_round_trip()
+local function tricky_rows()
+  local rows = {}
   for _, s in ipairs(TRICKY) do
-    local literal = assert(mk.long_string(s))
-    local back = assert(load("return " .. literal))()
-    t.eq(back, s, "content " .. s)
+    rows[#rows + 1] = { string.format("%q", s), s, s }
   end
+  return rows
 end
 
-function T.long_string_level_avoids_content()
-  t.eq(mk.long_string("a"), "[[\na]]")
-  -- "a]=" followed by "]]" still closes at the end.
-  t.eq(mk.long_string("a]="), "[[\na]=]]")
-  t.eq(mk.long_string("a]"), "[=[\na]]=]")
-  t.eq(mk.long_string("a]]"), "[=[\na]]]=]")
-  -- "]=]" is in the content, and "]]" joins its end, so level 2 is used.
-  t.eq(mk.long_string("a]=]"), "[==[\na]=]]==]")
-end
+t.cases(T, "installer_long_string_round_trip", tricky_rows(), function(s)
+  local literal = assert(mk.long_string(s))
+  return assert(load("return " .. literal))()
+end)
 
-function T.long_string_refuses_carriage_return()
-  for _, s in ipairs({ "a\r\nb", "\r", "a\rb" }) do
-    local literal, why = mk.long_string(s)
-    t.eq(literal, nil)
-    t.ok(why:find("carriage return"), why)
+-- The level is the lowest whose close bracket first appears at the end of
+-- content .. close. A carriage return is refused.
+t.cases(T, "installer_long_string_literal", {
+  { "no bracket", "a", "[[\na]]" },
+  { "content ends in ]=, the end still closes", "a]=", "[[\na]=]]" },
+  { "content ends in ]", "a]", "[=[\na]]=]" },
+  { "content ends in ]]", "a]]", "[=[\na]]]=]" },
+  { "content holds ]=] and ]] joins its end", "a]=]", "[==[\na]=]]==]" },
+  { "CRLF refused", "a\r\nb", "refused: carriage return" },
+  { "CR alone refused", "\r", "refused: carriage return" },
+  { "CR inside refused", "a\rb", "refused: carriage return" },
+}, function(s)
+  local literal, why = mk.long_string(s)
+  if literal then
+    return literal
   end
-end
+  return why:find("carriage return", 1, true) and "refused: carriage return"
+    or why
+end)
 
 local TEMPLATE = assert(t.read_repo("tools/installer.lua"))
 
@@ -310,7 +385,7 @@ local function sample_list()
   return list
 end
 
-function T.build_embeds_files_exactly()
+function T.build_embeds_files_exactly_and_installs()
   local files = sample_list()
   for i, s in ipairs(TRICKY) do
     files[#files + 1] = { path = "lib/html/t" .. i .. ".lua", content = s }
@@ -325,36 +400,50 @@ function T.build_embeds_files_exactly()
   end
   t.eq(M.files, want)
   t.eq(M.sizes, sizes)
-end
-
-function T.built_installer_installs()
-  local source = assert(mk.build(TEMPLATE, "1.2.3b", sample_list()))
-  local M = assert(load(source, "=installer", "t"))({})
+  -- The built module installs on a fake filesystem.
   local fs = fake_fs()
-  t.eq(run(M, fs), 0)
-  t.eq(fs.files["/home/bin/html.lua"], SAMPLE["bin/html.lua"])
+  t.eq(M.main({ n = 0 }, fs.deps), 0)
+  for path, content in pairs(want) do
+    t.eq(fs.files["/home/" .. path], content, path)
+  end
   t.eq(fs.out[1], "html-install: oc-html 1.2.3b")
 end
 
-function T.build_refuses_bad_input()
-  local ok_file = { path = "bin/a.lua", content = "x" }
-  local cases = {
-    { TEMPLATE, "1.2", { ok_file }, "bad version" },
-    { "no marker", "1.2.3", { ok_file }, "marker" },
-    { TEMPLATE .. "\n" .. mk.MARKER .. "\n", "1.2.3", { ok_file }, "marker" },
+local OK_FILE = { path = "bin/a.lua", content = "x" }
+
+-- Input: { template, version, files, text the reason holds }.
+t.cases(T, "installer_build_refuses", {
+  { "bad version", { TEMPLATE, "1.2", { OK_FILE }, "bad version" },
+    "refused" },
+  { "no marker", { "no marker", "1.2.3", { OK_FILE }, "marker" },
+    "refused" },
+  { "two markers",
+    { TEMPLATE .. "\n" .. mk.MARKER .. "\n", "1.2.3", { OK_FILE }, "marker" },
+    "refused" },
+  { "path with ..",
     { TEMPLATE, "1.2.3", { { path = "../x", content = "" } }, "bad path" },
+    "refused" },
+  { "absolute path",
     { TEMPLATE, "1.2.3", { { path = "/x", content = "" } }, "bad path" },
-    { TEMPLATE, "1.2.3", { ok_file, ok_file }, "duplicate" },
+    "refused" },
+  { "duplicate path",
+    { TEMPLATE, "1.2.3", { OK_FILE, OK_FILE }, "duplicate" }, "refused" },
+  { "carriage return",
     { TEMPLATE, "1.2.3", { { path = "a", content = "x\r\n" } },
-      "carriage return" },
+      "carriage return" }, "refused" },
+  { "content is not a string",
     { TEMPLATE, "1.2.3", { { path = "a", content = 5 } }, "not a string" },
-  }
-  for i, c in ipairs(cases) do
-    local source, why = mk.build(c[1], c[2], c[3])
-    t.eq(source, nil, "case " .. i)
-    t.ok(why:find(c[4], 1, true), "case " .. i .. ": " .. why)
+    "refused" },
+}, function(input)
+  local source, why = mk.build(input[1], input[2], input[3])
+  if source then
+    return "built"
   end
-end
+  if why:find(input[4], 1, true) then
+    return "refused"
+  end
+  return why
+end)
 
 -- Release installers.
 
@@ -397,22 +486,33 @@ local function game_write(source, fail)
   return M.game_deps().write
 end
 
-function T.game_write_accepts_close_without_values()
-  local sources = { assert(t.read_repo("tools/installer.lua")) }
-  -- 0.1.0a is frozen with the old write. 0.1.1a is the first fixed release.
-  local source = t.read_repo("releases/0.1.1a/html-install.lua")
-  if source then
-    sources[#sources + 1] = source
+-- A close with no values is a success. A failed write, flush or close is a
+-- failure. 0.1.0a is frozen with the old write; 0.1.1a is the first fixed
+-- release.
+local function game_write_rows()
+  local sources = { { "template", TEMPLATE } }
+  local released = t.read_repo("releases/0.1.1a/html-install.lua")
+  if released then
+    sources[#sources + 1] = { "0.1.1a", released }
   end
+  local rows = {}
   for _, s in ipairs(sources) do
-    local write = game_write(s, nil)
-    t.eq({ write("/home/x.new", "x") }, { true })
+    rows[#rows + 1] = { s[1] .. " no failure", { s[2], false }, "true" }
     for _, fail in ipairs({ "write", "flush", "close" }) do
-      write = game_write(s, fail)
-      t.eq({ write("/home/x.new", "x") }, { nil, "not enough space" }, fail)
+      rows[#rows + 1] = { s[1] .. " " .. fail .. " fails", { s[2], fail },
+        "nil: not enough space" }
     end
   end
+  return rows
 end
+
+t.cases(T, "installer_game_write", game_write_rows(), function(input)
+  local ok, why = game_write(input[1], input[2] or nil)("/home/x.new", "x")
+  if ok then
+    return tostring(ok)
+  end
+  return "nil: " .. tostring(why)
+end)
 
 function T.release_installers_match_release_files()
   local checked = 0
@@ -431,7 +531,7 @@ function T.release_installers_match_release_files()
       t.eq(M.files, want, v .. " files")
       t.eq(M.sizes, sizes, v .. " sizes")
       local fs = fake_fs()
-      t.eq(run(M, fs), 0, v .. " install")
+      t.eq(M.main({ n = 0 }, fs.deps), 0, v .. " install")
       for path, content in pairs(want) do
         t.eq(fs.files["/home/" .. path], content, v .. " " .. path)
       end

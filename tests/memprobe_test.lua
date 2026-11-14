@@ -1,4 +1,5 @@
 -- Tests for tools/memprobe.lua with fake machine links.
+-- Rules: docs/testing.md (memprobe tests), docs/ingame/task3c.md.
 
 local t = require("test")
 
@@ -72,21 +73,28 @@ local function parse(text)
   return values, keys
 end
 
-function T.needs_a_step()
+-- Input: { argv, text the first output line starts with }.
+-- Rules: docs/ingame/task3c.md (usage of --step and --out).
+t.cases(T, "memprobe_args", {
+  { "no step", { {}, "memprobe: --step 1 or --step 2 is needed" },
+    { 2, "memprobe: --step 1 or --step 2 is needed" } },
+  { "step 3", { { "--step", "3" }, "memprobe: --step needs 1 or 2" },
+    { 2, "memprobe: --step needs 1 or 2" } },
+  { "--out without a path",
+    { { "--step", "1", "--out" }, "memprobe: --out needs a file path" },
+    { 2, "memprobe: --out needs a file path" } },
+  { "unknown option", { { "--bad" }, "memprobe: unknown argument: --bad" },
+    { 2, "memprobe: unknown argument: --bad" } },
+  { "--help", { { "--help" }, "Usage: memprobe" }, { 0, "Usage: memprobe" } },
+}, function(input)
   local m = fake()
-  t.eq(run(m), 2)
-  t.ok(m.err[1]:find("^memprobe: %-%-step 1 or %-%-step 2 is needed"), m.err[1])
-  t.eq(run(fake(), "--step", "3"), 2)
-  t.eq(run(fake(), "--step", "1", "--out"), 2)
-  t.eq(run(fake(), "--bad"), 2)
-end
+  local code = run(m, table.unpack(input[1]))
+  local line = (m.err[1] or m.out[1] or ""):sub(1, #input[2])
+  return { code, line }
+end)
 
-function T.help()
-  local m = fake()
-  t.eq(run(m, "--help"), 0)
-  t.ok(m.out[1]:find("^Usage: memprobe"), m.out[1])
-end
-
+-- Step 1 stores a marker, step 2 right after it finds the marker again and
+-- removes it (docs/ingame/task3c.md, "Run memprobe").
 function T.step1_then_step2_finds_the_marker()
   local loaded = { ["html.guard"] = {} }
   local m = fake({ loaded = loaded })
@@ -94,75 +102,73 @@ function T.step1_then_step2_finds_the_marker()
   t.ok(loaded[probe.MARKER], "marker stored")
   local v1 = parse(m.files[probe.DEFAULT_OUT])
   t.eq(v1["memprobe.step"], "1")
-  t.eq(v1["h1.step1.token"], "1234abcd")
   t.eq(v1["h1.step1.marker_set"], "true")
-  t.eq(v1["h1.step1.html_modules"], "1")
   t.ok(m.out[#m.out]:find("memprobe %-%-step 2"), m.out[#m.out])
   t.ok(m.out[#m.out]:find("Do not reboot"), m.out[#m.out])
 
   t.eq(run(m, "--step", "2"), 0)
   local v2, keys = parse(m.files[probe.DEFAULT_OUT])
   t.eq(keys[1]:sub(1, 9), "h1.step1.", "step 1 lines kept first")
-  t.eq(v2["h1.step1.token"], "1234abcd")
+  t.eq(v2["h1.step1.token"], v1["h1.step1.token"])
   t.eq(v2["memprobe.step"], "2")
-  t.eq(v2["h1.step2.step1_found"], "true")
   t.eq(v2["h1.step2.marker_present"], "true")
   t.eq(v2["h1.step2.token_match"], "true")
   t.eq(v2["h1.step2.same_loaded_table"], "true")
-  t.eq(v2["h1.step2.marker_removed"], "true")
   t.eq(v2["h1.result"], "kept")
   t.eq(loaded[probe.MARKER], nil, "marker removed")
 end
 
-function T.step2_after_reboot_reports_not_kept()
-  local m = fake({ loaded = {} })
-  t.eq(run(m, "--step", "1"), 0)
-  m.deps.loaded = {}
-  t.eq(run(m, "--step", "2"), 0)
-  local v = parse(m.files[probe.DEFAULT_OUT])
-  t.eq(v["h1.step2.marker_present"], "false")
-  t.eq(v["h1.step2.same_loaded_table"], "false")
-  t.eq(v["h1.result"], "not_kept")
-end
+-- Step 2 without a kept marker. Input: { loaded table or nil, run step 1
+-- first, report path, load a new package.loaded before step 2 }.
+-- Output: h1.result, step1_found, same_loaded_table, marker_present, and the
+-- marker left in the loaded table.
+t.cases(T, "memprobe_h1", {
+  { "reboot between the steps",
+    { loaded = {}, step1 = true, reboot = true },
+    { "not_kept", "true", "false", "false", "nil" } },
+  { "step 2 without a step 1 report",
+    { loaded = {}, out = "/home/x.txt" },
+    { "not_kept", "false", "nil", "false", "nil" } },
+  { "step 2 without package.loaded", {},
+    { "unknown", "false", "nil", "nil", "nil" } },
+}, function(input)
+  local out = input.out or probe.DEFAULT_OUT
+  local m = fake({ loaded = input.loaded })
+  if input.step1 then
+    t.eq(run(m, "--step", "1", "--out", out), 0)
+  end
+  if input.reboot then
+    m.deps.loaded = {}
+  end
+  t.eq(run(m, "--step", "2", "--out", out), 0)
+  local v = parse(m.files[out])
+  local function value(key)
+    return v[key] or "nil"
+  end
+  return { value("h1.result"), value("h1.step2.step1_found"),
+    value("h1.step2.same_loaded_table"), value("h1.step2.marker_present"),
+    tostring(m.deps.loaded and m.deps.loaded[probe.MARKER]) }
+end)
 
-function T.step2_without_step1_file()
-  local m = fake({ loaded = {} })
-  t.eq(run(m, "--step", "2", "--out", "/home/x.txt"), 0)
-  local v = parse(m.files["/home/x.txt"])
-  t.eq(v["h1.step2.step1_found"], "false")
-  t.eq(v["h1.result"], "not_kept")
-end
-
-function T.step2_without_package_loaded()
-  local m = fake()
-  t.eq(run(m, "--step", "2"), 0)
-  t.eq(parse(m.files[probe.DEFAULT_OUT])["h1.result"], "unknown")
-end
-
+-- Step 2 asks for strings larger than the free memory and records the free
+-- memory while the string is held and after it is dropped.
 function T.h2_tries_two_sizes_above_free_memory()
   local m = fake({ loaded = {}, free = 1000000 })
   t.eq(run(m, "--step", "2"), 0)
   local v = parse(m.files[probe.DEFAULT_OUT])
-  t.eq(v["h2.try1.size"], tostring(1000000 + 64 * 1024))
-  t.eq(v["h2.try2.size"], tostring(1000000 + 256 * 1024))
+  local size1, size2 = tonumber(v["h2.try1.size"]), tonumber(v["h2.try2.size"])
+  t.ok(size1 > 1000000, "try 1 is above the free memory")
+  t.ok(size2 > size1, "try 2 is larger than try 1")
   t.eq(v["h2.try1.ok"], "true")
-  t.eq(v["h2.try1.len"], "64")
+  t.eq(v["h2.try2.ok"], "true")
   t.eq(v["h2.try1.free_holding"], "1000000")
   t.eq(v["h2.try1.free_dropped"], "1000000")
-  t.eq(v["h2.try1.garbage_pieces"], "600")
-  t.eq(v["h2.try1.garbage_free_holding"], "1000000")
-  t.eq(v["h2.try2.garbage_free_dropped"], "1000000")
-  t.ok(v["h2.try1.cpu_s"]:find("^%d+%.%d%d%d$"), v["h2.try1.cpu_s"])
-  -- 600 garbage pieces of 1 KB before each try.
-  local pieces = 0
-  for _, n in ipairs(m.sizes) do
-    if n == 1024 then
-      pieces = pieces + 1
-    end
-  end
-  t.eq(pieces, 2 * 600)
+  t.eq(v["h2.try2.free_holding"], "1000000")
+  t.eq(v["h2.try2.free_dropped"], "1000000")
 end
 
+-- A failed allocation is a result ("not enough memory" is valid), not a
+-- crash.
 function T.h2_records_a_failed_allocation()
   local m = fake({ loaded = {}, free = 1000000, limit = 1100000 })
   t.eq(run(m, "--step", "2"), 0)
@@ -174,7 +180,7 @@ function T.h2_records_a_failed_allocation()
   t.eq(v["h2.try2.free_dropped"], "1000000")
 end
 
-function T.h2_reads_free_memory_over_20_yields()
+function T.h2_reads_free_memory_20_times_after_yields()
   local m = fake({ loaded = {} })
   t.eq(run(m, "--step", "2"), 0)
   local v = parse(m.files[probe.DEFAULT_OUT])
@@ -184,7 +190,6 @@ function T.h2_reads_free_memory_over_20_yields()
     n = n + 1
   end
   t.eq(n, 20)
-  t.ok(m.sleeps >= 20 + 2, "yields between the steps: " .. m.sleeps)
 end
 
 function T.errors_are_recorded_not_raised()

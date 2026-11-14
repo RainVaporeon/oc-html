@@ -346,7 +346,7 @@ function M.main(argv, deps)
     deps.out("Next: run 'memprobe --step 2" .. (opts.out ~= M.DEFAULT_OUT
       and " --out " .. opts.out or "") .. "' now. Do not reboot first.")
   else
-    deps.out("Next: run html with --stats-out as in docs/ingame/task3c.md.")
+    deps.out("Next: run tools/probe2.lua as in docs/ingame/probe2.md.")
   end
   return ok and 0 or 1
 end
