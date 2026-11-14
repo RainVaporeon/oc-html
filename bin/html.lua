@@ -303,7 +303,7 @@ end
 -- layout wraps at width - 1 (see spec/cli.md "Output width"). done() is
 -- called when the render ends. ui is optional, for the loading screen:
 -- before_read(lines, count) and show(lines, opts) in place of deps.view.
--- Returns the viewer result, or nil in print mode.
+-- Returns the viewer result (nil in print mode), the lines and the title.
 local function run(source, opts, deps, width, done, ui)
   local size = source.size
   -- Without a known size there is no check before reading, so no settle.
@@ -328,9 +328,10 @@ local function run(source, opts, deps, width, done, ui)
     if source.prefix then
       title = source.prefix .. (title or source.name)
     end
-    return (ui and ui.show or deps.view)(lines, { title = title,
+    local shown = (ui and ui.show or deps.view)(lines, { title = title,
       file = source.name,
       no_rescale = opts.no_rescale, error = tail_error })
+    return shown, lines, title
   end
   if source.head_line then
     deps.err(source.head_line)
@@ -343,6 +344,7 @@ local function run(source, opts, deps, width, done, ui)
   if tail_error then
     deps.err(tail_error)
   end
+  return nil, lines, title
 end
 
 -- Returns the file size from deps.size, or from seek.
@@ -416,48 +418,13 @@ local function report_unexpected(result, deps)
   return "html: unexpected error: " .. first
 end
 
--- argv: the program arguments (a table, n is optional).
--- deps: the machine links:
---   out(line), err(line)   print to stdout and stderr
---   width                  default wrap width for --print
---   open(path, mode)       io.open
---   traceback(msg)         debug.traceback, or a fake in the tests
---   clock()                os.clock
---   uptime()               optional, wall time in seconds. The loading
---                          screen and the fetch use it in place of clock
---   resolve(path)          optional, makes a path absolute
---   home                   optional, the home directory for "~"
---   exists(path)           optional
---   is_dir(path)           optional
---   size(path)             optional, file size in bytes
---   log(text)              optional, keeps the details of an unexpected
---                          error. Returns true, or nil and a reason
---   gpu                    optional, the GPU proxy. Without it, or without
---                          a screen, the page prints as text
---   open_screen(opts)      optional, opens the screen session with the
---                          loading screen (see viewer.open). It takes
---                          no_rescale and status. Without it, the viewer
---                          opens after the render, through view
---   view(lines, opts)      optional, runs the viewer (see viewer.run).
---                          Returns "quit" or "interrupted"
---   on_interrupt(fn)       optional, calls fn on Ctrl+C. Returns a function
---                          that removes the listener
---   internet               optional, the internet card proxy (for a URL)
---   sleep(seconds)         optional, os.sleep. The fetch waits with it
--- Returns the exit code.
-function M.main(argv, deps)
-  local opts, msg = M.parse_args(argv, max_width_of(deps.gpu))
-  if not opts then
-    deps.err(msg .. " (see html --help)")
-    return EXIT_USAGE
-  end
-  if opts.help then
-    deps.out(M.USAGE)
-    return 0
-  end
-  local arg = opts.file
-  -- An argument with a scheme is a URL. Any other argument is a local path
-  -- first (see spec/url.md "Arguments without a scheme").
+-- Classifies the argument. An argument with a scheme is a URL. Any other
+-- argument is a local path first, then a guessed URL (see spec/url.md
+-- "Arguments without a scheme"). Returns { url = , fragment = , guessed =
+-- true or nil } or { path = } (absolute), or nil, a controlled message and
+-- the exit code. The URL and path checks run before the screen opens (see
+-- spec/loading.md).
+function M.classify(arg, deps)
   local url, path, guessed
   if find(arg, "^%a[%w+.-]*://") then
     url = arg
@@ -465,70 +432,50 @@ function M.main(argv, deps)
     path = M.expand_home(arg, deps.home)
     path = deps.resolve and deps.resolve(path) or path
   end
-  -- A missing local path can be a host, and a URL must parse. Both are
-  -- checked before the screen opens (see spec/loading.md).
+  -- A missing local path can be a host, and a URL must parse.
   if path and deps.exists and not deps.exists(path) then
     local url_loaded, url_why = load_url()
     if not url_loaded then
-      deps.err(url_why)
-      return EXIT_ERROR
+      return nil, url_why, EXIT_ERROR
     end
     if not urlmod.looks_like_host(arg) then
-      deps.err("html: file not found: " .. arg)
-      return EXIT_ERROR
+      return nil, "html: file not found: " .. arg, EXIT_ERROR
     end
     url, path, guessed = "http://" .. arg, nil, true
   end
   if url then
     local url_loaded, url_why = load_url()
     if not url_loaded then
-      deps.err(url_why)
-      return EXIT_ERROR
+      return nil, url_why, EXIT_ERROR
     end
     local u, why = urlmod.parse_url(url)
     if not u then
-      deps.err(why)
-      return EXIT_USAGE
+      return nil, why, EXIT_USAGE
     end
-    url = u.url
+    return { url = u.url, fragment = u.fragment, guessed = guessed }
   elseif deps.is_dir and deps.is_dir(path) then
-    deps.err("html: not a file: " .. arg)
-    return EXIT_ERROR
+    return nil, "html: not a file: " .. arg, EXIT_ERROR
   end
-  -- The loading screen opens before the heavy modules load (see
-  -- spec/loading.md). Print mode and the no-screen path load them first.
-  local screen_w = not opts.print and (deps.view or deps.open_screen)
-    and screen_width(deps.gpu, opts.no_rescale)
-  local framed = screen_w and deps.open_screen ~= nil
-  -- load_modules can fail while it builds its message (for example out of
-  -- memory), so it runs protected and any failure gives one controlled line.
-  local function load_all()
-    local called, loaded, load_why = pcall(load_modules)
-    if not called then
-      local built, line = pcall(function()
-        return "html: cannot load modules: " .. reason(loaded)
-      end)
-      loaded = nil
-      load_why = built and line or "html: cannot load modules"
-    end
-    return loaded, load_why
-  end
-  if not framed then
-    local loaded, load_why = load_all()
-    if not loaded then
-      deps.err(load_why)
-      return EXIT_ERROR
-    end
-  end
-  local width = opts.width or deps.width or DEFAULT_WIDTH
-  if not opts.print then
-    if screen_w then
-      width = screen_w
-    else
-      deps.err("html: no screen found, printing the text")
-      opts.print = true
-    end
-  end
+  return { path = path }
+end
+
+-- Runs one load inside the session. All the state of a load lives here.
+-- target: the result of classify. ctx: opts, deps, arg (the argument text),
+-- width, framed (the loading screen opens inside the load), load_all()
+-- (loads the modules, returns true or nil and a message). The screen
+-- session opens here when framed, and is stored in ctx.session. The caller
+-- closes it. The listener and the file are closed before this returns.
+-- Returns one of:
+--   { ok = true, lines =, title =, result = viewer result or nil }
+--   { error = text, reload = bool, kind = "controlled" or "unexpected" }
+--   { interrupted = true, message = text or nil }
+--   { quit = true, notice = text or nil, reload = bool or nil }
+-- notice is the text of a kept error that the viewer showed in a popup.
+local function load_page(target, ctx)
+  local opts, deps, arg = ctx.opts, ctx.deps, ctx.arg
+  local width, framed = ctx.width, ctx.framed
+  local load_all = ctx.load_all
+  local url, path, guessed = target.url, target.path, target.guessed
   local f
   if path then
     local why
@@ -536,12 +483,13 @@ function M.main(argv, deps)
     if not f then
       -- The file can vanish between the check and the open. An open that
       -- fails on an existing file is a read error.
+      local text
       if deps.exists and deps.exists(path) then
-        deps.err("html: read error: " .. reason(why or "cannot open"))
+        text = "html: read error: " .. reason(why or "cannot open")
       else
-        deps.err("html: file not found: " .. arg)
+        text = "html: file not found: " .. arg
       end
-      return EXIT_ERROR
+      return { error = text, reload = false, kind = "controlled" }
     end
   end
 
@@ -607,6 +555,7 @@ function M.main(argv, deps)
   -- active is the source of the render. It tells a size stop before reading
   -- (a retry does not help) from a memory stop during the render.
   local kept_error, offer_reload, active
+  local popup_text, popup_reload
   local function fetch_error(why, reload)
     if why ~= INTERRUPTED then
       why = why .. suffix
@@ -751,10 +700,11 @@ function M.main(argv, deps)
     }
   end
 
-  local ok, result = xpcall(function()
+  local ok, result, lines, title = xpcall(function()
     if framed then
       session = deps.open_screen({ no_rescale = opts.no_rescale,
         status = "Loading " .. name .. "..." })
+      ctx.session = session
       shown = "Loading " .. name .. "..."
       last_tick = now()
       ui.show = session.show
@@ -801,6 +751,8 @@ function M.main(argv, deps)
     if reload then
       text = text .. "\n" .. RELOAD_LINE
     end
+    popup_text, popup_reload = text, reload and true or false
+    lines, title = nil, nil
     -- Nothing holds the lines of the failed render now: the popup shows over
     -- an empty page and the memory is free.
     pcall(close_file)
@@ -812,13 +764,7 @@ function M.main(argv, deps)
   -- Each step runs alone, so a failure in one does not skip the other.
   pcall(stop_listening)
   pcall(close_file)
-  -- The screen is restored before any error line prints.
-  local restored, restore_err = true, nil
-  if session then
-    restored, restore_err = pcall(session.close)
-  end
 
-  local code = 0
   if not ok and result == "interrupted" then
     -- A bare "interrupted" error is Ctrl+C from the event system.
     result = INTERRUPTED
@@ -829,18 +775,128 @@ function M.main(argv, deps)
     ok, result = true, "quit"
   end
   if not ok then
-    code = EXIT_ERROR
-    if is_controlled(result) then
-      deps.err(result)
-      if result == INTERRUPTED then
-        code = EXIT_INTERRUPTED
-      end
-    else
-      report_unexpected(result, deps)
+    if result == INTERRUPTED then
+      return { interrupted = true, message = result }
     end
+    return { error = result,
+      reload = result == kept_error and offer_reload and true or false,
+      kind = is_controlled(result) and "controlled" or "unexpected" }
+  elseif result == "quit" then
+    return { quit = true, notice = popup_text, reload = popup_reload }
   elseif result == "interrupted" then
+    return { interrupted = true, notice = popup_text, reload = popup_reload }
+  end
+  return { ok = true, lines = lines, title = title, result = result }
+end
+
+M.load_page = load_page
+
+-- argv: the program arguments (a table, n is optional).
+-- deps: the machine links:
+--   out(line), err(line)   print to stdout and stderr
+--   width                  default wrap width for --print
+--   open(path, mode)       io.open
+--   traceback(msg)         debug.traceback, or a fake in the tests
+--   clock()                os.clock
+--   uptime()               optional, wall time in seconds. The loading
+--                          screen and the fetch use it in place of clock
+--   resolve(path)          optional, makes a path absolute
+--   home                   optional, the home directory for "~"
+--   exists(path)           optional
+--   is_dir(path)           optional
+--   size(path)             optional, file size in bytes
+--   log(text)              optional, keeps the details of an unexpected
+--                          error. Returns true, or nil and a reason
+--   gpu                    optional, the GPU proxy. Without it, or without
+--                          a screen, the page prints as text
+--   open_screen(opts)      optional, opens the screen session with the
+--                          loading screen (see viewer.open). It takes
+--                          no_rescale and status. Without it, the viewer
+--                          opens after the render, through view
+--   view(lines, opts)      optional, runs the viewer (see viewer.run).
+--                          Returns "quit" or "interrupted"
+--   on_interrupt(fn)       optional, calls fn on Ctrl+C. Returns a function
+--                          that removes the listener
+--   internet               optional, the internet card proxy (for a URL)
+--   sleep(seconds)         optional, os.sleep. The fetch waits with it
+-- Returns the exit code.
+function M.main(argv, deps)
+  local opts, msg = M.parse_args(argv, max_width_of(deps.gpu))
+  if not opts then
+    deps.err(msg .. " (see html --help)")
+    return EXIT_USAGE
+  end
+  if opts.help then
+    deps.out(M.USAGE)
+    return 0
+  end
+  local arg = opts.file
+  local target, why, why_code = M.classify(arg, deps)
+  if not target then
+    deps.err(why)
+    return why_code
+  end
+  -- The loading screen opens before the heavy modules load (see
+  -- spec/loading.md). Print mode and the no-screen path load them first.
+  local screen_w = not opts.print and (deps.view or deps.open_screen)
+    and screen_width(deps.gpu, opts.no_rescale)
+  local framed = screen_w and deps.open_screen ~= nil
+  -- load_modules can fail while it builds its message (for example out of
+  -- memory), so it runs protected and any failure gives one controlled line.
+  local function load_all()
+    local called, loaded, load_why = pcall(load_modules)
+    if not called then
+      local built, line = pcall(function()
+        return "html: cannot load modules: " .. reason(loaded)
+      end)
+      loaded = nil
+      load_why = built and line or "html: cannot load modules"
+    end
+    return loaded, load_why
+  end
+  if not framed then
+    local loaded, load_why = load_all()
+    if not loaded then
+      deps.err(load_why)
+      return EXIT_ERROR
+    end
+  end
+  local width = opts.width or deps.width or DEFAULT_WIDTH
+  if not opts.print then
+    if screen_w then
+      width = screen_w
+    else
+      deps.err("html: no screen found, printing the text")
+      opts.print = true
+    end
+  end
+
+  local ctx = { opts = opts, deps = deps, arg = arg, width = width,
+    framed = framed, load_all = load_all }
+  local page = load_page(target, ctx)
+  -- The screen is restored before any error line prints.
+  local restored, restore_err = true, nil
+  if ctx.session then
+    restored, restore_err = pcall(ctx.session.close)
+  end
+
+  local code = 0
+  if page.quit then
+    code = 0
+  elseif page.interrupted then
+    if page.message then
+      deps.err(page.message)
+    end
     code = EXIT_INTERRUPTED
-  elseif not restored then
+  elseif page.error then
+    code = EXIT_ERROR
+    if page.kind == "controlled" then
+      deps.err(page.error)
+    else
+      report_unexpected(page.error, deps)
+    end
+  end
+  if code == 0 and not restored then
     code = EXIT_ERROR
     report_unexpected(restore_err, deps)
   end
