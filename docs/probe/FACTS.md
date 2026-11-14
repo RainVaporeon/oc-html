@@ -54,7 +54,7 @@ Every run reports `probe.errors=2`. Both errors are probe bugs. The probe stays 
 | Total memory | 2097152 (2 MiB) | `memory.total` |
 | Free memory | about 1.8 MB | `memory.free` |
 | freeMemory jitter | up to 213499 bytes. The first reading is lowest | `memory.noise.readings`, `memory.noise.spread` |
-| Yields do not force a GC | readings still jump after yields | `memory.method=yield_max_of_5` |
+| Every 10th yield forces a full GC (kernel); other yields do not | the probe used 5 yields, which can miss the 10th. memprobe 0.0.3a: free memory jumps at yields 7 and 17 of 20 | `memory.method=yield_max_of_5`, `h2.after_yields` |
 | Empty table | 25 bytes | `memory.empty_table.bytes_per_item` |
 | 4-field table | 61 bytes | `memory.table4.bytes_per_item` |
 
@@ -171,27 +171,50 @@ Reported by the user in game. Installed with `html-install.lua` over 0.0.1a, wit
 - 1984 lines of at most 160 characters are far less than the about 1.68 MB free at start. The guard probably stopped on garbage, not on live data (see H2).
 - The crash: the cached 0.0.1a `html.guard` had no `lowest_free` (see H1). Fixed in 0.0.3a.
 
-## Module cache and memory limit (from source, not yet measured)
+## Module cache and memory limit (from source, measured with 0.0.3a)
 
-These facts come from the source code. They are not yet measured in game. `tools/memprobe.lua` (Task 3c, `docs/ingame/task3c.md`) measures them.
+These facts come from the source code. `tools/memprobe.lua` (Task 3c, `docs/ingame/task3c.md`) measured H1 and H2 in game with 0.0.3a. The raw file is `datacollection/memprobe.txt` (git-ignored).
 
-### H1: OpenOS keeps modules between program runs
+### H1: OpenOS keeps modules between program runs (measured)
+
+- Measured: `h1.result=kept`. The second run found the marker of the first run in the same `package.loaded` table (`h1.step2.same_loaded_table=true`, `h1.step2.marker_present=true`). The table stays until a reboot. 0.0.3a clears the `html.*` modules correctly.
 
 - `package.loaded` is one plain table, created once at boot. It has no weak mode. `require` returns `loaded[name]` when it is not nil and stores every new module there. No code in the file removes an entry. Source: [package.lua L11-L21](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/assets/opencomputers/loot/openos/lib/package.lua#L11-L21), [L76-L99](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/assets/opencomputers/loot/openos/lib/package.lua#L76-L99).
 - A program is loaded with `loadfile(program, "bt", env)` each run, so `bin/html.lua` is always fresh. The process library has no per-process `package` and does not clean `package.loaded` when a process ends. Source: [process.lua L52](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/assets/opencomputers/loot/openos/lib/process.lua#L52).
 - Result: until a reboot, `require("html.guard")` returns the module of the first run. This explains the 0.0.2a crash. It also keeps the module memory after a run.
 
-### H2: the memory limit and garbage
+### H2: the memory limit and garbage (measured)
+
+- Measured: `h2.try2` allocated a 951 KB string (`h2.try2.size=950998`). Free memory rose by 725606 while the program held it (`h2.try2.free_before=688854`, `h2.try2.free_holding=1414460`): the allocation ran a GC that collected the garbage. Garbage never makes an allocation fail.
+- Measured: `h2.after_yields` (20 readings, one `os.sleep(0)` each) jumps at yields 7 (+538330) and 17 (+13290). So the kernel runs a full GC on every 10th resume. The phase is arbitrary, so a GC comes within at most 10 yields.
+- Memprobe limitation: it compared string sizes in real bytes with `freeMemory()`, which is in scaled units (real / ramScale). The sizes and the free values in its output are not in the same unit.
 
 - OpenComputers 1.7.10 with Lua 5.3 uses the natives of [OC-Natives branch master-Lua5.3](https://github.com/MightyPirates/OC-Natives/tree/master-Lua5.3): JNLua `89081ae` and Eris (Lua 5.3.2) `683ac97`.
 - The limit is in the allocator. `l_alloc_checked` counts every allocated byte and returns NULL when `total - used < delta`. Freeing and shrinking always succeed. Source: [jnlua.c L210-L248](https://github.com/fnuecke/jnlua/blob/89081aee7d9df1e5e29c0181a3907e6146538b69/jnlua/src/main/c/jnlua.c#L210-L248).
 - Free memory is `max(0, total - used)`. `used` includes garbage that is not collected yet. Source: [LuaState.java L468-L474](https://github.com/fnuecke/jnlua/blob/89081aee7d9df1e5e29c0181a3907e6146538b69/jnlua/src/main/java/li/cil/repack/com/naef/jnlua/LuaState.java#L468-L474).
 - When the allocator returns NULL, Lua runs a full GC and tries once more (emergency GC). Only when the second try fails does it raise "not enough memory". Source: [lmem.c L86-L95](https://github.com/fnuecke/eris/blob/683ac97476a8634d9e5c17f0dec8dff8b7f3e595/src/lmem.c#L86-L95).
 - So the real limit is reached only when an allocation fails after a full GC. A `freeMemory()` reading below the reserve can still have a lot of collectable garbage.
-- `computer.freeMemory()` and `totalMemory()` are scaled: the value is the real free memory divided by `ramScale`. On a 64-bit host the default `ramScaleFor64Bit` is 1.8. So 1 byte of reported free memory is about 1.8 real bytes. Source: [ComputerAPI.scala L42-L48](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/scala/li/cil/oc/server/machine/luac/ComputerAPI.scala#L42-L48), [application.conf L259-L265](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/application.conf#L259-L265). The server config can change it.
-- The kernel runs `collectgarbage("collect")` before every 10th resume of the main OpenOS coroutine (native Lua only, where `persistKey` exists). A resume follows each yield to the machine, for example `os.sleep(0)`. So about every 10th yield forces a full GC. Source: [machine.lua L1515-L1528](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/assets/opencomputers/lua/machine.lua#L1515-L1528), [PersistenceAPI.scala L15-L21](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/scala/li/cil/oc/server/machine/luac/PersistenceAPI.scala#L15-L21). This does not contradict "Yields do not force a GC" above: that probe used 5 yields, which can miss the 10th resume.
-- `guard.settled_free()` uses 3 yields. It can miss the forced GC too.
-- The guard design is not changed in 0.0.3a. The `trace` stats line and memprobe collect the data first.
+- `computer.freeMemory()` and `totalMemory()` are scaled: the value is the real free memory divided by `ramScale`. On a 64-bit host the default `ramScaleFor64Bit` is 1.8. Measured in game: ramScale is about 1.797, and `totalMemory()` reads 2097152. So 1 byte of reported free memory is about 1.8 real bytes. Source: [ComputerAPI.scala L42-L48](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/scala/li/cil/oc/server/machine/luac/ComputerAPI.scala#L42-L48), [application.conf L259-L265](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/application.conf#L259-L265). The server config can change it.
+- The kernel runs `collectgarbage("collect")` before every 10th resume of the main OpenOS coroutine (native Lua only, where `persistKey` exists). A resume follows each yield to the machine, for example `os.sleep(0)`. So every 10th yield forces a full GC (measured, see above). Source: [machine.lua L1515-L1528](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/assets/opencomputers/lua/machine.lua#L1515-L1528), [PersistenceAPI.scala L15-L21](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/scala/li/cil/oc/server/machine/luac/PersistenceAPI.scala#L15-L21). This does not contradict "Yields do not force a GC" above: that probe used 5 yields, which can miss the 10th resume.
+- In 0.0.3a, `guard.settled_free()` used 3 yields. It could miss the forced GC. Guard v2 (0.0.4a) yields up to 11 times and stops at the first GC (see `SPEC.md`).
+
+## Release 0.0.3a stats
+
+Measured in game with 0.0.3a (`html --stats --stats-out`), width 160. Raw files: `datacollection/stats-wiki.txt`, `datacollection/stats-large.txt` (git-ignored).
+
+| Fact | Wiki page | large.html |
+|---|---|---|
+| File | 98891 bytes | 1000193 bytes |
+| Lines | 182 (all) | stopped at 1803 of 11302 |
+| `cpu` / `wall` | 0.158 s / 0.30 s | n/a (stopped) |
+| `free_before` | 1731712 | 1828996 |
+| `lowest_free` | 764734 | 125930 |
+| `peak_used` | 966978 | 1703066 |
+
+- The trace is a saw-tooth: the incremental GC frees garbage during the render with no yield. Raw readings can be up to about 1.3 MB too low (large: `1800:225526` against about 1.5 M after GC). The wiki trace swings about 700 KB.
+- None of the three settle readings of the 0.0.3a guard caught a GC. The large.html stop was a false stop on garbage.
+- Live cost: about 160 to 410 scaled units per line (290 to 740 real bytes). Fixed overhead: about 280 K scaled. Estimated real fit for large.html: about 4000 to 9000 lines.
+- `os.sleep(0)` costs about 10 ms wall time.
 
 ## Components (t3)
 

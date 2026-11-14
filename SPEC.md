@@ -67,13 +67,15 @@ stats: free_after=<bytes> bytes     settled free memory after the render
 stats: delta=<bytes> bytes (<x> per line)
 stats: lowest_free=<bytes> bytes    lowest freeMemory() reading from the render start to the end of the output
 stats: peak_used=<bytes> bytes (<x> per line)
+stats: settles=<n> gc_seen=<n> settle_yields=<n>
                                     free_before - lowest_free
-stats: trace=<line>:<free>,<line>:<free>,...
+stats: trace=<line>:<free><mark>,<line>:<free><mark>,...
                                     freeMemory() readings of the guard (from 0.0.3a)
 ```
 
 - A missing or invalid value prints as `n/a`, for example `stats: lowest_free=n/a`. The stats report never fails on a missing value. A guard function that is missing (a guard module from an older version) or that fails gives `n/a`. When `lowest_free` is missing, it falls back to `free_after`, then to `free_before`.
-- `trace` holds at most 64 samples, oldest first. A sample is `<line>:<free>`: the last line count given to `guard.tick()` and the `freeMemory()` reading of that tick. The guard keeps every Nth tick. When 64 samples are full, it drops every second sample and doubles N, so the samples spread across the whole run. When the guard stops the render, the stopping reading is the last sample. The line stays under about 1000 characters. With no sample, the line is `stats: trace=n/a`. The trace starts at `guard.reset()`, so it covers the render and the output.
+- `settles` is the number of settles since `guard.reset()` (see Limits and graceful failure). It includes the settle for `free_after`. `gc_seen` is the number of settles that saw a GC. `settle_yields` is the number of yields of all settles. At about 10 ms per yield, `settle_yields` / 100 is the wall time the settles cost, in seconds.
+- `trace` holds at most 60 samples, oldest first. A sample is `<line>:<free><mark>`: the last line count given to `guard.tick()` and a `freeMemory()` reading. The mark is empty for a raw reading of a tick, `s` for a settle result and `S` for a settle result that saw a GC, for example `1803:129682s` or `1803:129682S`. The guard keeps every Nth tick and every settle of `tick()`. When 60 samples are full, it drops every second sample and doubles N, so the samples spread across the whole run. When the guard stops the render, the stopping settle result is the last sample. The line stays under about 1000 characters. With no sample, the line is `stats: trace=n/a`. The trace starts at `guard.reset()`, so it covers the render and the output.
 
 - `delta` (free_before - free_after) is unreliable. The game has no `collectgarbage`, so a reading includes garbage, and garbage from earlier work (module loading) can be collected during the run. Measured: delta was -164198 bytes on a 98891-byte page.
 - `peak_used` is an upper bound of the peak memory use. `lowest_free` includes garbage that is not collected yet.
@@ -287,8 +289,14 @@ Whitespace collapses to one space outside `pre`. Lines wrap at word boundaries t
 
 There are no fixed size caps. The program measures and stops before damage happens.
 
-- `guard.tick()` is called in every loop of the tokenizer and layout. It measures time with `os.clock()`, which has sub-millisecond steps (`computer.uptime()` moves in 50 ms steps). It yields with `os.sleep(0)` when more than `YIELD_INTERVAL` (1 s) has passed since the last yield. This is well below the 5 second OpenOS timeout. `guard.reset()` restarts the yield timer, and the tests use it. `guard.settled_free()` is public. It yields a few times and returns the highest `freeMemory()` reading. `guard.lowest_free()` returns the lowest `freeMemory()` reading that `tick()` and `settled_free()` saw since the last `reset()`, or nil. `reset()` clears it. `--stats` uses it for `lowest_free` and `peak_used`. `guard.trace_text()` returns the memory trace (see the `trace` stats line), or "" when it is empty. `reset()` clears it too.
-- `guard.tick()` also checks `computer.freeMemory()` against `MEMORY_RESERVE` (128 KB). A reading can be up to about 200 KB too low, because garbage is not collected yet. Below the reserve, the guard yields a few times, reads `freeMemory()` again and uses the highest reading. Only when that reading is still below the reserve does it raise the controlled error "html: page too large for available memory (rendered N lines before stopping)".
+- `guard.tick()` is called in every loop of the tokenizer and layout. It measures time with `os.clock()`, which has sub-millisecond steps (`computer.uptime()` moves in 50 ms steps). It yields with `os.sleep(0)` when more than `YIELD_INTERVAL` (1 s) has passed since the last yield. This is well below the 5 second OpenOS timeout. `guard.reset()` restarts the yield timer, and the tests use it. `guard.settled_free()` is public. It runs one settle (up to 11 yields, see below) and returns the highest `freeMemory()` reading. `guard.settles()`, `guard.gc_seen()` and `guard.settle_yields()` return the settle counters. `reset()` clears them. `guard.lowest_free()` returns the lowest `freeMemory()` reading that `tick()` and `settled_free()` saw since the last `reset()`, or nil. `reset()` clears it. `--stats` uses it for `lowest_free` and `peak_used`. `guard.trace_text()` returns the memory trace (see the `trace` stats line), or "" when it is empty. `reset()` clears it too.
+- `guard.tick()` also checks `computer.freeMemory()` against `MEMORY_RESERVE` (192 KB, in `freeMemory()` units, which are real bytes / ramScale). A raw reading can be up to about 1.3 MB too low (measured), because garbage is not collected yet. The readings form a saw-tooth, because the incremental GC frees garbage during the render. Garbage never makes an allocation fail: a failed allocation runs a full GC and retries.
+- Settle (guard v2). The OpenOS kernel runs a full GC on every 10th resume of the main coroutine (measured). A settle yields with `os.sleep(0)` up to 11 times and reads `freeMemory()` after each yield. A rise above the previous reading by more than max(16384, 5% of the previous reading) is a GC. The settle stops at the first GC and returns the highest reading. When it sees no GC in 11 yields, it returns the highest reading and records that it saw no GC. A settle costs up to about 110 ms wall time (10 ms per yield).
+- Settle rule in `tick()`. A raw reading under the reserve settles only when the rate limit allows it. After a settle at line L with result F, the wait is gap = max(25, (F - reserve) / (2 * B)). B is the live cost per line in `freeMemory()` units: 410 at the start (the highest cost measured in 0.0.3a), then the highest cost measured between two settles that saw a GC, but at least 160 (the lowest measured cost). At B per line, one gap uses at most half of the headroom F - reserve. The next settle comes when the line count grew by gap, or when it grew by gap / 2 and a raw reading is under reserve / 2. The second case covers lines that cost up to 2 * B. A `tick()` without a line count uses the tick count in place of the line count.
+- Between settles, a raw reading under the reserve does not stop the render. A raw reading under reserve / 2 after a settle that saw no GC stops the render at once: without a GC, no settle lifts it over the reserve. Otherwise only a settle result under the reserve raises the controlled error "html: page too large for available memory (rendered N lines before stopping)".
+- Rule change from the first draft: the first draft settled on every raw reading under reserve / 2 and kept B at 410 or more. On a simulated 11302-line run with the measured saw-tooth, that gave 37 settles and 3.7 s of settle yields. The rule above gives 9 settles and 88 yields (0.9 s).
+- Fail-safe. Every settle saw a GC or used all 11 yields. If OpenOS ever stops the 10th-yield GC, a settle cannot lift a low reading, so the guard stops early with the controlled message. It never crashes and never loops. The tests check this with the GC turned off in the shim.
+- Decision against a forced GC: the guard does not force a GC with an oversized allocation. The measured kernel GC on every 10th yield is enough. The trick depends on the behavior of a failed allocation, which is not measured in game.
 - The program never calls `collectgarbage`. OpenComputers removes it on purpose.
 - Before parsing, `bin/html.lua` compares the file size with free memory. If the file clearly cannot fit, it stops before reading.
 - Controlled errors are strings with the prefix `html: `, raised with `error("html: <reason>", 0)`. `bin/html.lua` prints such a message as it is. Any other error value is unexpected: `bin/html.lua` prints one line and writes the full traceback to `/tmp/html-error.log`. This design does not depend on how error tables pass through `pcall` and `xpcall` (see `docs/probe/FACTS.md`, run t3), This is simpler than error tables.
@@ -311,9 +319,7 @@ local M = {}
 
 -- OpenOS kills a program that runs for 5 s without yielding.
 local YIELD_INTERVAL = 1
-local MEMORY_RESERVE = 128 * 1024
--- freeMemory() can read up to about 200 KB low until garbage is collected.
-local SETTLE_TRIES = 3
+local MEMORY_RESERVE = 192 * 1024
 
 local last_yield = os.clock()
 
@@ -322,23 +328,11 @@ local function yield()
   last_yield = os.clock()
 end
 
-local function settled_free()
-  local best = computer.freeMemory()
-  for _ = 1, SETTLE_TRIES do
-    yield()
-    best = math.max(best, computer.freeMemory())
-  end
-  return best
-end
-
 function M.tick(lines)
   if os.clock() - last_yield > YIELD_INTERVAL then
     yield()
   end
-  if computer.freeMemory() < MEMORY_RESERVE and settled_free() < MEMORY_RESERVE then
-    error("html: page too large for available memory (rendered "
-      .. lines .. " lines before stopping)", 0)
-  end
+  -- See lib/html/guard.lua for the settle and its rate limit.
 end
 
 return M

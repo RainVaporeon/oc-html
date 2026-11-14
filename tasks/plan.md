@@ -11,7 +11,7 @@ Tasks with acceptance criteria are in `tasks/todo.md`.
 - Test sandbox first. Every later task depends on `pwsh tests/docker/test.ps1`.
 - Machine facts come from the in-game probe (Task 0). They are in `docs/probe/FACTS.md`. The line format and the guard values are decided from this data, not at Checkpoint 1.
 - Tracer bullet early (Task 3). A minimal file-to-text path runs in game before the parser is complete. It confirms the numbers in `docs/probe/FACTS.md` on the real pipeline.
-- The guard uses `os.clock()` for the yield timer, `YIELD_INTERVAL` = 1 s and `MEMORY_RESERVE` = 128 KB. Below the reserve it yields, reads `freeMemory()` again and uses the highest reading. It never calls `collectgarbage`.
+- The guard uses `os.clock()` for the yield timer, `YIELD_INTERVAL` = 1 s and `MEMORY_RESERVE` = 192 KB (guard v2, from 0.0.4a). Below the reserve it settles on the kernel GC, with a rate limit (see Decisions). It never calls `collectgarbage`.
 - Controlled errors are strings with the prefix `html: `. They do not depend on how error tables pass through `pcall` (see run t3 in `FACTS.md`).
 - A line is one string with inline style control bytes, not a DOM tree and not a table of styled pieces. Measured: 80 bytes per line.
 - The tokenizer uses plain `string.find` and `string.byte` over 4096-byte `io` chunks. No `gsub` or `gmatch` over large strings.
@@ -61,7 +61,7 @@ Tasks with acceptance criteria are in `tasks/todo.md`.
 |---|---|---|
 | Stored lines use too much memory on large pages | High | Lines are strings with inline style bytes (80 bytes per line, measured). The guard stops early with a clear message. Checkpoint 1 confirms the numbers. |
 | `os.sleep(0)` slows rendering too much | Low | Measured: 10 ms wall per yield. With one yield per second of CPU, the cost is about 1%. |
-| `freeMemory()` jitter (up to about 200 KB) causes a false memory error | Medium | The guard yields, reads again and uses the highest reading before it raises the error. The shim simulates the jitter. |
+| Raw `freeMemory()` readings are up to about 1.3 MB too low (garbage, saw-tooth, measured) and cause a false memory error, as in 0.0.3a on large.html | High | Guard v2 settles: it yields up to 11 times and stops at the first kernel GC (every 10th yield, measured). A rate limit keeps settles few. Only a settle result under the reserve stops the render. If the kernel GC ever stops, the guard stops early with the controlled message. The shim models the saw-tooth and the 10th-yield GC. |
 | A long `gsub` or `gmatch` blocks without a yield (679 ms for 64 KB) | High | The tokenizer uses only plain `find` and `byte`, on 4096-byte chunks. |
 | Tokens split across chunk edges | High | Unit tests at every edge. Fuzz with 1 to 16 byte chunks. |
 | Bad UTF-8 gives wrong widths (`unicode.*` never throws, `utf8.len` accepts surrogates) | Medium | Clean the text before any `unicode.*` call. Test every probe string. |
@@ -76,6 +76,9 @@ Tasks with acceptance criteria are in `tasks/todo.md`.
 - Expected-output tests compare normalized text. The runner removes `\r`, removes trailing spaces and tabs on each line, and removes blank lines at the end of the output. Every other difference fails, including wrap points, leading spaces and blank lines between blocks.
 - The repository stores text files with LF line endings (`.gitattributes`: `* text=auto eol=lf`).
 - The one-file installer (`tools/installer.lua`, `tools/mkinstall.lua`, `releases/<version>/html-install.lua`) is release tooling, not part of Task 11 (entry point). It is built by `tools/release.ps1` for every release from 0.0.2a. See SPEC.md "Installer".
+
+- Guard v2 (0.0.4a). The guard settles on the kernel GC: up to 11 yields, stop at the first GC, use the highest reading. A rate limit spaces the settles by the measured live cost per line. Only a settle result under the reserve (192 KB) stops the render. Reason: raw readings are up to about 1.3 MB too low, and the kernel runs a full GC on every 10th yield (measured). Rules: `SPEC.md` "Limits and graceful failure".
+- No forced GC. The guard does not force a GC with an oversized allocation. Reason: the measured kernel GC on every 10th yield is enough, and the trick depends on failed-allocation behavior that is not measured in game. If OpenOS ever stops the 10th-yield GC, the guard fails safe: it stops early with the controlled message.
 
 ## Open Questions
 

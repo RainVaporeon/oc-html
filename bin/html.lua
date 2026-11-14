@@ -189,8 +189,9 @@ end
 
 -- Returns the stats lines for the values in st. lowest is the lowest free
 -- memory reading of the guard, or nil. trace is the memory trace text of the
--- guard, or nil.
-function M.stats_lines(st, lowest, trace)
+-- guard, or nil. counts is nil or a table with the guard settle counters
+-- settles, gc_seen and settle_yields.
+function M.stats_lines(st, lowest, trace, counts)
   local s = {}
   local function add(line)
     s[#s + 1] = "stats: " .. line
@@ -227,6 +228,10 @@ function M.stats_lines(st, lowest, trace)
     else
       add("peak_used=" .. NA)
     end
+    counts = type(counts) == "table" and counts or {}
+    add("settles=" .. int_text(counts.settles) .. " gc_seen="
+      .. int_text(counts.gc_seen) .. " settle_yields="
+      .. int_text(counts.settle_yields))
   end
   if type(trace) == "string" and trace ~= "" then
     add("trace=" .. trace)
@@ -257,7 +262,11 @@ end
 -- Returns false when the file write fails.
 local function report_stats(st, opts, deps)
   local lines = M.stats_lines(st, st.free_before and guard_value("lowest_free"),
-    guard_value("trace_text"))
+    guard_value("trace_text"), {
+      settles = guard_value("settles"),
+      gc_seen = guard_value("gc_seen"),
+      settle_yields = guard_value("settle_yields"),
+    })
   for i = 1, #lines do
     deps.err(lines[i])
   end

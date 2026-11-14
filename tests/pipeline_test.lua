@@ -155,7 +155,7 @@ function T.stats_output()
     keys[#keys + 1] = key
   end
   t.eq(keys, { "file", "width", "lines", "cpu", "wall", "free_before",
-    "free_after", "delta", "lowest_free", "peak_used", "trace" })
+    "free_after", "delta", "lowest_free", "peak_used", "settles", "trace" })
   t.eq(err[1], "stats: file=" .. #read_file("tests/cases/basic.html")
     .. " bytes")
   t.eq(err[2], "stats: width=40")
@@ -163,8 +163,10 @@ function T.stats_output()
   t.ok(err[9]:find("^stats: lowest_free=%d+ bytes$"), err[9])
   t.ok(err[10]:find("^stats: peak_used=%-?%d+ bytes %([%d.%-]+ per line%)$"),
     err[10])
-  t.ok(err[11]:find("^stats: trace=%d+:%d+[,%d:]*$"), err[11])
-  t.ok(#err[11] < 2000, "trace line length " .. #err[11])
+  t.ok(err[11]:find("^stats: settles=%d+ gc_seen=%d+ settle_yields=%d+$"),
+    err[11])
+  t.ok(err[12]:find("^stats: trace=%d+:%d+[sS]?[,%dsS:]*$"), err[12])
+  t.ok(#err[12] < 1000, "trace line length " .. #err[12])
 end
 
 -- Returns the value of one stats key as a number.
@@ -299,7 +301,7 @@ function T.stats_after_stop_trace_ends_with_stop_reading()
   for _, line in ipairs(err) do
     trace = trace or line:match("^stats: trace=(.*)$")
   end
-  t.ok(trace and trace:find(":" .. 100 * 1024 .. "$"), tostring(trace))
+  t.ok(trace and trace:find(":" .. 100 * 1024 .. "s$"), tostring(trace))
 end
 
 -- The 0.0.2a crash: a guard module from 0.0.1a has no lowest_free.
@@ -342,6 +344,7 @@ function T.stats_lines_print_na_for_missing_values()
     "stats: delta=n/a",
     "stats: lowest_free=1000 bytes",
     "stats: peak_used=0 bytes (0.0 per line)",
+    "stats: settles=n/a gc_seen=n/a settle_yields=n/a",
     "stats: trace=n/a",
   })
   local stopped = html.stats_lines({ free_before = "x", stopped = "html: x" },
@@ -352,6 +355,7 @@ function T.stats_lines_print_na_for_missing_values()
     "stats: free_before=n/a",
     "stats: lowest_free=n/a",
     "stats: peak_used=n/a",
+    "stats: settles=n/a gc_seen=n/a settle_yields=n/a",
     "stats: trace=n/a",
     "stats: stopped=html: x",
   })
@@ -362,6 +366,19 @@ function T.stats_lines_with_trace()
     800, "1:850,2:800")
   t.eq(lines[#lines], "stats: trace=1:850,2:800")
   t.eq(stat(lines, "peak_used"), 100)
+end
+
+function T.stats_lines_with_settle_counts()
+  local lines = html.stats_lines({ free_before = 900 }, 800, "",
+    { settles = 3, gc_seen = 2, settle_yields = 25 })
+  t.eq(lines[#lines - 1], "stats: settles=3 gc_seen=2 settle_yields=25")
+end
+
+function T.stats_output_counts_settles_after_render()
+  local code, _, err = main({ "--stats", "tests/cases/basic.html" })
+  t.eq(code, 0)
+  -- The free_after settle counts. The free_before settle is before reset.
+  t.eq(stat(err, "settles"), 1)
 end
 
 -- A fake package.loaded with html modules and other modules.
