@@ -68,7 +68,12 @@ stats: delta=<bytes> bytes (<x> per line)
 stats: lowest_free=<bytes> bytes    lowest freeMemory() reading from the render start to the end of the output
 stats: peak_used=<bytes> bytes (<x> per line)
                                     free_before - lowest_free
+stats: trace=<line>:<free>,<line>:<free>,...
+                                    freeMemory() readings of the guard (from 0.0.3a)
 ```
+
+- A missing or invalid value prints as `n/a`, for example `stats: lowest_free=n/a`. The stats report never fails on a missing value. A guard function that is missing (a guard module from an older version) or that fails gives `n/a`. When `lowest_free` is missing, it falls back to `free_after`, then to `free_before`.
+- `trace` holds at most 64 samples, oldest first. A sample is `<line>:<free>`: the last line count given to `guard.tick()` and the `freeMemory()` reading of that tick. The guard keeps every Nth tick. When 64 samples are full, it drops every second sample and doubles N, so the samples spread across the whole run. When the guard stops the render, the stopping reading is the last sample. The line stays under about 1000 characters. With no sample, the line is `stats: trace=n/a`. The trace starts at `guard.reset()`, so it covers the render and the output.
 
 - `delta` (free_before - free_after) is unreliable. The game has no `collectgarbage`, so a reading includes garbage, and garbage from earlier work (module loading) can be collected during the run. Measured: delta was -164198 bytes on a 98891-byte page.
 - `peak_used` is an upper bound of the peak memory use. `lowest_free` includes garbage that is not collected yet.
@@ -92,6 +97,7 @@ A release is a fixed copy of the in-game files.
 - Version: `major.minor.patch`. Suffix `a` is alpha, `b` is beta, no suffix is a real release.
 - Plan: the tracer bullet is `0.0.1a`. Test builds before the MVP are `0.0.x` with `a`. The MVP is `0.1.0a`.
 - `0.0.2a`: peak-memory stats, `--stats-out`, and the first one-file installer.
+- `0.0.3a`: clears cached `html.*` modules (fixes the `lowest_free` crash after an update), `n/a` for missing stats values, and the `trace` stats line. `tools/memprobe.lua` is fetched from `tools/` and is not part of a release.
 - `releases/latest` is a symlink to the newest release folder. It does not resolve on the user's host (it shows as a plain file that holds the version text). It stays for local use. Fetch by version path, for example `releases/0.0.2a/html-install.lua`.
 - Each release folder has `release.tar.gz` with the bin and lib files: the same files as `files.txt`, with the same relative paths.
 - Unpacking a `.tar.gz` in game needs gzip inflate and a tar program. The test machine has no data card, and OpenOS has no tar by default. So in game, fetch `html-install.lua` (from 0.0.2a) or the single files. The tarball is for transfer outside the game.
@@ -186,6 +192,7 @@ tools/release.ps1       publishes a release and updates releases/latest
 tools/installer.lua     installer template (install logic)
 tools/mkinstall.lua     builds and checks releases/<version>/html-install.lua (runs in the container)
 tools/genpage.lua       deterministic generator of tests/pages/large.html (runs in the container)
+tools/memprobe.lua      in-game memory experiments (Task 3c). Not part of a release
 releases/               published release folders and the latest symlink
 types/openos.lua        LuaLS type stubs for OpenOS
 .luarc.json             LuaLS settings (Lua 5.3, loads types/)
@@ -199,6 +206,9 @@ Modules load only when needed. A stage releases its data when the next stage no 
 ### Pipeline
 
 1. `bin/html.lua` checks arguments and the file. It runs the rest inside `xpcall`.
+   - OpenOS keeps every required module in `package.loaded` until a reboot. No code removes an entry, and every program shares the same table. So after an update, `require` can return the module of an older version. (Seen in 0.0.2a: the new `bin/html.lua` called `guard.lowest_free`, which the cached 0.0.1a guard did not have.)
+   - `bin/html.lua` removes every `package.loaded` key that starts with `html.` when the chunk loads, before its first `require`. `M.run_program` runs `main` in `pcall` and removes the keys again on every exit path (normal, error, Ctrl+C), then raises the error again. This loads the current code after an update and frees the module memory after a run.
+   - `M.clear_modules(loaded)` does the removal and returns the count. Other keys stay.
 2. `tokenizer` reads the file with `io` in 4096-byte chunks and produces tokens one at a time: start tag, end tag, text, comment, doctype. It is built on plain `string.find` and `string.byte`. It never runs `gsub` or `gmatch` over large strings (measured: `gsub` 94 KB/s, plain `find` 6338 KB/s).
 3. `layout` consumes tokens, keeps a small stack of open elements, and appends finished lines. A line is one string with inline style control bytes (measured: 80 bytes per line; a table of styled pieces used 322).
    - Bytes 0x01 to 0x05 select a style: normal, heading, emphasis, link, preformatted. A style lasts until the next style byte.
@@ -277,7 +287,7 @@ Whitespace collapses to one space outside `pre`. Lines wrap at word boundaries t
 
 There are no fixed size caps. The program measures and stops before damage happens.
 
-- `guard.tick()` is called in every loop of the tokenizer and layout. It measures time with `os.clock()`, which has sub-millisecond steps (`computer.uptime()` moves in 50 ms steps). It yields with `os.sleep(0)` when more than `YIELD_INTERVAL` (1 s) has passed since the last yield. This is well below the 5 second OpenOS timeout. `guard.reset()` restarts the yield timer, and the tests use it. `guard.settled_free()` is public. It yields a few times and returns the highest `freeMemory()` reading. `guard.lowest_free()` returns the lowest `freeMemory()` reading that `tick()` and `settled_free()` saw since the last `reset()`, or nil. `reset()` clears it. `--stats` uses it for `lowest_free` and `peak_used`.
+- `guard.tick()` is called in every loop of the tokenizer and layout. It measures time with `os.clock()`, which has sub-millisecond steps (`computer.uptime()` moves in 50 ms steps). It yields with `os.sleep(0)` when more than `YIELD_INTERVAL` (1 s) has passed since the last yield. This is well below the 5 second OpenOS timeout. `guard.reset()` restarts the yield timer, and the tests use it. `guard.settled_free()` is public. It yields a few times and returns the highest `freeMemory()` reading. `guard.lowest_free()` returns the lowest `freeMemory()` reading that `tick()` and `settled_free()` saw since the last `reset()`, or nil. `reset()` clears it. `--stats` uses it for `lowest_free` and `peak_used`. `guard.trace_text()` returns the memory trace (see the `trace` stats line), or "" when it is empty. `reset()` clears it too.
 - `guard.tick()` also checks `computer.freeMemory()` against `MEMORY_RESERVE` (128 KB). A reading can be up to about 200 KB too low, because garbage is not collected yet. Below the reserve, the guard yields a few times, reads `freeMemory()` again and uses the highest reading. Only when that reading is still below the reserve does it raise the controlled error "html: page too large for available memory (rendered N lines before stopping)".
 - The program never calls `collectgarbage`. OpenComputers removes it on purpose.
 - Before parsing, `bin/html.lua` compares the file size with free memory. If the file clearly cannot fit, it stops before reading.
@@ -342,7 +352,9 @@ return M
 - The shims copy the measured behavior in `docs/probe/FACTS.md` exactly, including the `unicode.*` results for invalid bytes, surrogates and U+200B.
 - The sandbox env has no `collectgarbage`, like the game.
 - Unit tests: tokenizer (each parsing rule), entities, layout (each row of the element table, wrapping, whitespace).
-- The runner helper `t.load_tool(name)` loads `tools/<name>.lua` the same way. `t.read_repo(path)` reads a file under `releases/<version>/` or `tools/` (read-only, no `..`). `t.release_versions()` lists the release folders. The env `io.open` limit stays as it is.
+- The runner helper `t.load_tool(name)` loads `tools/<name>.lua` the same way. `t.read_repo(path)` reads a file under `releases/<version>/` or `tools/` (read-only, no `..`). `t.release_versions()` lists the release folders. The env `io.open` limit stays as it is. The user approved these three helpers.
+- Module cache tests use a fake `package.loaded` table: `M.clear_modules`, the chunk load with a fake global `package`, and `M.run_program` on a normal exit and on an error.
+- memprobe tests: `tools/memprobe.lua` with fake machine links (step 1 and 2, reboot, failed allocation, errors, Ctrl+C, write failure).
 - Installer tests: the template with a fake filesystem (install, upgrade, dry run, short space, read-only, write, read-back and rename failures), the long-bracket encoder, and every `releases/*/html-install.lua` against its release files (skipped while no release has one).
 - Corpus tests: each file in `tests/cases/` has an expected text output. Each file in `tests/real/` must render without an error and with more than zero lines.
 - Large page: `tests/pages/large.html` renders at width 160 with no uncontrolled error. The test prints its size, line count and CPU time. To make the page again: `docker run ... oc-html-test lua5.3 tools/genpage.lua > tests/pages/large.html` (same flags as `test.ps1`). The fixed seed gives the same bytes.

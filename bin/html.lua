@@ -3,11 +3,41 @@
 -- Loaded with a table as the first argument, the chunk returns its module
 -- table M without running. The tests use this.
 
+-- OpenOS keeps required modules in package.loaded until a reboot. Removing
+-- the html modules loads the current code after an update and frees their
+-- memory after a run. Returns the number of removed modules.
+local function clear_modules(loaded)
+  if type(loaded) ~= "table" then
+    return 0
+  end
+  local names = {}
+  for name in pairs(loaded) do
+    if type(name) == "string" and name:sub(1, 5) == "html." then
+      names[#names + 1] = name
+    end
+  end
+  for i = 1, #names do
+    loaded[names[i]] = nil
+  end
+  return #names
+end
+
+local function package_loaded()
+  if type(package) == "table" then
+    return package.loaded
+  end
+  return nil
+end
+
+clear_modules(package_loaded())
+
 local guard = require("html.guard")
 local tokenizer = require("html.tokenizer")
 local layout = require("html.layout")
 
 local M = {}
+
+M.clear_modules = clear_modules
 
 local find, gsub, sub = string.find, string.gsub, string.sub
 
@@ -128,44 +158,106 @@ local function per_line(bytes, lines)
   return ""
 end
 
+local NA = "n/a"
+
+local function is_num(v)
+  return type(v) == "number"
+end
+
+-- A whole number as text, or "n/a".
+local function int_text(v)
+  if not is_num(v) then
+    return NA
+  end
+  return tostring(math.tointeger(math.floor(v)) or v)
+end
+
+-- A missing value prints as "n/a", so a stats report never fails.
+local function bytes_text(v)
+  if is_num(v) then
+    return int_text(v) .. " bytes"
+  end
+  return NA
+end
+
+local function seconds_text(fmt, v)
+  if is_num(v) then
+    return string.format(fmt, v) .. " s"
+  end
+  return NA
+end
+
 -- Returns the stats lines for the values in st. lowest is the lowest free
--- memory reading of the guard, or nil.
-function M.stats_lines(st, lowest)
+-- memory reading of the guard, or nil. trace is the memory trace text of the
+-- guard, or nil.
+function M.stats_lines(st, lowest, trace)
   local s = {}
   local function add(line)
     s[#s + 1] = "stats: " .. line
   end
-  add("file=" .. tostring(st.size) .. " bytes")
-  add("width=" .. tostring(st.width))
-  if st.lines then
-    add("lines=" .. st.lines)
-    add(string.format("cpu=%.3f s", st.cpu))
-    if st.wall then
-      add(string.format("wall=%.2f s", st.wall))
+  add("file=" .. bytes_text(st.size))
+  add("width=" .. int_text(st.width))
+  local lines = is_num(st.lines) and st.lines or nil
+  if st.lines ~= nil then
+    add("lines=" .. int_text(st.lines))
+    add("cpu=" .. seconds_text("%.3f", st.cpu))
+    if st.wall ~= nil then
+      add("wall=" .. seconds_text("%.2f", st.wall))
     end
   end
-  if st.free_before then
-    add("free_before=" .. st.free_before .. " bytes")
-    if st.free_after then
-      local delta = st.free_before - st.free_after
-      add("free_after=" .. st.free_after .. " bytes")
-      add(string.format("delta=%d bytes", delta) .. per_line(delta, st.lines))
+  if st.free_before ~= nil then
+    local before = st.free_before
+    add("free_before=" .. bytes_text(before))
+    if st.free_after ~= nil then
+      add("free_after=" .. bytes_text(st.free_after))
+      if is_num(before) and is_num(st.free_after) then
+        local delta = before - st.free_after
+        add("delta=" .. bytes_text(delta) .. per_line(delta, lines))
+      else
+        add("delta=" .. NA)
+      end
     end
-    lowest = lowest or st.free_after or st.free_before
-    local peak = st.free_before - lowest
-    add("lowest_free=" .. lowest .. " bytes")
-    add(string.format("peak_used=%d bytes", peak) .. per_line(peak, st.lines))
+    if not is_num(lowest) then
+      lowest = is_num(st.free_after) and st.free_after or before
+    end
+    add("lowest_free=" .. bytes_text(lowest))
+    if is_num(before) and is_num(lowest) then
+      local peak = before - lowest
+      add("peak_used=" .. bytes_text(peak) .. per_line(peak, lines))
+    else
+      add("peak_used=" .. NA)
+    end
   end
-  if st.stopped then
-    add("stopped=" .. st.stopped)
+  if type(trace) == "string" and trace ~= "" then
+    add("trace=" .. trace)
+  else
+    add("trace=" .. NA)
+  end
+  if st.stopped ~= nil then
+    add("stopped=" .. tostring(st.stopped))
   end
   return s
+end
+
+-- Calls a guard function by name. Returns nil when the function is missing
+-- or fails, for example with a guard module from an older version.
+local function guard_value(name)
+  local fn = type(guard) == "table" and guard[name]
+  if type(fn) ~= "function" then
+    return nil
+  end
+  local ok, value = pcall(fn)
+  if ok then
+    return value
+  end
+  return nil
 end
 
 -- Prints the stats lines to stderr and writes them to opts.stats_out.
 -- Returns false when the file write fails.
 local function report_stats(st, opts, deps)
-  local lines = M.stats_lines(st, st.free_before and guard.lowest_free())
+  local lines = M.stats_lines(st, st.free_before and guard_value("lowest_free"),
+    guard_value("trace_text"))
   for i = 1, #lines do
     deps.err(lines[i])
   end
@@ -320,8 +412,21 @@ function M.game_deps()
   }
 end
 
+-- Runs main with the deps from get_deps and removes the html modules from
+-- loaded on every exit path. An error from main is raised again after that.
+function M.run_program(argv, get_deps, loaded)
+  local ok, code = pcall(function()
+    return M.main(argv, get_deps())
+  end)
+  clear_modules(loaded)
+  if not ok then
+    error(code, 0)
+  end
+  return code
+end
+
 local argv = table.pack(...)
 if type(argv[1]) == "table" then
   return M
 end
-return M.main(argv, M.game_deps())
+return M.run_program(argv, M.game_deps, package_loaded())

@@ -157,6 +157,42 @@ Measured in game with release 0.0.1a (`html --stats`), tier 3, 2 MiB. Steps: `do
 - The memory delta cannot be measured this way. The game has no `collectgarbage`, so `freeMemory()` includes garbage. Garbage from module loading was collected during the run, so free memory was higher after the render. From 0.0.2a, `--stats` also reports `lowest_free` and `peak_used` (free_before - lowest_free), and the delta is named `delta`.
 - The user could not redirect stderr to a file in game. From 0.0.2a, `--stats-out <path>` writes the stats lines to a file.
 
+## Release 0.0.2a on large.html
+
+Reported by the user in game. Installed with `html-install.lua` over 0.0.1a, without a reboot. Steps: `docs/ingame/task3b.md`.
+
+| Fact | Value |
+|---|---|
+| Command | `html --stats --stats-out ... /home/large.html` |
+| Result | stopped with "html: page too large for available memory" after 1984 lines |
+| Then | crash at `html.lua:168` in `report_stats`: "attempt to call a nil value (field 'lowest_free')" |
+| Container result for the same page | 11302 lines at width 160 |
+
+- 1984 lines of at most 160 characters are far less than the about 1.68 MB free at start. The guard probably stopped on garbage, not on live data (see H2).
+- The crash: the cached 0.0.1a `html.guard` had no `lowest_free` (see H1). Fixed in 0.0.3a.
+
+## Module cache and memory limit (from source, not yet measured)
+
+These facts come from the source code. They are not yet measured in game. `tools/memprobe.lua` (Task 3c, `docs/ingame/task3c.md`) measures them.
+
+### H1: OpenOS keeps modules between program runs
+
+- `package.loaded` is one plain table, created once at boot. It has no weak mode. `require` returns `loaded[name]` when it is not nil and stores every new module there. No code in the file removes an entry. Source: [package.lua L11-L21](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/assets/opencomputers/loot/openos/lib/package.lua#L11-L21), [L76-L99](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/assets/opencomputers/loot/openos/lib/package.lua#L76-L99).
+- A program is loaded with `loadfile(program, "bt", env)` each run, so `bin/html.lua` is always fresh. The process library has no per-process `package` and does not clean `package.loaded` when a process ends. Source: [process.lua L52](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/assets/opencomputers/loot/openos/lib/process.lua#L52).
+- Result: until a reboot, `require("html.guard")` returns the module of the first run. This explains the 0.0.2a crash. It also keeps the module memory after a run.
+
+### H2: the memory limit and garbage
+
+- OpenComputers 1.7.10 with Lua 5.3 uses the natives of [OC-Natives branch master-Lua5.3](https://github.com/MightyPirates/OC-Natives/tree/master-Lua5.3): JNLua `89081ae` and Eris (Lua 5.3.2) `683ac97`.
+- The limit is in the allocator. `l_alloc_checked` counts every allocated byte and returns NULL when `total - used < delta`. Freeing and shrinking always succeed. Source: [jnlua.c L210-L248](https://github.com/fnuecke/jnlua/blob/89081aee7d9df1e5e29c0181a3907e6146538b69/jnlua/src/main/c/jnlua.c#L210-L248).
+- Free memory is `max(0, total - used)`. `used` includes garbage that is not collected yet. Source: [LuaState.java L468-L474](https://github.com/fnuecke/jnlua/blob/89081aee7d9df1e5e29c0181a3907e6146538b69/jnlua/src/main/java/li/cil/repack/com/naef/jnlua/LuaState.java#L468-L474).
+- When the allocator returns NULL, Lua runs a full GC and tries once more (emergency GC). Only when the second try fails does it raise "not enough memory". Source: [lmem.c L86-L95](https://github.com/fnuecke/eris/blob/683ac97476a8634d9e5c17f0dec8dff8b7f3e595/src/lmem.c#L86-L95).
+- So the real limit is reached only when an allocation fails after a full GC. A `freeMemory()` reading below the reserve can still have a lot of collectable garbage.
+- `computer.freeMemory()` and `totalMemory()` are scaled: the value is the real free memory divided by `ramScale`. On a 64-bit host the default `ramScaleFor64Bit` is 1.8. So 1 byte of reported free memory is about 1.8 real bytes. Source: [ComputerAPI.scala L42-L48](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/scala/li/cil/oc/server/machine/luac/ComputerAPI.scala#L42-L48), [application.conf L259-L265](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/application.conf#L259-L265). The server config can change it.
+- The kernel runs `collectgarbage("collect")` before every 10th resume of the main OpenOS coroutine (native Lua only, where `persistKey` exists). A resume follows each yield to the machine, for example `os.sleep(0)`. So about every 10th yield forces a full GC. Source: [machine.lua L1515-L1528](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/resources/assets/opencomputers/lua/machine.lua#L1515-L1528), [PersistenceAPI.scala L15-L21](https://github.com/MightyPirates/OpenComputers/blob/667626d8e2fbd3b68ed6b80e9ed9921a6de265b6/src/main/scala/li/cil/oc/server/machine/luac/PersistenceAPI.scala#L15-L21). This does not contradict "Yields do not force a GC" above: that probe used 5 yields, which can miss the 10th resume.
+- `guard.settled_free()` uses 3 yields. It can miss the forced GC too.
+- The guard design is not changed in 0.0.3a. The `trace` stats line and memprobe collect the data first.
+
 ## Components (t3)
 
 - Internet card: HTTP and TCP enabled (`extras.internet.*`).

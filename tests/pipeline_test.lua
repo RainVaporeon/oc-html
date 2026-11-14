@@ -155,7 +155,7 @@ function T.stats_output()
     keys[#keys + 1] = key
   end
   t.eq(keys, { "file", "width", "lines", "cpu", "wall", "free_before",
-    "free_after", "delta", "lowest_free", "peak_used" })
+    "free_after", "delta", "lowest_free", "peak_used", "trace" })
   t.eq(err[1], "stats: file=" .. #read_file("tests/cases/basic.html")
     .. " bytes")
   t.eq(err[2], "stats: width=40")
@@ -163,6 +163,8 @@ function T.stats_output()
   t.ok(err[9]:find("^stats: lowest_free=%d+ bytes$"), err[9])
   t.ok(err[10]:find("^stats: peak_used=%-?%d+ bytes %([%d.%-]+ per line%)$"),
     err[10])
+  t.ok(err[11]:find("^stats: trace=%d+:%d+[,%d:]*$"), err[11])
+  t.ok(#err[11] < 2000, "trace line length " .. #err[11])
 end
 
 -- Returns the value of one stats key as a number.
@@ -256,18 +258,18 @@ function T.stats_after_controlled_stop()
   -- Free memory drops below the reserve during the render.
   local reads = 0
   local real_free = computer.freeMemory
-  computer.freeMemory = function()
+  rawset(computer, "freeMemory", function()
     reads = reads + 1
     if reads > 4 then
       return 100 * 1024
     end
     return real_free()
-  end
+  end)
   local ok, code, out, err = pcall(main, { "--stats-out", "s.txt",
     "tests/cases/basic.html" }, {
       write_file = function(_, text) written = text return true end,
     })
-  computer.freeMemory = real_free
+  rawset(computer, "freeMemory", real_free)
   t.ok(ok, code)
   t.eq(code, 1)
   t.eq(out, {})
@@ -278,6 +280,145 @@ function T.stats_after_controlled_stop()
   t.eq(err[#err], "stats: stopped=" .. err[1])
   t.ok(written and written:find("stats: stopped=html: page too large", 1,
     true), "file has the stop reason")
+end
+
+function T.stats_after_stop_trace_ends_with_stop_reading()
+  local reads = 0
+  local real_free = computer.freeMemory
+  rawset(computer, "freeMemory", function()
+    reads = reads + 1
+    if reads > 4 then
+      return 100 * 1024
+    end
+    return real_free()
+  end)
+  local ok, code, _, err = pcall(main, { "--stats", "tests/cases/basic.html" })
+  rawset(computer, "freeMemory", real_free)
+  t.ok(ok, code)
+  local trace
+  for _, line in ipairs(err) do
+    trace = trace or line:match("^stats: trace=(.*)$")
+  end
+  t.ok(trace and trace:find(":" .. 100 * 1024 .. "$"), tostring(trace))
+end
+
+-- The 0.0.2a crash: a guard module from 0.0.1a has no lowest_free.
+function T.stats_with_old_guard_module_print_na()
+  local guard = require("html.guard")
+  local saved_lowest, saved_trace = guard.lowest_free, guard.trace_text
+  guard.lowest_free, guard.trace_text = nil, nil
+  local ok, code, out, err = pcall(main, { "--stats", "tests/cases/basic.html" })
+  guard.lowest_free, guard.trace_text = saved_lowest, saved_trace
+  t.ok(ok, code)
+  t.eq(code, 0)
+  t.ok(#out > 0)
+  t.eq(stat(err, "lowest_free"), stat(err, "free_after"),
+    "falls back to free_after")
+  t.ok(err[#err] == "stats: trace=n/a", err[#err])
+end
+
+function T.stats_with_failing_guard_function_print_na()
+  local guard = require("html.guard")
+  local saved = guard.trace_text
+  rawset(guard, "trace_text", function() error("broken") end)
+  local ok, code, _, err = pcall(main, { "--stats", "tests/cases/basic.html" })
+  guard.trace_text = saved
+  t.ok(ok, code)
+  t.eq(code, 0)
+  t.eq(err[#err], "stats: trace=n/a")
+end
+
+function T.stats_lines_print_na_for_missing_values()
+  local lines = html.stats_lines({ lines = 5, wall = "x", free_before = 1000,
+    free_after = false }, nil, nil)
+  t.eq(lines, {
+    "stats: file=n/a",
+    "stats: width=n/a",
+    "stats: lines=5",
+    "stats: cpu=n/a",
+    "stats: wall=n/a",
+    "stats: free_before=1000 bytes",
+    "stats: free_after=n/a",
+    "stats: delta=n/a",
+    "stats: lowest_free=1000 bytes",
+    "stats: peak_used=0 bytes (0.0 per line)",
+    "stats: trace=n/a",
+  })
+  local stopped = html.stats_lines({ free_before = "x", stopped = "html: x" },
+    "y", "")
+  t.eq(stopped, {
+    "stats: file=n/a",
+    "stats: width=n/a",
+    "stats: free_before=n/a",
+    "stats: lowest_free=n/a",
+    "stats: peak_used=n/a",
+    "stats: trace=n/a",
+    "stats: stopped=html: x",
+  })
+end
+
+function T.stats_lines_with_trace()
+  local lines = html.stats_lines({ size = 10, width = 40, free_before = 900 },
+    800, "1:850,2:800")
+  t.eq(lines[#lines], "stats: trace=1:850,2:800")
+  t.eq(stat(lines, "peak_used"), 100)
+end
+
+-- A fake package.loaded with html modules and other modules.
+local function fake_loaded()
+  return {
+    ["html.guard"] = {}, ["html.layout"] = {}, ["html."] = true,
+    html = {}, ["htmlx.a"] = {}, computer = {}, [1] = "html.x",
+  }
+end
+
+local function loaded_names(loaded)
+  local names = {}
+  for k in pairs(loaded) do
+    names[#names + 1] = tostring(k)
+  end
+  table.sort(names)
+  return names
+end
+
+function T.clear_modules_removes_only_html_modules()
+  local loaded = fake_loaded()
+  t.eq(html.clear_modules(loaded), 3)
+  t.eq(loaded_names(loaded), { "1", "computer", "html", "htmlx.a" })
+  t.eq(html.clear_modules(nil), 0)
+end
+
+function T.chunk_clears_package_loaded_before_require()
+  local loaded = fake_loaded()
+  rawset(_G, "package", { loaded = loaded })
+  local ok, M = pcall(t.load_bin("html"), {})
+  rawset(_G, "package", nil)
+  t.ok(ok, M)
+  t.eq(type(M.main), "function")
+  t.eq(loaded_names(loaded), { "1", "computer", "html", "htmlx.a" })
+end
+
+function T.run_program_clears_modules_after_main()
+  local loaded = fake_loaded()
+  local out = {}
+  local code = html.run_program({ "--help", n = 1 }, function()
+    loaded["html.guard"] = {}
+    return { out = function(line) out[#out + 1] = line end,
+      err = function() end }
+  end, loaded)
+  t.eq(code, 0)
+  t.eq(out[1]:sub(1, 6), "Usage:")
+  t.eq(loaded_names(loaded), { "1", "computer", "html", "htmlx.a" })
+end
+
+function T.run_program_clears_modules_and_raises_on_error()
+  local loaded = fake_loaded()
+  local ok, err = pcall(html.run_program, { "x.html", n = 1 }, function()
+    error("interrupted", 0)
+  end, loaded)
+  t.eq(ok, false)
+  t.eq(err, "interrupted")
+  t.eq(loaded_names(loaded), { "1", "computer", "html", "htmlx.a" })
 end
 
 return T

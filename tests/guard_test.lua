@@ -114,4 +114,71 @@ function T.never_calls_collectgarbage()
   t.raises(function() guard.tick(1) end, "^html: ")
 end
 
+-- Splits the trace text into a list of { line, free } pairs.
+local function trace_pairs(text)
+  local list = {}
+  for line, free in text:gmatch("(%d+):(%d+)") do
+    list[#list + 1] = { tonumber(line), tonumber(free) }
+  end
+  return list
+end
+
+function T.trace_is_empty_after_reset()
+  local guard = setup()
+  t.eq(guard.trace_text(), "")
+  guard.tick(1)
+  t.ok(guard.trace_text() ~= "")
+  guard.reset()
+  t.eq(guard.trace_text(), "")
+end
+
+function T.trace_records_line_and_free()
+  local guard = setup()
+  computer.test.set_free(900000)
+  guard.tick(3)
+  computer.test.set_free(800000)
+  guard.tick()
+  t.eq(guard.trace_text(), "3:900000,3:800000", "tick() keeps the last line")
+end
+
+function T.trace_keeps_at_most_64_samples_across_the_run()
+  local guard = setup()
+  for i = 1, 10000 do
+    computer.test.set_free(1800000 - i)
+    guard.tick(i)
+  end
+  local list = trace_pairs(guard.trace_text())
+  t.ok(#list <= 64, "samples: " .. #list)
+  t.ok(#list >= 32, "samples: " .. #list)
+  t.ok(list[1][1] <= 10000 / 32, "first sample early: " .. list[1][1])
+  t.ok(list[#list][1] >= 10000 - 10000 / 16, "last sample late: "
+    .. list[#list][1])
+  for i = 2, #list do
+    t.ok(list[i][1] > list[i - 1][1], "samples in order")
+    t.eq(list[i][2], 1800000 - list[i][1], "free belongs to its line")
+  end
+end
+
+function T.trace_text_stays_short()
+  local guard = setup()
+  for i = 1, 5000 do
+    computer.test.set_free(2097152 + i)
+    guard.tick(900000 + i)
+  end
+  local text = guard.trace_text()
+  t.ok(#text < 2000, "length " .. #text)
+  t.ok(text:find("^%d+:%d+[,%d:]*$"), text)
+end
+
+function T.trace_ends_with_the_stopping_reading()
+  local guard = setup()
+  for i = 1, 300 do
+    guard.tick(i)
+  end
+  computer.test.set_free(100 * 1024)
+  pcall(guard.tick, 301)
+  local list = trace_pairs(guard.trace_text())
+  t.eq(list[#list], { 301, 100 * 1024 })
+end
+
 return T
