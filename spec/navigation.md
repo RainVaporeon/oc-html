@@ -21,6 +21,7 @@ Phase 1, open. The program checks and opens the target. The page on screen stays
 - Remote target: `fetch.open` runs (connect, status mapping, redirects, content type).
 - A failure in phase 1 shows a popup over the current page. Nothing else changes: same page, same `top`, same `sel`, same history. The handle that phase 1 opened is closed.
 - The popup text is the error line, plus `Reload to try again.` for the errors in "Retry line".
+- On the first load of the session no page is on screen. A phase 1 failure there shows the broken page (an empty page with the title `[error] <target>`, the popup and the reload line for the retry errors). The session goes on, and `r` retries the target.
 
 Commit. When phase 1 succeeds, the program commits:
 1. It releases the old page: lines, links, anchors and base. No reference to them stays.
@@ -29,13 +30,13 @@ Commit. When phase 1 succeeds, the program commits:
 
 - The size check comes after the commit, because the old page must be gone before the free memory is measured.
 - A failure after the commit (size check, read error, timeout, memory stop) gives a broken page: an empty page, a popup with the error line and `Reload to try again.` (when the error has the line, see "Retry line"), and the status `[error] <target>`. The broken page keeps its target, so reload and the history work (`spec/loading.md` "Errors after the frame").
-- When the render ends, the page has its history entry (see "History").
+- The page has its history entry from the commit on (see "History"): the commit appends the entry of a link or go load. An abort after the commit then drops it.
 
 ## Targets
 
 - A link target is resolved with `url.resolve` (`spec/url.md` "Link resolution"). The result is an `http(s)` URL or an absolute local path.
 - A typed target (go prompt) uses the CLI classification: local path or URL, or a guessed URL (`spec/url.md` "Arguments without a scheme").
-- A link from a remote page to `file:` is refused (`spec/url.md`).
+- A link from a remote page to `file:` is refused (`spec/url.md`). Any link that does not resolve (this one, an invalid URL, a URL over 2048 bytes) shows its popup when the user presses Enter. The status line shows the raw href while it is selected. An unsupported scheme is different: the resolver of the viewer returns the status-line notice, and Enter starts nothing.
 - An unsupported scheme shows `<scheme>: links are not supported` in the status line until the next key. No load starts.
 
 ## Links that cannot open
@@ -54,6 +55,7 @@ Commit. When phase 1 succeeds, the program commits:
 - It holds up to 32 entries. An entry is `{ target, top, sel }`: the target (URL or absolute path), the first shown line, and the selected link index (or nil).
 - A new navigation (link, go, same-document link) cuts the entries after the current one and appends a new entry. When the list has 32 entries, the oldest entry drops.
 - Before the program leaves a page (link, go, back, forward), it stores the current `top` and `sel` in the current entry.
+- Back and Forward move the current index first. A phase 1 failure moves it back. A move to an entry with the same target as the page on screen (a same-document entry) loads nothing: it shows the page again at the saved `top`. A broken or aborted page is never the same document.
 - Back and Forward move the current index and load that entry's target again. They fetch the page again: no page content is kept. After the load, `top` and `sel` come from the entry, clamped to the new line and link counts.
 - Back at the first entry and Forward at the last entry do nothing.
 - A followed link whose target gives a mapped HTTP status (404 and others) shows the short page with its popup and becomes a new entry, like any page.
@@ -67,7 +69,7 @@ Commit. When phase 1 succeeds, the program commits:
 - An anchor line past `max_top` is clamped: the page scrolls as far as it can.
 - A fragment with no matching anchor leaves `top` as it is. The entry is still appended.
 - An empty fragment (`#`) goes to line 1.
-- The anchor lookup hashes the fragment as it is, with no percent decoding (`spec/layout.md` "Links and anchors").
+- The anchor lookup decodes every `%XX` of the fragment and then hashes it (`spec/layout.md` "Links and anchors"). A remote link gives `#a%20b` for the id `a b` (the resolver percent-encodes), and a local link may hold the raw text. Both match.
 - The URL fragment of the command line jumps to its anchor after the first load. An unknown fragment stays at the first `top`.
 
 ## Reload
@@ -86,6 +88,7 @@ Commit. When phase 1 succeeds, the program commits:
 - `z` stops a load at once. It works in phase 1 and after the commit. The handle closes.
 - Abort in phase 1: the page on screen was never released, so it stays. Nothing else changes.
 - Abort after the commit: the old page is already released. `z` loads the previous history entry again (two phases). The aborted target gets no history entry: `z` after the commit drops the history entry of the target that was loading.
+- The history entry that `z` drops after the commit is the current entry, also for a reload, back or forward load. An abort after the commit with no previous entry keeps the current entry, so `r` reloads through it.
 - Abort with no previous entry (the first page of the session): the program shows an empty page with the target and the status `[aborted] <target>`. `r` reloads it. This holds also for `z` in phase 1 of the very first load, when no page is on screen: the empty `[aborted] <target>` page shows, and `r` retries.
 - Ctrl+C still exits at once. `q` still asks to quit (`spec/viewer.md` "Quit").
 
