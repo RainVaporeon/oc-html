@@ -9,11 +9,13 @@ Source: `lib/html/tokenizer.lua`. Index: `SPEC.md`.
 - Tag names and attribute names are lowercase (`<DIV>` gives `div`).
 - Text and attribute values are cleaned and decoded: `entities.decode(text.clean(s))` (see `spec/text.md`).
 - The result does not depend on the chunk edges. A tag, an entity or a UTF-8 sequence that a chunk edge splits gives the same tokens as the whole input.
+- Numeric references decode with any number of leading zeros (`&#x00000000041;` gives `A`). A number above U+10FFFF, however long, gives `?` (see `spec/text.md` "Entities"). Text decodes once: `&amp;lt;` gives `&lt;`, not `<`.
+- A chunk edge holds back only a tail that can still be an entity: `&` followed by at most 32 letters, digits or `#` (the longest entity name is 32 bytes). A longer tail is not held back. It stays text and decodes as it stands.
 
 ## Skipped markup
 
 - Comments, doctype, CDATA and processing instructions are skipped. They give no token.
-- `<!-->` and `<!--->` are complete (empty) comments.
+- `<!-->` and `<!--->` are complete (empty) comments. So are `<!---->` and a comment that ends with `--->`, such as `<!-- x --->`.
 - `<!` and `<?` start a bogus comment up to the next `>` (`<! x >`, `<?xml y?>`, `<!>`).
 - `</` followed by a byte that is not a letter starts a bogus comment up to the next `>` (`</ foo>`, `</3>`).
 - `</>` is dropped.

@@ -11,7 +11,7 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
 - Release: 0.2.0a (`releases/0.2.0a/`, `releases/latest` points to it). It adds remote fetching: `html http(s)://...` streams the response into the renderer. Remote fetching is implemented and not yet verified in game.
 - Older releases are frozen. 0.1.0a has a broken installer (OpenOS `file:close()` returns no values on success). 0.1.1a fixes it. 0.1.1a is the last local-only release.
 - Works: everything in 0.1.1a (tokenizer, entities, UTF-8 cleaning, layout, viewer, `--print`, `--width`, `--no-rescale`, guard v2, Ctrl+C, error log, one-file installer), plus `lib/html/fetch.lua` (internet card client, HTTP status handling, redirects, limits).
-- Verified in the container: `pwsh tests/docker/test.ps1` gives 437 passed, 0 failed, 1 skipped (`f5_restore_closure_outside_pcall`, expected). `fuzz 1000` with seed 1794649681 gives 0 failures. The tests use a fake internet card in `tests/shim/internet.lua`.
+- Verified in the container: `pwsh tests/docker/test.ps1` gives 140 passed, 0 failed, 0 skipped. `fuzz 1000` with seed 1794677367 gives 0 failures. The tests use a fake internet card in `tests/shim/internet.lua`.
 - Verified in game: the probes (`docs/probe/`), the tracer bullet and memory runs up to 0.0.4a, the 0.1.0a viewer and exit paths, and `html --print` on the pages in `tests/real/` (2026-11-14).
 - Not verified in game: all remote fetching, `docs/ingame/mvp.md` sections 4 and 6, a low-RAM machine, and the 0.1.1a installer.
 - Risks in the fetch code. The fake card follows assumptions that no in-game measurement has confirmed yet.
@@ -19,7 +19,7 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
   - N3: it is unknown whether `response()` gives a value before the first `read`. The wait order in `fetch.open` depends on it.
   - N10: it is unknown whether the card gives the body of a 404 or 500 response. Java raises on these statuses. The code covers both cases, but decision D2 needs the real answer.
   - Full list: `docs/netprobe-plan.md` (N1 to N15).
-- The spec rules decided on 2026-11-14 are not in the code yet: misnested inline styles continue, a `<` with no `>` at the end of input is text, `option` is a block break, the `--width` maximum, `file not found` as the only missing-file message, the error popup, the installer suffix rule, the loading screen, the 0.25 s yield interval, the misnested inline rule, the exact p-closing list, the popup keys (Enter or Esc), the unclosed-comment exception, the removal of --stats and --stats-out, and the print output loop rule. Some tests still check the old behavior.
+- The spec rules decided on 2026-11-14 are in the code, except two: the loading screen (`spec/loading.md`) and the move of the stats to probe2 (`spec/probe.md`). `--stats` and `--stats-out` are removed from `html`.
 - `VERSION` in `lib/html/fetch.lua` is a constant. Update it by hand before each release. A release script run does not change it.
 
 ## Repository map
@@ -49,7 +49,7 @@ On 2026-11-14, `SPEC.md` was cut down to its normative rules. The informative pa
 ## How to work
 
 - Build the test image once: `docker build -t oc-html-test tests/docker`.
-- All tests: `pwsh tests/docker/test.ps1`. The one skip (`f5_restore_closure_outside_pcall`) is known and expected.
+- All tests: `pwsh tests/docker/test.ps1`. There is no skipped test.
 - Fuzz: `pwsh tests/docker/test.ps1 fuzz 1000 [SEED]`. Failures go to `tests/fuzz-failures/` (ignored). Turn each new failure into a unit test.
 - Release: commit `bin/`, `lib/` and the installer tools first, then `pwsh tools/release.ps1 <version>` (for example `0.2.1a`). It runs the tests, copies the files, writes `files.txt`, `release.tar.gz` and `html-install.lua`, and updates `releases/latest` in the index. Then commit the new folder and `releases/latest`.
 - Test code runs only in the container (sandbox flags in `spec/testing.md` "Sandbox"). Do not run it on the host.

@@ -197,7 +197,9 @@ local function swap(plan, deps)
   end
 end
 
-local function install(opts, deps)
+-- state.started becomes true at the first write, so M.main can tell an
+-- unexpected error that came after writing started.
+local function install(opts, deps, state)
   local prefix = opts.prefix
   if deps.resolve then
     prefix = deps.resolve(prefix)
@@ -230,7 +232,6 @@ local function install(opts, deps)
     deps.out("dry run: would install " .. #plan .. " files")
     return
   end
-  local state = {}
   local written, why = write_temps(plan, deps, state)
   if why then
     for _, temp in ipairs(written) do
@@ -277,7 +278,8 @@ function M.main(argv, deps)
     deps.out(M.USAGE)
     return 0
   end
-  local ok, e = pcall(install, opts, deps)
+  local state = {}
+  local ok, e = pcall(install, opts, deps, state)
   if ok then
     return 0
   end
@@ -285,7 +287,8 @@ function M.main(argv, deps)
     deps.err(e)
   else
     deps.err("html-install: unexpected error: "
-      .. tostring(e):match("^[^\n]*"))
+      .. tostring(e):match("^[^\n]*")
+      .. (state.started and "; old files kept" or ""))
   end
   return 1
 end

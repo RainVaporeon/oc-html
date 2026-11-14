@@ -290,8 +290,8 @@ end
 local WORDS = string.rep("x", 500)
 local NO_GPU_LINE = "html: no screen found, printing the text"
 local WIDTH_ERROR = " (see html --help)"
-local E60 = "html: --width needs a whole number from 1 to 60" .. WIDTH_ERROR
-local E160 = "html: --width needs a whole number from 1 to 160" .. WIDTH_ERROR
+local E60 = "html: --width needs a whole number from 2 to 60" .. WIDTH_ERROR
+local E160 = "html: --width needs a whole number from 2 to 160" .. WIDTH_ERROR
 
 scenarios("width_and_mode", {
   { "viewer: the maximum resolution",
@@ -309,6 +309,15 @@ scenarios("width_and_mode", {
   { "--width at the maximum",
     { args = { "--width", "60", "page.html" }, text = WORDS },
     { code = 0, mode = "print", width = 59, err = {} } },
+  { "--width 2 gives lines of 1 column",
+    { args = { "--width", "2", "page.html" }, text = WORDS },
+    { code = 0, mode = "print", width = 1, err = {} } },
+  { "--width 1 is a usage error",
+    { args = { "--width", "1", "page.html" }, text = WORDS },
+    { code = 2, mode = "none", width = 0, err = { E60 } } },
+  { "--width 0 is a usage error",
+    { args = { "--width", "0", "page.html" }, text = WORDS },
+    { code = 2, mode = "none", width = 0, err = { E60 } } },
   { "--width above the maximum",
     { args = { "--width", "61", "page.html" }, text = WORDS },
     { code = 2, mode = "none", width = 0, err = { E60 } } },

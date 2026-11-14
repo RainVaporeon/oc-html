@@ -318,6 +318,21 @@ t.cases(T, "installer_failures", {
     end },
     expect(1, 0, { HEADER }, { "html-install: unexpected error: boom" },
       {}, {}) },
+  { "an unexpected error after writing started keeps the old files",
+    { old = true, hook = function(fs)
+      local exists = fs.deps.exists
+      fs.deps.exists = function(p)
+        if fs.writes >= 2 then
+          error("boom\nmore", 0)
+        end
+        return exists(p)
+      end
+    end },
+    expect(1, 2, { HEADER }, { "html-install: unexpected error: boom; "
+      .. "old files kept" }, { ["/home/bin/html.lua"] = "old html\n",
+      ["/home/lib/html/guard.lua"] = "old guard\n",
+      ["/home/bin/html.lua.new"] = BIN,
+      ["/home/lib/html/guard.lua.new"] = GUARD }, OLD_DIRS) },
   { "unknown option exits 2", { args = { "--nope" } },
     expect(2, 0, {}, { "html-install: unknown argument: --nope "
       .. "(see html-install --help)" }, {}, {}) },

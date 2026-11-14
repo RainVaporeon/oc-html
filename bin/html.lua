@@ -98,8 +98,8 @@ function M.parse_args(argv, max_width)
     elseif a == "--width" then
       i = i + 1
       local w = math.tointeger(tonumber(argv[i]))
-      if not w or w < 1 or w > max_width then
-        return nil, "html: --width needs a whole number from 1 to "
+      if not w or w < 2 or w > max_width then
+        return nil, "html: --width needs a whole number from 2 to "
           .. max_width
       end
       opts.width = w

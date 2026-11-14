@@ -26,7 +26,7 @@ wget -f <BASE>/releases/<version>/html-install.lua /home/html-install.lua
   3. The `.old` files are removed.
 - On a failure before the first write (a failed check), the installer prints one line `html-install: <reason>`. It wrote nothing, so the line has no suffix.
 - On a failure after writing has started, the installer removes its temporary files, puts the old files back, and prints one line `html-install: <reason>; old files kept`.
-- An unexpected error also prints one `html-install: ` line.
+- An unexpected error also prints one `html-install: unexpected error: <reason>` line. When it comes after writing has started, the line ends with `; old files kept`, as for any other failure after writing has started.
 - The exit code is 1 (2 for bad arguments).
 - Loaded with a table as the first argument, the chunk returns its module: `VERSION`, `files` (relative path to content), `sizes` and `main(argv, deps)`. The tests use this with a fake filesystem.
 

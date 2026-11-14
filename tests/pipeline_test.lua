@@ -52,7 +52,7 @@ end
 
 -- Arguments (spec/cli.md "Usage") ---------------------------------------------
 
-local WIDTH_ERROR = "html: --width needs a whole number from 1 to 160"
+local WIDTH_ERROR = "html: --width needs a whole number from 2 to 160"
   .. " (see html --help)"
 
 t.cases(T, "cli_arguments", {
@@ -267,7 +267,7 @@ local function program(input)
     loaded["html.guard"] = {}
     return {
       out = function() end, err = function() end, width = 50,
-      open = function(path, mode) return io.open("tests/cases/basic.html", mode) end,
+      open = function(_, mode) return io.open("tests/cases/basic.html", mode) end,
       traceback = function(msg) return msg end, clock = os.clock,
       gpu = gpu(),
       view = input.view or function() return "quit" end,
