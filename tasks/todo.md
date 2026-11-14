@@ -67,12 +67,15 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 **Spec:** `spec/navigation.md` and the link sections of `spec/layout.md`, `spec/url.md`, `spec/viewer.md` (items 2 and 2a, approved by the user on 2026-11-15).
 
 **Build steps:**
-- [ ] S1: `url.resolve` and `text/*` acceptance (`spec/url.md`, `spec/fetch.md`).
-- [ ] S2: link and anchor recording in layout.
-- [ ] S3: the history module.
-- [ ] S4: viewer keys, cursor, reload, go prompt and the `?` popup.
-- [ ] S5: refactor `bin/html.lua`.
-- [ ] S6: the navigation loop with reload, back, forward, abort and anchors.
+- [x] S1: `url.resolve` and `text/*` acceptance (`spec/url.md`, `spec/fetch.md`).
+- [x] S2: link and anchor recording in layout.
+- [x] S3: the history module.
+- [x] S4: viewer keys, cursor, reload, go prompt and the `?` popup.
+- [x] S5: refactor `bin/html.lua`.
+- [x] S6: the navigation loop with reload, back, forward, abort and anchors.
+- [ ] In game: follow links, back, forward, reload, `g`, `z` and anchors on real pages (the check list is not written yet).
+
+**Result (2026-11-15):** Built and tested in the container (the suite and fuzz pass). The in-game check is open. The open design questions below are answered by `spec/navigation.md`, `spec/url.md` and `spec/viewer.md`.
 
 **Main files likely touched:** `lib/html/layout.lua` (keep the `href` of each link; today it only sets the link style), `lib/html/viewer.lua` (link selection keys, a back key), `bin/html.lua` (a page-load loop), a new URL resolver module and its tests.
 
@@ -94,6 +97,8 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 **Spec:** `spec/navigation.md` and `spec/viewer.md` (approved by the user on 2026-11-15, built with item 2, step S4).
 
 **Main files likely touched:** `lib/html/viewer.lua` (draw the cursor, move it with the selection keys), `lib/html/layout.lua` (positions of selectable items).
+
+**Status (2026-11-15):** Done, built with item 2, step S4 (reverse-video highlight of the selected link, `-> <target>` in the status line). Open: the in game check (depth 1, depth 4 and depth 8).
 
 **Dependencies:** 2 (link selection). Form input needs form support, which is not on the roadmap yet.
 

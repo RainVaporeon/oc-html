@@ -12,6 +12,16 @@ The user ran netprobe v1 in game (`datacollection/netprobe.txt`, ignored by git)
 - Unproven: that `response()` gives a status after a failed `finishConnect()`. The text match is the main path.
 - Tests: see "Current state" for the commands. The suite and fuzz pass.
 
+## Status update 2026-11-15 (navigation loop)
+
+Roadmap items 2 and 2a are built and tested in the container. Not verified in game.
+
+- `bin/html.lua`: `load_page(target, ctx)` only loads and never shows. It has two phases (phase 1: open the file or `fetch.open`; the commit, where `ctx.on_commit` releases the old page; then the size check and the render). It returns `ok`, `failed` (an error that keeps the session, with `committed`), `aborted`, `error`, `interrupted` or `quit`. `run_session(target, ctx)` is the loop for the viewer path: it holds the page on screen (`held`), the target of that page (`cur`), the history (`lib/html/history.lua`) and the next load request, and it acts on the viewer actions `link`, `back`, `forward`, `reload` and `go`. Print mode and the no-screen path call `load_page` once. `M.render` returns `lines, title, page`.
+- The loop rules are in `spec/navigation.md`. Notes where the code settles a detail: a history entry of a link or go load is appended at the commit; a phase 1 failure with no page on screen (the first load) shows the broken page; a link that does not resolve gives a popup on Enter; the anchor lookup decodes `%XX`; `classify` returns the URL fragment (`parse_url` drops it).
+- `layout.lua`: the first `<base href>` anywhere counts (`spec/layout.md` "Links and anchors").
+- Tests: `tests/entry_test.lua` "Navigation" (the `nav` harness: real viewer, fake gpu, fake card, an event queue for the viewer and one for the key polls of each load). The sandbox has no `collectgarbage`, so no test checks that the old page is freed at the commit. The commit order is by code only.
+- Open: the in game check list for item 2 and 2a is not written. `--help` lists the new keys.
+
 ## Purpose
 
 oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, OpenOS). `html <file>` renders a local HTML file as readable text in a full-screen viewer and never crashes on bad input. The long-term goal (`AGENTS.md`) is a small text browser: remote pages, links, tabs, sessions and images.
