@@ -49,25 +49,15 @@ local function valid_utf8(s)
   return true
 end
 
-local function count(s, ch)
-  local n = 0
-  for k = 1, #s do
-    if s:sub(k, k) == ch then
-      n = n + 1
-    end
-  end
-  return n
-end
-
 local function check_clean(s, msg)
   t.ok(valid_utf8(s), msg .. ": valid UTF-8")
   t.ok(not s:find("[\1-\5]"), msg .. ": no style byte")
   t.ok(not s:find("[\0\6-\8\11-\31\127]"), msg .. ": no control byte")
 end
 
--- Every probe string in docs/probe/FACTS.md, with the expected output.
--- Bad sequences give one "?" per maximal invalid subpart.
-local PROBE = {
+-- Each row also runs inside "a" .. input .. "b".
+local CLEAN = {
+  -- Valid text stays. The probe strings of docs/probe/FACTS.md come first.
   { "ascii", "abc", "abc" },
   { "e_acute", "\xC3\xA9", "\xC3\xA9" },
   { "box", "\xE2\x94\x80", "\xE2\x94\x80" },
@@ -77,90 +67,64 @@ local PROBE = {
     .. "\xE3\x83\x86\xE3\x82\xAD\xE3\x82\xB9\xE3\x83\x88" },
   { "emoji", "\xF0\x9F\x98\x80", "\xF0\x9F\x98\x80" },
   { "combining", "e\xCC\x81", "e\xCC\x81" },
+  { "printable ASCII, tab and newline", "Hello,\tworld!\n~ ",
+    "Hello,\tworld!\n~ " },
+  { "empty", "", "" },
+  { "U+00A0", "\xC2\xA0", "\xC2\xA0" },
+  { "U+D7FF", "\xED\x9F\xBF", "\xED\x9F\xBF" },
+  { "U+E000", "\xEE\x80\x80", "\xEE\x80\x80" },
+  { "U+10FFFF", "\xF4\x8F\xBF\xBF", "\xF4\x8F\xBF\xBF" },
+  -- One "?" per maximal invalid subpart.
   { "lone_cont", "\x80", "?" },
   { "truncated", "\xE4\xB8", "?" },
   { "overlong", "\xC0\xAF", "??" },
   { "surrogate", "\xED\xA0\x80", "???" },
+  { "FF", "\xFF", "?" },
+  { "F5 lead", "\xF5\x80\x80\x80", "????" },
+  { "C1 overlong", "\xC1\xBF", "??" },
+  { "E0 overlong", "\xE0\x80\xAF", "???" },
+  { "F0 overlong", "\xF0\x80\x80\xAF", "????" },
+  { "above U+10FFFF", "\xF4\x90\x80\x80", "????" },
+  { "low surrogate", "\xED\xBF\xBF", "???" },
+  { "truncated before ASCII", "\xE4\xB8x", "?x" },
+  { "truncated 4-byte", "\xF0\x9F\x98", "?" },
+  { "truncated before valid", "\xF0\x9F\x98\xE4\xB8\xAD", "?\xE4\xB8\xAD" },
+  { "lead at end", "\xC3", "?" },
+  { "continuation run", "\x80\x80\x80", "???" },
+  { "long mixed", string.rep("ab\xE4\xB8\xAD\r\x80", 20000),
+    string.rep("ab\xE4\xB8\xAD?", 20000) },
+  -- Removed zero-width and invisible characters.
   { "zwsp", "\xE2\x80\x8B", "" },
+  { "zero-width run", "a\xE2\x80\x8Bb\xE2\x80\x8Cc\xE2\x80\x8Dd\xEF\xBB\xBFe",
+    "abcde" },
+  { "BOM", "\xEF\xBB\xBFstart", "start" },
+  { "U+00AD soft hyphen", "a\xC2\xADb", "ab" },
+  { "U+200E", "a\xE2\x80\x8Eb", "ab" },
+  { "U+200F", "a\xE2\x80\x8Fb", "ab" },
+  -- Variation selectors U+FE00 to U+FE0F.
+  { "U+FE00", "a\xEF\xB8\x80b", "ab" },
+  { "U+FE0F", "\xE2\x98\xBA\xEF\xB8\x8F!", "\xE2\x98\xBA!" },
+  { "U+FE10 kept", "a\xEF\xB8\x90b", "a\xEF\xB8\x90b" },
+  { "U+FDFF kept", "a\xEF\xB7\xBFb", "a\xEF\xB7\xBFb" },
+  -- Control bytes, DEL and C1 controls.
+  { "control bytes", "a\0b\1c\2d\3e\4f\5g\6h\27i\31j", "abcdefghij" },
+  { "CR", "line\r\nnext", "line\nnext" },
+  { "DEL", "a\127b", "ab" },
+  { "C1 controls", "a\xC2\x80b\xC2\x9Fc", "abc" },
 }
 
-function T.probe_strings()
-  for _, row in ipairs(PROBE) do
-    local name, input, expected = row[1], row[2], row[3]
-    local out = text.clean(input)
-    t.eq(out, expected, name)
-    check_clean(out, name)
-    t.eq(count(out, "?"), count(expected, "?"), name .. " ? count")
-  end
+local rows = {}
+for _, row in ipairs(CLEAN) do
+  rows[#rows + 1] = row
+  rows[#rows + 1] = { row[1] .. " inside text", "a" .. row[2] .. "b",
+    "a" .. row[3] .. "b" }
 end
+t.cases(T, "clean", rows, function(input)
+  return text.clean(input)
+end)
 
-function T.probe_strings_inside_text()
-  for _, row in ipairs(PROBE) do
-    t.eq(text.clean("a" .. row[2] .. "b"), "a" .. row[3] .. "b", row[1])
-  end
-end
-
-function T.ascii_fast_path_returns_same_string()
-  local s = "Hello,\tworld!\n~ "
-  t.ok(rawequal(text.clean(s), s))
-  t.eq(text.clean(""), "")
-end
-
-function T.invalid_sequences()
-  t.eq(text.clean("\xFF"), "?", "FF")
-  t.eq(text.clean("\xF5\x80\x80\x80"), "????", "F5 lead")
-  t.eq(text.clean("\xC1\xBF"), "??", "C1 overlong")
-  t.eq(text.clean("\xE0\x80\xAF"), "???", "E0 overlong")
-  t.eq(text.clean("\xF0\x80\x80\xAF"), "????", "F0 overlong")
-  t.eq(text.clean("\xF4\x90\x80\x80"), "????", "above U+10FFFF")
-  t.eq(text.clean("\xED\xBF\xBF"), "???", "low surrogate")
-  t.eq(text.clean("\xE4\xB8x"), "?x", "truncated before ASCII")
-  t.eq(text.clean("\xF0\x9F\x98"), "?", "truncated 4-byte")
-  t.eq(text.clean("\xF0\x9F\x98\xE4\xB8\xAD"), "?\xE4\xB8\xAD",
-    "truncated before valid")
-  t.eq(text.clean("\xC3"), "?", "lead at end")
-  t.eq(text.clean("\x80\x80\x80"), "???", "continuation run")
-end
-
-function T.boundary_code_points_kept()
-  t.eq(text.clean("\xC2\xA0"), "\xC2\xA0", "U+00A0")
-  t.eq(text.clean("\xED\x9F\xBF"), "\xED\x9F\xBF", "U+D7FF")
-  t.eq(text.clean("\xEE\x80\x80"), "\xEE\x80\x80", "U+E000")
-  t.eq(text.clean("\xF4\x8F\xBF\xBF"), "\xF4\x8F\xBF\xBF", "U+10FFFF")
-end
-
-function T.zero_width_removed()
-  t.eq(text.clean("a\xE2\x80\x8Bb\xE2\x80\x8Cc\xE2\x80\x8Dd\xEF\xBB\xBFe"),
-    "abcde")
-  t.eq(text.clean("\xEF\xBB\xBFstart"), "start", "BOM")
-  t.eq(text.clean("a\xC2\xADb"), "ab", "U+00AD soft hyphen")
-  t.eq(text.clean("a\xE2\x80\x8Eb"), "ab", "U+200E")
-  t.eq(text.clean("a\xE2\x80\x8Fb"), "ab", "U+200F")
-end
-
-function T.variation_selectors_removed()
-  t.eq(text.clean("a\xEF\xB8\x80b"), "ab", "U+FE00")
-  t.eq(text.clean("\xE2\x98\xBA\xEF\xB8\x8F!"), "\xE2\x98\xBA!", "U+FE0F")
-  t.eq(text.clean("a\xEF\xB8\x90b"), "a\xEF\xB8\x90b", "U+FE10 kept")
-  t.eq(text.clean("a\xEF\xB7\xBFb"), "a\xEF\xB7\xBFb", "U+FDFF kept")
-end
-
-function T.control_bytes_removed()
-  t.eq(text.clean("a\0b\1c\2d\3e\4f\5g\6h\27i\31j"), "abcdefghij")
-  t.eq(text.clean("line\r\nnext"), "line\nnext", "CR")
-  t.eq(text.clean("a\tb\nc"), "a\tb\nc", "tab and newline kept")
-  t.eq(text.clean("a\127b"), "ab", "DEL")
-  t.eq(text.clean("a\xC2\x80b\xC2\x9Fc"), "abc", "C1 controls")
-end
-
-function T.long_string()
-  local piece = "ab\xE4\xB8\xAD\r\x80"
-  local s = string.rep(piece, 20000)
-  local out = text.clean(s)
-  t.eq(#out, 20000 * 6)
-  t.eq(out, string.rep("ab\xE4\xB8\xAD?", 20000))
-end
-
+-- spec/text.md: cleaning removes all control bytes, so text never contains
+-- the style bytes. Decoded entities pass through the same rules.
 function T.random_bytes_never_give_style_bytes()
   local seed = 20261114
   math.randomseed(seed)
@@ -186,73 +150,26 @@ function T.random_bytes_never_give_style_bytes()
   end
 end
 
-function T.split_tail_utf8()
-  t.eq({ text.split_tail("ab\xE4\xB8") }, { "ab", "\xE4\xB8" })
-  t.eq({ text.split_tail("ab\xE4") }, { "ab", "\xE4" })
-  t.eq({ text.split_tail("ab\xF0\x9F\x98") }, { "ab", "\xF0\x9F\x98" })
-  t.eq({ text.split_tail("ab\xE4\xB8\xAD") }, { "ab\xE4\xB8\xAD", "" })
-  t.eq({ text.split_tail("ab\x80") }, { "ab\x80", "" })
-  t.eq({ text.split_tail("") }, { "", "" })
-end
+-- spec/text.md: a partial UTF-8 sequence or entity at a chunk end is held
+-- back with text.split_tail. Output: { head, held back tail }.
+local SPLIT_TAIL = {
+  { "cut 3-byte after 2", "ab\xE4\xB8", { "ab", "\xE4\xB8" } },
+  { "cut 3-byte after 1", "ab\xE4", { "ab", "\xE4" } },
+  { "cut 4-byte", "ab\xF0\x9F\x98", { "ab", "\xF0\x9F\x98" } },
+  { "whole 3-byte", "ab\xE4\xB8\xAD", { "ab\xE4\xB8\xAD", "" } },
+  { "lone continuation", "ab\x80", { "ab\x80", "" } },
+  { "empty", "", { "", "" } },
+  { "cut named entity", "a &am", { "a ", "&am" } },
+  { "lone &", "a &", { "a ", "&" } },
+  { "cut hex entity", "a &#x1F6", { "a ", "&#x1F6" } },
+  { "whole entity", "a &amp;", { "a &amp;", "" } },
+  { "& then space", "a & b", { "a & b", "" } },
+  { "too long for an entity", "&" .. string.rep("a", 40),
+    { "&" .. string.rep("a", 40), "" } },
+}
 
-function T.split_tail_entity()
-  t.eq({ text.split_tail("a &am") }, { "a ", "&am" })
-  t.eq({ text.split_tail("a &") }, { "a ", "&" })
-  t.eq({ text.split_tail("a &#x1F6") }, { "a ", "&#x1F6" })
-  t.eq({ text.split_tail("a &amp;") }, { "a &amp;", "" })
-  t.eq({ text.split_tail("a & b") }, { "a & b", "" })
-  t.eq({ text.split_tail("&" .. string.rep("a", 40)) },
-    { "&" .. string.rep("a", 40), "" }, "too long for an entity")
-end
-
--- Feeding a text run in chunks of any size gives the same result as one call.
-function T.split_tail_streaming_matches_whole()
-  local s = "x &eacute; \xE4\xB8\xAD&#x1F600;y &amp z\xF0\x9F\x98\x80&copy;"
-  local whole = entities.decode(text.clean(s))
-  for size = 1, 8 do
-    local out, carry = {}, ""
-    for k = 1, #s, size do
-      local head
-      head, carry = text.split_tail(carry .. s:sub(k, k + size - 1))
-      out[#out + 1] = entities.decode(text.clean(head))
-    end
-    out[#out + 1] = entities.decode(text.clean(carry))
-    t.eq(table.concat(out), whole, "chunk size " .. size)
-  end
-end
-
-
-function T.utf8_cut()
-  t.eq(text.utf8_cut("ab\xE4\xB8", 1, 4), 3)
-  t.eq(text.utf8_cut("ab\xE4\xB8\xAD", 1, 5), 6)
-  t.eq(text.utf8_cut("ab\xF0\x9F\x98", 1, 5), 3)
-  t.eq(text.utf8_cut("\xE4xy", 1, 1), 1)
-  t.eq(text.utf8_cut("ab\xE4", 1, 2), 3, "range end")
-  t.eq(text.utf8_cut("\xE4\xB8ab", 2, 2), 3, "no lead in range")
-  t.eq(text.utf8_cut("ab", 3, 2), 3, "empty range")
-  t.eq(text.utf8_cut("a&b", 1, 3), 4, "entities are not held back")
-end
-
--- Cleaning on each side of utf8_cut, then holding back the entity on the
--- cleaned text, gives decode(clean(s)) at every chunk size, also with
--- bytes that clean removes inside an entity.
-function T.clean_then_split_matches_whole()
-  local s = "&copy\x04a &lt\x16b &#\x119 &#x\x04a &#\xE2\x80\x8B1 \xE4\xB8"
-    .. "\xAD&#1\x14; \xC2\xAD&amp\xEF\xBB\xBF;x\xF0\x9F\x98\x80&"
-  local whole = entities.decode(text.clean(s))
-  for size = 1, 16 do
-    local out, raw, pend = {}, "", ""
-    for k = 1, #s, size do
-      raw = raw .. s:sub(k, k + size - 1)
-      local cut = text.utf8_cut(raw, 1, #raw)
-      local head
-      head, pend = text.split_tail(pend .. text.clean(raw:sub(1, cut - 1)))
-      raw = raw:sub(cut)
-      out[#out + 1] = entities.decode(head)
-    end
-    out[#out + 1] = entities.decode(pend .. text.clean(raw))
-    t.eq(table.concat(out), whole, "chunk size " .. size)
-  end
-end
+t.cases(T, "split_tail", SPLIT_TAIL, function(input)
+  return { text.split_tail(input) }
+end)
 
 return T

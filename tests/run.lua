@@ -259,6 +259,53 @@ local function build_env()
     end
   end
 
+  -- Shows a value in a failure message. Long strings are cut.
+  local function show(v)
+    if type(v) == "table" then
+      local parts = {}
+      for k, item in ipairs(v) do
+        parts[k] = show(item)
+      end
+      return "{ " .. table.concat(parts, ", ") .. " }"
+    end
+    local s = escape(v)
+    if #s > 200 then
+      s = s:sub(1, 200) .. "... (" .. #s .. " chars)"
+    end
+    return s
+  end
+
+  -- Registers T[name], a test that runs every row of rows.
+  -- A row is { "row name", input, expected, sizes = {...} }.
+  -- run(input, size) returns the actual output. It runs once per entry of
+  -- row.sizes or opts.sizes, or once with size nil when there are none.
+  -- The test reports every failing row, not only the first one.
+  function test_api.cases(T, name, rows, run, opts)
+    T[name] = function()
+      local failures = {}
+      for _, row in ipairs(rows) do
+        local sizes = row.sizes or (opts and opts.sizes) or { false }
+        for _, size in ipairs(sizes) do
+          local ok, actual = pcall(run, row[2], size or nil)
+          if not ok then
+            actual = "error: " .. tostring(actual)
+          end
+          if not (ok and deep_eq(actual, row[3])) then
+            failures[#failures + 1] = "row " .. escape(row[1])
+              .. (size and " size " .. size or "") .. "\n  input:    "
+              .. show(row[2]) .. "\n  expected: " .. show(row[3])
+              .. "\n  actual:   " .. show(actual)
+            break
+          end
+        end
+      end
+      if #failures > 0 then
+        error(#failures .. " of " .. #rows .. " rows failed\n"
+          .. table.concat(failures, "\n"), 0)
+      end
+    end
+  end
+
   function test_api.skip(reason)
     error({ [SKIP] = reason }, 0)
   end

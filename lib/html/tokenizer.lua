@@ -17,8 +17,8 @@
 -- Recovery for broken markup:
 --   "<" + non-letter is text. "</>" is dropped. "</" + non-letter is a bogus
 --   comment up to ">".
---   A "<" with no ">" within MAX_TAG bytes is text. At the end of input,
---   such a tag is dropped.
+--   A "<" with no ">" within MAX_TAG bytes or before the end of input is
+--   text.
 --   A broken quoted value ends the tag at the first ">" in the value. The
 --   value's attribute is dropped. A quoted value is broken when it does not
 --   close within MAX_TAG bytes of "<" or before the end of input, or when
@@ -27,8 +27,9 @@
 --   the first ">" after its "<", with no attributes.
 --   An attribute name with a quote or "<", or one that starts with "=", is
 --   dropped. For a duplicate name, the first value is kept.
---   An unclosed comment, bogus comment, CDATA or raw text element ends with
---   the input. Unclosed title or textarea content is text.
+--   An end tag ends at the first ">" after its "<", also inside quotes.
+--   An unclosed comment, bogus comment, CDATA, script or style ends with
+--   the input and gives no text. Unclosed title or textarea content is text.
 
 local guard = require("html.guard")
 local text = require("html.text")
@@ -245,11 +246,11 @@ function M.new(read, progress)
 
   -- Scans the attributes from i up to the ">" that ends the tag. gt is the
   -- first ">" after the "<" at pos. Sets pos after the tag. Returns attrs
-  -- and the self-closing flag. An end tag (closing) collects no attrs.
+  -- and the self-closing flag.
   -- A quoted value is broken when it does not close within MAX_TAG bytes of
   -- "<" or before the end of input, or when it holds a ">" and then "</"
   -- (as in <a href="x>text</a>).
-  local function attributes(i, gt, closing)
+  local function attributes(i, gt)
     local state = BEFORE_NAME
     local attrs, name, ns, vs, quote, bad
     while true do
@@ -290,7 +291,7 @@ function M.new(read, progress)
               return cut(attrs, vs, gt)
             end
           end
-          if not (closing or bad) then
+          if not bad then
             attrs = add(attrs, name, sub(buf, vs, k - 1))
           end
           state, vs, i = BEFORE_NAME, nil, k + 1
@@ -313,7 +314,7 @@ function M.new(read, progress)
           elseif WS[b] then
             state = AFTER_NAME
           else
-            if not (closing or bad) then
+            if not bad then
               attrs = add(attrs, name, "")
             end
             if b == 62 then
@@ -329,7 +330,7 @@ function M.new(read, progress)
         if b == 61 then
           state = BEFORE_VALUE
         elseif not WS[b] then
-          if not (closing or bad) then
+          if not bad then
             attrs = add(attrs, name, "")
           end
           if b == 62 then
@@ -346,7 +347,7 @@ function M.new(read, progress)
         if b == 34 or b == 39 then
           state, quote, vs = QUOTED, b == 34 and '"' or "'", i + 1
         elseif b == 62 then
-          if not (closing or bad) then
+          if not bad then
             attrs = add(attrs, name, "")
           end
           break
@@ -356,7 +357,7 @@ function M.new(read, progress)
         i = i + 1
       elseif state == UNQUOTED then
         if WS[b] or b == 62 then
-          if not (closing or bad) then
+          if not bad then
             attrs = add(attrs, name, sub(buf, vs, i - 1))
           end
           if b == 62 then
@@ -436,9 +437,8 @@ function M.new(read, progress)
       end
       tick()
       if not fill() then
-        -- A tag cut by the end of input is dropped.
-        pos = #buf + 1
-        return nil
+        pos = pos + 1
+        return "text", "<"
       end
       gt = find(buf, ">", nogt - base + 1, true)
     end
@@ -449,6 +449,10 @@ function M.new(read, progress)
     local start = pos + rel
     local _, e = find(buf, "^[^%s/>]+", start)
     local name = lower(sub(buf, start, e))
+    if closing then
+      pos = gt + 1
+      return "end", name
+    end
     local attrs, self_closing
     local nb = byte(buf, e + 1)
     if nb == 62 then
@@ -456,10 +460,7 @@ function M.new(read, progress)
     elseif nb == 47 and byte(buf, e + 2) == 62 then
       pos, self_closing = e + 3, true
     else
-      attrs, self_closing = attributes(e + 1, gt, closing)
-    end
-    if closing then
-      return "end", name
+      attrs, self_closing = attributes(e + 1, gt)
     end
     local r = RAW[name]
     if r ~= nil then

@@ -1,12 +1,21 @@
 -- Tests for lib/html/tokenizer.lua: spec/tokenizer.md rules at every chunk
--- size.
+-- size. Each row names its input and the tokens that spec rule gives.
 
 local t = require("test")
 local tokenizer = require("html.tokenizer")
 
 local T = {}
 
-local SIZES = { 1, 2, 7, 4096 }
+-- spec/tokenizer.md "Broken markup". The tests use the spec value, not the
+-- module field.
+local MAX_TAG = 16384
+
+local WHOLE = 1 << 30
+local SIZES = { 1, 2, 3, 7, 4096, WHOLE }
+local SIZES_1_TO_16 = { WHOLE }
+for size = 1, 16 do
+  SIZES_1_TO_16[#SIZES_1_TO_16 + 1] = size
+end
 
 local function reader(s, size)
   local i = 1
@@ -20,14 +29,14 @@ local function reader(s, size)
   end
 end
 
--- "name=value" pairs in name order, or "" when attrs is nil.
+-- "[name=value,...]" in name order, or "" when the tag has no attributes.
 local function attr_string(attrs)
-  if attrs == nil then
-    return ""
-  end
   local names = {}
-  for name in pairs(attrs) do
+  for name in pairs(attrs or {}) do
     names[#names + 1] = name
+  end
+  if #names == 0 then
+    return ""
   end
   table.sort(names)
   local parts = {}
@@ -40,7 +49,7 @@ end
 -- Returns the tokens as strings. Adjacent text tokens are joined, because
 -- chunk edges may split text. limit stops a run that does not end.
 local function tokens(s, size, limit)
-  local next_token = tokenizer.new(reader(s, size or 4096))
+  local next_token = tokenizer.new(reader(s, size))
   local out, text = {}, nil
   local count = 0
   while true do
@@ -68,247 +77,222 @@ local function tokens(s, size, limit)
   end
 end
 
--- Joins the tokens, so a failure shows them.
-local function show(list)
-  return table.concat(list, " | ")
+local B = string.rep("b", MAX_TAG + 16)
+local Z = string.rep("z", MAX_TAG + 16)
+
+local TOKENS = {
+  -- "Tokens"
+  { "tags and text", "<p>Hello <b>World</b></p>",
+    { "start:p", "text:Hello ", "start:b", "text:World", "end:b", "end:p" } },
+  { "names are lowercase", "<DIV>x</Div>",
+    { "start:div", "text:x", "end:div" } },
+  { "self-closing flag", "a<br/>b<br />c<br><img src=x />",
+    { "text:a", "start:br/", "text:b", "start:br/", "text:c", "start:br",
+      "start:img[src=x]/" } },
+  { "slash in unquoted value", "<a href=/x/>y",
+    { "start:a[href=/x/]", "text:y" } },
+  { "no attributes", "<p>", { "start:p" } },
+  { "no attributes, space", "<p >", { "start:p" } },
+  { "no attributes, newline", "<p\n>", { "start:p" } },
+  { "no attributes, self-closing", "<p/>", { "start:p/" } },
+  { "no attributes, space self-closing", "<p />", { "start:p/" } },
+  { "text is cleaned and decoded", "a&amp;b\r\n&lt;\1", { "text:a&b\n<" } },
+  { "chunk edges do not change tokens",
+    '<!DOCTYPE html><html><head><title>T &amp; U</title></head>'
+      .. '<body><h1 class="big">Caf\xC3\xA9 &amp; \xE4\xB8\xAD\xE6\x96\x87'
+      .. '</h1><!-- c --><p>A&nbsp;b &#x263A; &mdash;<br/>end</p>'
+      .. "<a href='/x?a=1&amp;b=2' title=\"a>b\">l</a><![CDATA[x]]>"
+      .. '<script>if (a</b) {}</script><p>tail &copy</p></body></html>',
+    { "start:html", "start:head", "start:title", "text:T & U", "end:title",
+      "end:head", "start:body", "start:h1[class=big]",
+      "text:Caf\xC3\xA9 & \xE4\xB8\xAD\xE6\x96\x87", "end:h1", "start:p",
+      "text:A\xC2\xA0b \xE2\x98\xBA \xE2\x80\x94", "start:br/", "text:end",
+      "end:p", "start:a[href=/x?a=1&b=2,title=a>b]", "text:l", "end:a",
+      "start:script", "end:script", "start:p", "text:tail \xC2\xA9", "end:p",
+      "end:body", "end:html" },
+    sizes = { 1, 2, 3, 4, 5, 6, 7, 8, WHOLE } },
+
+  -- "Skipped markup"
+  { "comment", "a<!-- <p>no</p> -- x -->b", { "text:ab" } },
+  { "comment short forms", "a<!-->b<!--->c<!---->d<!-- x --->e",
+    { "text:abcde" } },
+  { "unclosed comment", "a<!-- b <p>c</p>", { "text:a" } },
+  { "unclosed comment, opener only", "a<!--", { "text:a" } },
+  { "unclosed bogus comment, <!-", "a<!-", { "text:a" } },
+  { "unclosed bogus comment, <?", "a<?xml", { "text:a" } },
+  { "unclosed bogus comment, </ space", "a</ foo", { "text:a" } },
+  { "doctype", '<!DOCTYPE html PUBLIC "-//W3C//DTD">a', { "text:a" } },
+  { "bogus comments", "a<! x >b<?xml y?>c<!>d", { "text:abcd" } },
+  { "bogus end tags", "a</ foo>b</3>c", { "text:abc" } },
+  { "empty end tag", "a</>b", { "text:ab" } },
+  { "cdata", "a<![CDATA[<b>&amp;</b>]]>c", { "text:ac" } },
+  { "cdata with ]]", "<![CDATA[a]]b]>]]>c", { "text:c" } },
+  { "cdata with bytes clean removes", "<![CDATA[\xC3\xA9\1]]>", {} },
+  { "cdata at every chunk size", "<![CDATA[a\xE2\x80\x8Bb&copy\x04c]]>d",
+    { "text:d" }, sizes = SIZES_1_TO_16 },
+  { "unclosed cdata", "a<![CDATA[x<y]", { "text:a" } },
+  { "unclosed cdata only", "<![CDATA[x<y]", {} },
+  { "unclosed cdata, cut UTF-8", "<![CDATA[\xE4\xB8\xAD\xE2\x80", {},
+    sizes = SIZES_1_TO_16 },
+
+  -- "Broken markup"
+  { "< before non-letter", "a < b <3 c<", { "text:a < b <3 c<" } },
+  { "< before zero byte", "<\0>", { "text:<>" } },
+  { "unclosed start tag at end", "x<a href", { "text:x<a href" } },
+  { "unclosed end tag at end", "x</a", { "text:x</a" } },
+  { "</ at end", "a</", { "text:a</" } },
+  { "two unclosed tags at end", "x<a <b", { "text:x<a <b" } },
+  { "unclosed quoted value at end", '<a href="xy', { 'text:<a href="xy' } },
+  { "unclosed tags under MAX_TAG", string.rep("<a ", 2000),
+    { "text:" .. string.rep("<a ", 2000) } },
+  { "unclosed tags past MAX_TAG", string.rep("<a ", 6000),
+    { "text:" .. string.rep("<a ", 6000) } },
+  { "> past MAX_TAG", "<a " .. B .. ">c", { "text:<a " .. B .. ">c" } },
+  { "> within MAX_TAG", "<a " .. string.rep("b", 16000) .. ">c",
+    { "start:a[" .. string.rep("b", 16000) .. "=]", "text:c" } },
+
+  -- "Attributes"
+  { "value forms", [[<a href="x y" title='t' id=z hidden>]],
+    { "start:a[hidden=,href=x y,id=z,title=t]" } },
+  { "spaces around =", [[<a x = "v" y= w z =u>]], { "start:a[x=v,y=w,z=u]" } },
+  { "empty values", [[<a x="" y=>b<c z=''>]],
+    { "start:a[x=,y=]", "text:b", "start:c[z=]" } },
+  { "> in quoted value", [[<a title="a>b" x='>'>c]],
+    { "start:a[title=a>b,x=>]", "text:c" } },
+  { "closing quote 100 bytes away",
+    '<a t="' .. string.rep("z", 100) .. '>">w',
+    { "start:a[t=" .. string.rep("z", 100) .. ">]", "text:w" } },
+  { "duplicate keeps first", "<a x=1 X=2 x='3'>", { "start:a[x=1]" } },
+  { "names are lowercase", "<A HREF=x Data-Id=y>",
+    { "start:a[data-id=y,href=x]" } },
+  { "values are cleaned and decoded", '<a t="&amp;&lt;\1\r&#x263A;" u=a&amp;b>',
+    { "start:a[t=&<\xE2\x98\xBA,u=a&b]" } },
+  { "broken names dropped", [[<a "q"=1 =e x<y=2 ok=3 'z>]],
+    { "start:a[ok=3]" } },
+  { "end tag attributes ignored", "</a x y=1>b", { "end:a", "text:b" } },
+  { "end tag ends at first >", [[</a x=">" y>b]],
+    { "end:a", 'text:" y>b' } },
+
+  -- "Broken quoted value"
+  { "unclosed quote ends at first >", [[<a id=k href="x>y]],
+    { "start:a[id=k]", "text:y" } },
+  { "quoted value with > then </",
+    [[<a id=k href="no-close>broken</a> <b x="y>z">w</b>]],
+    { "start:a[id=k]", "text:broken", "end:a", "text: ", "start:b[x=y>z]",
+      "text:w", "end:b" } },
+  { "quote not closed within MAX_TAG", '<a t="x>y' .. Z,
+    { "start:a", "text:y" .. Z } },
+  { "quote closed past MAX_TAG", '<a t=">' .. Z .. '">w',
+    { "start:a", "text:" .. Z .. '">w' } },
+  { "first > of broken value past MAX_TAG", '<a x=">" t="' .. Z .. ">w",
+    { "start:a", 'text:" t="' .. Z .. ">w" } },
+
+  -- "Raw text and RCDATA"
+  { "script content skipped", "<script>if (a<b) x('</p>');</SCRIPT >y",
+    { "start:script", "end:script", "text:y" } },
+  { "raw end needs space, newline or >",
+    "<style>a</styles>b</style-x>c</style\n>d",
+    { "start:style", "end:style", "text:d" } },
+  { "raw end with /", "<script>a</script/>b",
+    { "start:script", "end:script", "text:b" } },
+  -- Regression: an unclosed script at the end of input looped forever.
+  { "unclosed script", "a<script>x < y", { "text:a", "start:script" } },
+  { "unclosed script, cut end tag", "a<script>x</scr",
+    { "text:a", "start:script" } },
+  { "title content is text", "<title>a<b>&amp;</p></title>c",
+    { "start:title", "text:a<b>&</p>", "end:title", "text:c" } },
+  { "textarea content is text",
+    "<TEXTAREA x=1>\xC3\xA9 <!-- n --></TextArea >",
+    { "start:textarea[x=1]", "text:\xC3\xA9 <!-- n -->", "end:textarea" } },
+  { "unclosed title", "<title>a<b", { "start:title", "text:a<b" } },
+  { "unclosed title, cut end tag", "<title>a</ti",
+    { "start:title", "text:a</ti" } },
+  { "unclosed title, cut entity", "<title>a&amp",
+    { "start:title", "text:a&" } },
+}
+
+t.cases(T, "tokens", TOKENS, function(input, size)
+  return tokens(input, size)
+end, { sizes = SIZES })
+
+-- spec/tokenizer.md "Never raise an error on bad markup", and the tokens do
+-- not depend on the chunk edges.
+local BROKEN = {
+  "", "<", "</", "<!", "<!-", "<!--", "<!-- x", "<?", "</>", "<>", "<<<>>>",
+  "<a", "<a href='>", "</a", "<script>", "<script>x</scr", "<style",
+  "&", "&#", "&#x", "&#99999999999;", "&amp", "\xFF<\xFE>\xC3",
+  "<p>\xE4\xB8", "<!DOCTYPE", "<\0>", "</\0>", "<a/", "<p/><",
+  "<![CDATA[", "<![CDATA", "<title>", "<textarea></textarea", "<a x=",
+  "<a x='", '<a x="y', "<a =", "<a/ /", "</a x='>",
+}
+
+local NO_RAISE = {}
+for k, doc in ipairs(BROKEN) do
+  NO_RAISE[k] = { doc, doc, "same tokens" }
 end
 
--- Checks doc against expected with one chunk and at every chunk size.
-local function check(doc, expected)
-  t.eq(show(tokens(doc, #doc + 1)), show(expected), "single chunk")
-  for _, size in ipairs(SIZES) do
-    t.eq(show(tokens(doc, size)), show(expected), "chunk size " .. size)
+t.cases(T, "no_raise", NO_RAISE, function(input, size)
+  local limit = 10 * #input + 10
+  local whole = tokens(input, WHOLE, limit)
+  local got = tokens(input, size, limit)
+  if table.concat(got, "|") ~= table.concat(whole, "|") then
+    return "chunked " .. table.concat(got, " | ") .. ", whole "
+      .. table.concat(whole, " | ")
   end
-end
+  return "same tokens"
+end, { sizes = SIZES })
 
--- Runs fn with a smaller MAX_TAG.
-local function with_max_tag(n, fn)
-  local saved = tokenizer.MAX_TAG
-  tokenizer.MAX_TAG = n
-  local ok, err = pcall(fn)
-  tokenizer.MAX_TAG = saved
-  t.ok(ok, tostring(err))
-end
+-- spec/text.md: text is decode(clean(run)) at every chunk size, also with a
+-- byte that clean removes inside an entity (found by the fuzzer). Each row
+-- runs as plain text, in p, and in closed and unclosed title and textarea.
+local CLEAN_DECODE_BASE = {
+  { "&copy\x04a", "&copya" },
+  { "&lt\x04a", "&lta" },
+  { "&lt\x16a", "&lta" },
+  { "&gt\x03a", "&gta" },
+  { "&amp\x16a", "&ampa" },
+  { "&#\x119", "\t" },
+  { "&#1\x14;", "" },
+  { "&#\x1C5", "" },
+  { "&#x\x04a", "\n" },
+  { "&#\xE2\x80\x8B1", "" },
+  { "x &eacute; \xE4\xB8\xAD&#x1F600;y &amp z\xF0\x9F\x98\x80&copy;",
+    "x \xC3\xA9 \xE4\xB8\xAD\xF0\x9F\x98\x80y & z\xF0\x9F\x98\x80\xC2\xA9" },
+  { "&copy\x04a &lt\x16b &#\x119 &#x\x04a &#\xE2\x80\x8B1 \xE4\xB8"
+      .. "\xAD&#1\x14; \xC2\xAD&amp\xEF\xBB\xBF;x\xF0\x9F\x98\x80&",
+    "&copya &ltb \t \n  \xE4\xB8\xAD &x\xF0\x9F\x98\x80&" },
+}
 
--- Tags and text
+local WRAPPERS = {
+  { "", "" }, { "<p>", "</p>" }, { "<title>", "</title>" },
+  { "<textarea>", "</textarea>" }, { "<title>" }, { "<textarea>" },
+}
 
-function T.tags_and_text()
-  check("<p>Hello <b>World</b></p>", {
-    "start:p", "text:Hello ", "start:b", "text:World", "end:b", "end:p",
-  })
-end
-
-function T.names_are_lowercase()
-  check("<DIV>x</Div>", { "start:div", "text:x", "end:div" })
-end
-
-function T.self_closing_flag()
-  check("a<br/>b<br />c<br><img src=x />", {
-    "text:a", "start:br/", "text:b", "start:br/", "text:c", "start:br",
-    "start:img[src=x]/",
-  })
-end
-
-function T.slash_in_unquoted_value_is_not_self_closing()
-  check("<a href=/x/>y", { "start:a[href=/x/]", "text:y" })
-end
-
-function T.text_is_cleaned_and_decoded()
-  check("a&amp;b\r\n&lt;\1", { "text:a&b\n<" })
-end
-
--- Comments, doctype, CDATA, bogus comments
-
-function T.comment_skipped()
-  check("a<!-- <p>no</p> -- x -->b", { "text:ab" })
-end
-
-function T.comment_short_forms()
-  check("a<!-->b<!--->c<!---->d<!-- x --->e", { "text:abcde" })
-end
-
-function T.unclosed_comment_dropped()
-  check("a<!-- b <p>c</p>", { "text:a" })
-  check("a<!--", { "text:a" })
-  check("a<!-", { "text:a" })
-end
-
-function T.doctype_skipped()
-  check('<!DOCTYPE html PUBLIC "-//W3C//DTD">a', { "text:a" })
-end
-
-function T.bogus_comments_skipped()
-  check("a<! x >b<?xml y?>c<!>d", { "text:abcd" })
-end
-
-function T.cdata_is_skipped()
-  check("a<![CDATA[<b>&amp;</b>]]>c", { "text:ac" })
-  check("<![CDATA[a]]b]>]]>c", { "text:c" })
-  check("<![CDATA[\xC3\xA9\1]]>", {})
-end
-
-function T.unclosed_cdata_is_dropped()
-  check("a<![CDATA[x<y]", { "text:a" })
-  check("<![CDATA[x<y]", {})
-end
-
--- Attributes
-
-function T.attribute_value_forms()
-  check([[<a href="x y" title='t' id=z hidden>]],
-    { "start:a[hidden=,href=x y,id=z,title=t]" })
-end
-
-function T.attribute_spaces_around_equals()
-  check([[<a x = "v" y= w z =u>]], { "start:a[x=v,y=w,z=u]" })
-end
-
-function T.attribute_empty_values()
-  check([[<a x="" y=>b<c z=''>]],
-    { "start:a[x=,y=]", "text:b", "start:c[z=]" })
-end
-
-function T.gt_in_quoted_value_does_not_end_tag()
-  check([[<a title="a>b" x='>'>c]], { "start:a[title=a>b,x=>]", "text:c" })
-end
-
-function T.duplicate_attribute_keeps_first()
-  check("<a x=1 X=2 x='3'>", { "start:a[x=1]" })
-end
-
-function T.attribute_names_are_lowercase()
-  check("<A HREF=x Data-Id=y>", { "start:a[data-id=y,href=x]" })
-end
-
-function T.attribute_values_are_cleaned_and_decoded()
-  check('<a t="&amp;&lt;\1\r&#x263A;" u=a&amp;b>',
-    { "start:a[t=&<\xE2\x98\xBA,u=a&b]" })
-end
-
-function T.broken_attributes_dropped()
-  check([[<a "q"=1 =e x<y=2 ok=3 'z>]], { "start:a[ok=3]" })
-end
-
-function T.no_attributes_gives_nil()
-  for _, doc in ipairs({ "<p>", "<p >", "<p/>", "<p />", "<p\n>" }) do
-    for _, size in ipairs(SIZES) do
-      local next_token = tokenizer.new(reader(doc, size))
-      local kind, _, attrs = next_token()
-      t.eq(kind, "start", doc)
-      t.eq(attrs, nil, doc)
+local CLEAN_DECODE = {}
+for _, base in ipairs(CLEAN_DECODE_BASE) do
+  for _, w in ipairs(WRAPPERS) do
+    local open, close = w[1], w[2]
+    local expected = {}
+    if open ~= "" then
+      expected[#expected + 1] = "start:" .. open:sub(2, -2)
     end
+    if base[2] ~= "" then
+      expected[#expected + 1] = "text:" .. base[2]
+    end
+    if close and close ~= "" then
+      expected[#expected + 1] = "end:" .. close:sub(3, -2)
+    end
+    local input = open .. base[1] .. (close or "")
+    CLEAN_DECODE[#CLEAN_DECODE + 1] = { input, input, expected }
   end
 end
 
-function T.end_tag_attributes_ignored()
-  check([[</a x=">" y>b]], { "end:a", "text:b" })
-end
+t.cases(T, "clean_decode", CLEAN_DECODE, function(input, size)
+  return tokens(input, size)
+end, { sizes = SIZES_1_TO_16 })
 
--- Recovery decision: a broken quoted value ends the tag at the first ">"
--- in the value. Its attribute is dropped. Earlier attributes are kept.
-function T.unclosed_quote_at_end_of_input()
-  check([[<a id=k href="x>y]], { "start:a[id=k]", "text:y" })
-  check([[<a href="xy]], {})
-end
-
-function T.quoted_value_with_end_tag_is_broken()
-  check([[<a id=k href="no-close>broken</a> <b x="y>z">w</b>]], {
-    "start:a[id=k]", "text:broken", "end:a", "text: ",
-    "start:b[x=y>z]", "text:w", "end:b",
-  })
-end
-
-function T.unclosed_quote_past_max_tag()
-  with_max_tag(16, function()
-    check('<a t="x>y' .. string.rep("z", 40),
-      { "start:a", "text:y" .. string.rep("z", 40) })
-    check('<a t=">' .. string.rep("z", 40) .. '">w',
-      { "start:a", "text:" .. string.rep("z", 40) .. '">w' })
-  end)
-end
-
-function T.closed_quote_far_away_within_max_tag()
-  check('<a t="' .. string.rep("z", 100) .. '>">w',
-    { "start:a[t=" .. string.rep("z", 100) .. ">]", "text:w" })
-end
-
--- Raw text and RCDATA
-
-function T.script_content_skipped()
-  check("<script>if (a<b) x('</p>');</SCRIPT >y",
-    { "start:script", "end:script", "text:y" })
-end
-
-function T.raw_end_needs_space_slash_or_gt()
-  check("<style>a</styles>b</style-x>c</style\n>d",
-    { "start:style", "end:style", "text:d" })
-  check("<script>a</script/>b", { "start:script", "end:script", "text:b" })
-end
-
--- Regression: an unclosed script at the end of input looped forever.
-function T.unclosed_script_ends_with_input()
-  check("a<script>x < y", { "text:a", "start:script" })
-  check("a<script>x</scr", { "text:a", "start:script" })
-end
-
-function T.rcdata_content_is_text()
-  check("<title>a<b>&amp;</p></title>c",
-    { "start:title", "text:a<b>&</p>", "end:title", "text:c" })
-  check("<TEXTAREA x=1>\xC3\xA9 <!-- n --></TextArea >",
-    { "start:textarea[x=1]", "text:\xC3\xA9 <!-- n -->", "end:textarea" })
-end
-
-function T.unclosed_rcdata_is_text()
-  check("<title>a<b", { "start:title", "text:a<b" })
-  check("<title>a</ti", { "start:title", "text:a</ti" })
-  check("<title>a&amp", { "start:title", "text:a&" })
-end
-
--- Unknown and malformed tags
-
-function T.lt_before_non_letter_is_text()
-  check("a < b <3 c<", { "text:a < b <3 c<" })
-  check("<\0>", { "text:<>" })
-end
-
-function T.empty_end_tag_dropped()
-  check("a</>b", { "text:ab" })
-end
-
-function T.end_tag_with_space_is_bogus_comment()
-  check("a</ foo>b</3>c", { "text:abc" })
-end
-
-function T.unclosed_tag_at_end_is_dropped()
-  check("x<a href", { "text:x" })
-  check("x</a", { "text:x" })
-end
-
-function T.long_unclosed_tag_becomes_text()
-  with_max_tag(16, function()
-    check("<a " .. string.rep("b", 40), { "text:<a " .. string.rep("b", 40) })
-  end)
-end
-
--- Many "<" with no ">" stay linear and become text. The tags in the last
--- MAX_TAG bytes are cut by the end of input and dropped.
-function T.many_unclosed_tags_become_text()
-  local doc = string.rep("<a ", 2000)
-  with_max_tag(64, function()
-    check(doc, { "text:" .. doc:sub(1, #doc - 63) })
-  end)
-end
-
--- A ">" more than MAX_TAG bytes after "<" never ends the tag, at any chunk
--- size.
-function T.far_gt_does_not_end_tag()
-  with_max_tag(16, function()
-    check("<a " .. string.rep("b", 40) .. ">c",
-      { "text:<a " .. string.rep("b", 40) .. ">c" })
-  end)
-end
-
--- Bounded buffering: a text run streams before the input ends.
+-- spec/tokenizer.md "Tokens" and "MAX_TAG ... bounds the buffer": a text
+-- run streams before the input ends.
 function T.text_run_streams()
   local reads = 0
   local next_token = tokenizer.new(function()
@@ -321,170 +305,6 @@ function T.text_run_streams()
   local kind = next_token()
   t.eq(kind, "text")
   t.ok(reads <= 2, "reads " .. reads)
-end
-
--- spec/tokenizer.md: tokens split at any chunk edge give the same result.
-function T.same_tokens_at_chunk_sizes_1_to_8()
-  local doc = '<!DOCTYPE html><html><head><title>T &amp; U</title></head>'
-    .. '<body><h1 class="big">Caf\xC3\xA9 &amp; \xE4\xB8\xAD\xE6\x96\x87</h1>'
-    .. '<!-- c --><p>A&nbsp;b &#x263A; &mdash;<br/>end</p>'
-    .. "<a href='/x?a=1&amp;b=2' title=\"a>b\">l</a><![CDATA[x]]>"
-    .. '<script>if (a</b) {}</script><p>tail &copy</p></body></html>'
-  local expected = tokens(doc, 4096)
-  t.ok(#expected > 10)
-  for size = 1, 8 do
-    t.eq(tokens(doc, size), expected, "chunk size " .. size)
-  end
-end
-
-local BROKEN = {
-  "", "<", "</", "<!", "<!-", "<!--", "<!-- x", "<?", "</>", "<>", "<<<>>>",
-  "<a", "<a href='>", "</a", "<script>", "<script>x</scr", "<style",
-  "&", "&#", "&#x", "&#99999999999;", "&amp", "\xFF<\xFE>\xC3",
-  "<p>\xE4\xB8", "<!DOCTYPE", "<\0>", "</\0>", "<a/", "<p/><",
-  "<![CDATA[", "<![CDATA", "<title>", "<textarea></textarea", "<a x=",
-  "<a x='", '<a x="y', "<a =", "<a/ /", "</a x='>",
-}
-
-function T.broken_input_does_not_raise()
-  for _, doc in ipairs(BROKEN) do
-    for _, size in ipairs(SIZES) do
-      local ok, err = pcall(tokens, doc, size, 10 * #doc + 10)
-      t.ok(ok, "input " .. doc .. " size " .. size .. ": " .. tostring(err))
-    end
-  end
-end
-
--- Fixed-seed generator: tag soup and random bytes. Every case ends without
--- an error and gives the same tokens at every chunk size.
-function T.generated_broken_input()
-  local alphabet = { "<", ">", "/", "!", "-", "a", "p", "script", " ", "&",
-    ";", "#", "x", '"', "'", "\xE4\xB8\xAD", "\xC3", "=", "?", "\n",
-    "<!--", "-->", "<![CDATA[", "]]>", "title", "</", "<a href=", "&amp;",
-    "<style>", "</script>", "\t", "TEXTAREA", "[" }
-  local seed = 12345
-  local function rand(n)
-    seed = (seed * 1103515245 + 12345) % 2147483648
-    return seed % n + 1
-  end
-  for case = 1, 500 do
-    local parts = {}
-    if case % 5 == 0 then
-      for k = 1, rand(60) do
-        parts[k] = string.char(rand(256) - 1)
-      end
-    else
-      for k = 1, rand(40) do
-        parts[k] = alphabet[rand(#alphabet)]
-      end
-    end
-    local doc = table.concat(parts)
-    local limit = 10 * #doc + 10
-    local ok, expected = pcall(tokens, doc, #doc + 1, limit)
-    t.ok(ok, "case " .. case .. ": " .. tostring(expected))
-    local size = SIZES[rand(#SIZES)]
-    local ok2, got = pcall(tokens, doc, size, limit)
-    t.ok(ok2, "case " .. case .. " size " .. size .. ": " .. tostring(got))
-    if ok and ok2 then
-      t.eq(show(got), show(expected), "case " .. case .. " size " .. size
-        .. " input " .. doc)
-    end
-  end
-end
-
-
--- A byte that clean removes inside an entity: the text is
--- decode(clean(run)) at every chunk size, as spec/text.md says. Found by the
--- fuzzer.
-local REMOVED_IN_ENTITY = {
-  { "&copy\x04a", "&copya" },
-  { "&lt\x04a", "&lta" },
-  { "&lt\x16a", "&lta" },
-  { "&gt\x03a", "&gta" },
-  { "&amp\x16a", "&ampa" },
-  { "&#\x119", "\t" },
-  { "&#1\x14;", "" },
-  { "&#\x1C5", "" },
-  { "&#x\x04a", "\n" },
-  { "&#\xE2\x80\x8B1", "" },
-}
-
--- Joined text of all tokens, or the tokens when one is not text.
-local function joined_text(list)
-  if #list == 0 then
-    return ""
-  end
-  if #list == 1 and list[1]:sub(1, 5) == "text:" then
-    return list[1]:sub(6)
-  end
-  return show(list)
-end
-
-local function check_text(doc, expected, prefix, suffix)
-  local single = tokens(doc, #doc + 1)
-  local want = {}
-  if prefix then
-    want[#want + 1] = prefix
-  end
-  if expected ~= "" then
-    want[#want + 1] = "text:" .. expected
-  end
-  if suffix then
-    want[#want + 1] = suffix
-  end
-  t.eq(show(single), show(want), "single chunk")
-  for size = 1, 16 do
-    t.eq(show(tokens(doc, size)), show(single), "chunk size " .. size)
-  end
-end
-
-function T.removed_byte_in_entity_matches_single_chunk()
-  for _, case in ipairs(REMOVED_IN_ENTITY) do
-    local s, expected = case[1], case[2]
-    check_text(s, expected)
-    t.eq(joined_text(tokens(s, 1)), expected)
-    check_text("<p>" .. s .. "</p>", expected, "start:p", "end:p")
-  end
-end
-
-function T.removed_byte_in_entity_in_rcdata()
-  for _, case in ipairs(REMOVED_IN_ENTITY) do
-    for _, name in ipairs({ "title", "textarea" }) do
-      check_text("<" .. name .. ">" .. case[1] .. "</" .. name .. ">",
-        case[2], "start:" .. name, "end:" .. name)
-      -- Unclosed: the content ends with the input.
-      check_text("<" .. name .. ">" .. case[1], case[2], "start:" .. name)
-    end
-  end
-end
-
--- CDATA gives no text at any chunk size.
-function T.cdata_skipped_across_chunks()
-  check_text("<![CDATA[a\xE2\x80\x8Bb&copy\x04c]]>d", "d")
-  check_text("<![CDATA[\xE4\xB8\xAD\xE2\x80", "")
-end
-
--- Every fuzz failure file that the env can read gives the same tokens at
--- every chunk size. The env cannot list a directory, so the names are
--- probed: <seed>-<index>.html for the seeds of the recorded runs.
-function T.fuzz_failure_files_match_single_chunk()
-  local count = 0
-  for _, seed in ipairs({ 1, 11, 2026, 987654321 }) do
-    for index = 1, 1000 do
-      local path = "tests/fuzz-failures/" .. seed .. "-" .. index .. ".html"
-      local f = io.open(path, "rb")
-      if f then
-        local doc = f:read("a")
-        f:close()
-        count = count + 1
-        local expected = show(tokens(doc, #doc + 1))
-        for _, size in ipairs({ 1, 2, 3, 5, 8, 13, 16 }) do
-          t.eq(show(tokens(doc, size)), expected, path .. " size " .. size)
-        end
-      end
-    end
-  end
-  print("fuzz failure files checked: " .. count)
 end
 
 return T
