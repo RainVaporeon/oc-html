@@ -297,9 +297,11 @@ end
 function T.f9b_installer_checks_close_result()
   local src = t.read_repo("tools/installer.lua")
   t.ok(src, "tools/installer.lua not readable")
-  t.ok(real_find(src, "local closed, cerr = f:close()", 1, true),
+  -- OpenOS close returns no values on success, so only its reason counts.
+  -- installer_test.lua runs this write with a fake OpenOS file.
+  t.ok(real_find(src, "local _, cerr = f:close()", 1, true),
     "close() result of write is ignored")
-  t.ok(real_find(src, "if not closed then", 1, true),
+  t.ok(real_find(src, "if cerr ~= nil then", 1, true),
     "close() failure is not reported")
 end
 

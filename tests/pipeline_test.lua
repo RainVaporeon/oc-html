@@ -282,7 +282,11 @@ local function fake_writer(fail, calls)
       if name == fail then
         return nil, "not enough space"
       end
-      return name == "close" or self
+      -- OpenOS close returns no values on success.
+      if name == "close" then
+        return
+      end
+      return self
     end
   end
   f.write, f.flush, f.close = step("write"), step("flush"), step("close")

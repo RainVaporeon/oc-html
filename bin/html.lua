@@ -173,8 +173,10 @@ function M.write_text(open, path, text)
   if not done then
     return nil, err or "write failed"
   end
-  if not closed then
-    return nil, reason(cerr or "close failed")
+  -- OpenOS close returns no values on success (measured). Only a reason
+  -- is a failure.
+  if not closed and cerr ~= nil then
+    return nil, reason(cerr)
   end
   return true
 end

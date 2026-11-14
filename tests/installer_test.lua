@@ -368,6 +368,52 @@ local function lines_of(s)
   return list
 end
 
+-- Loads an installer source with fake OpenOS modules and returns its
+-- game_deps().write. fail names the file call that fails.
+local function game_write(source, fail)
+  local function step(name)
+    return function(self)
+      if name == fail then
+        return nil, "not enough space"
+      end
+      -- OpenOS close returns no values on success (measured).
+      if name == "close" then
+        return
+      end
+      return self
+    end
+  end
+  local env = {
+    table = table, string = string, type = type, pairs = pairs,
+    ipairs = ipairs, tostring = tostring, error = error, pcall = pcall,
+    math = math,
+    require = function() return {} end,
+    io = { open = function()
+      return { write = step("write"), flush = step("flush"),
+        close = step("close") }
+    end },
+  }
+  local M = assert(load(source, "=installer", "t", env))({})
+  return M.game_deps().write
+end
+
+function T.game_write_accepts_close_without_values()
+  local sources = { assert(t.read_repo("tools/installer.lua")) }
+  -- 0.1.0a is frozen with the old write. 0.1.1a is the first fixed release.
+  local source = t.read_repo("releases/0.1.1a/html-install.lua")
+  if source then
+    sources[#sources + 1] = source
+  end
+  for _, s in ipairs(sources) do
+    local write = game_write(s, nil)
+    t.eq({ write("/home/x.new", "x") }, { true })
+    for _, fail in ipairs({ "write", "flush", "close" }) do
+      write = game_write(s, fail)
+      t.eq({ write("/home/x.new", "x") }, { nil, "not enough space" }, fail)
+    end
+  end
+end
+
 function T.release_installers_match_release_files()
   local checked = 0
   for _, v in ipairs(t.release_versions()) do

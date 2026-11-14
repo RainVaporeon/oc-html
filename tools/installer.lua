@@ -317,13 +317,18 @@ function M.game_deps()
         return nil, why
       end
       local done, werr = f:write(content)
-      -- A full disk can report "not enough space" only at close.
-      local closed, cerr = f:close()
-      if not done then
-        return nil, werr
+      -- A full disk reports "not enough space" only at flush (measured).
+      if done then
+        done, werr = f:flush()
       end
-      if not closed then
-        return nil, cerr or "close failed"
+      -- OpenOS close returns no values on success (measured). Only a
+      -- reason is a failure.
+      local _, cerr = f:close()
+      if not done then
+        return nil, werr or "write failed"
+      end
+      if cerr ~= nil then
+        return nil, cerr
       end
       return true
     end,
