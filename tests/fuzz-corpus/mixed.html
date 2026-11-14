@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html><head><title>Mixed &amp; broken</title>
+<script>var s = "</scr" + "ipt>"; if (a < b) {}</script>
+<style>p > a { color: red }</style></head>
+<body>
+<h1>Head&shy;ing &copy 2026 &#x1F600; &#55296; &#0;</h1>
+<p>Wide: 中文字符 日本語 and emoji 😀️ with zero&#8203;width.</p>
+<pre>
+	tab	stop
+  kept   spaces &lt;code&gt;
+</pre>
+<ul><li>one<li>two &amp three<li><a href=x>link</a></ul>
+<table><tr><td>a<td>b</table>
+<p>Unclosed <b>bold <i>italic <u>under
+<img alt="pic &quot;x&quot;"><img src=y.png>
+<hr>
+<textarea>raw <b>not bold</b> &amp;</textarea>
+<![CDATA[ cdata <text> ]]>
+<!-- comment -- with -- dashes --!>
+<div class='a' id="b" data-x=c disabled>end</div>

@@ -1,6 +1,6 @@
 # Runs the test suite in the sandboxed container.
 # Usage: pwsh tests/docker/test.ps1           run all tests
-#        pwsh tests/docker/test.ps1 fuzz N    run N fuzz documents
+#        pwsh tests/docker/test.ps1 fuzz N [SEED]   run N fuzz documents
 $ErrorActionPreference = 'Stop'
 
 $image = 'oc-html-test'
@@ -9,14 +9,17 @@ $failures = Join-Path $root 'tests' 'fuzz-failures'
 
 if ($args.Count -eq 0) {
   $command = @('lua5.3', 'tests/run.lua')
-} elseif ($args.Count -eq 2 -and $args[0] -eq 'fuzz' -and "$($args[1])" -match '^[1-9][0-9]*$') {
+} elseif (($args.Count -eq 2 -or $args.Count -eq 3) -and $args[0] -eq 'fuzz' -and "$($args[1])" -match '^[1-9][0-9]*$' -and ($args.Count -eq 2 -or "$($args[2])" -match '^[0-9]+$')) {
   if (-not (Test-Path (Join-Path $root 'tests' 'fuzz.lua'))) {
     Write-Host 'test.ps1: fuzz not implemented: tests/fuzz.lua does not exist yet.'
     exit 1
   }
   $command = @('lua5.3', 'tests/fuzz.lua', "$($args[1])")
+  if ($args.Count -eq 3) {
+    $command += "$($args[2])"
+  }
 } else {
-  Write-Host 'usage: pwsh tests/docker/test.ps1 [fuzz N]   (N is a positive integer)'
+  Write-Host 'usage: pwsh tests/docker/test.ps1 [fuzz N [SEED]]   (N is a positive integer, SEED a whole number)'
   exit 2
 }
 
