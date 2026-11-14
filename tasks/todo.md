@@ -100,14 +100,14 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 **Description:** Implement all SPEC.md parsing rules in the tokenizer: comments, doctype, CDATA, processing instructions, quoted, unquoted and broken attributes, raw text for `script` and `style`, and tokens split across chunk edges. Build the tokenizer on plain `string.find` and `string.byte`. Do not run `gsub` or `gmatch` over large strings. Read the file with `io` in 4096-byte chunks.
 
 **Acceptance criteria:**
-- [ ] Each parsing rule has a unit test.
-- [ ] The tokenizer uses only plain `string.find` and `string.byte` to scan. No `gsub` or `gmatch` runs over a chunk.
-- [ ] Every test passes with chunk sizes 1, 2, 7 and 4096.
-- [ ] No input raises an uncontrolled error.
-- [ ] Scan choice follows the measured costs (probe v2): plain `find` (about 3.2 us per call) for long jumps (text runs, `-->`, `</script`), `byte` (about 61 ns) inside tags, `sub` (about 260 ns for 80 bytes) to cut the text, and `t[#t+1] = v` for appends (twice as fast as `table.insert`).
+- [x] Each parsing rule has a unit test.
+- [x] The tokenizer uses only plain `string.find` and `string.byte` to scan. No `gsub` or `gmatch` runs over a chunk.
+- [x] Every test passes with chunk sizes 1, 2, 7 and 4096.
+- [x] No input raises an uncontrolled error.
+- [x] Scan choice follows the measured costs (probe v2): plain `find` (about 3.2 us per call) for long jumps (text runs, `-->`, `</script`), `byte` (about 61 ns) inside tags, `sub` (about 260 ns for 80 bytes) to cut the text, and `t[#t+1] = v` for appends (twice as fast as `table.insert`).
 
 **Verification:**
-- [ ] Tests pass: `pwsh tests/docker/test.ps1`
+- [x] Tests pass: `pwsh tests/docker/test.ps1`
 
 **Dependencies:** Checkpoint 1
 
@@ -141,12 +141,12 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 **Description:** Implement `tests/fuzz.lua`. It generates random tag soup and mutates corpus files, then runs the pipeline with random chunk sizes from 1 to 16 bytes.
 
 **Acceptance criteria:**
-- [ ] `pwsh tests/docker/test.ps1 fuzz 1000` runs 1000 documents with a printed seed.
-- [ ] Any uncontrolled error saves the input and seed to `tests/fuzz-failures/` and fails the run.
-- [ ] The same seed gives the same documents.
+- [x] `pwsh tests/docker/test.ps1 fuzz 1000` runs 1000 documents with a printed seed.
+- [x] Any uncontrolled error saves the input and seed to `tests/fuzz-failures/` and fails the run.
+- [x] The same seed gives the same documents.
 
 **Verification:**
-- [ ] Fuzz run: `pwsh tests/docker/test.ps1 fuzz 1000`
+- [x] Fuzz run: `pwsh tests/docker/test.ps1 fuzz 1000`
 
 **Dependencies:** Task 4, Task 5
 
@@ -156,8 +156,8 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 
 ### Checkpoint 2: Parser survives fuzzing
 - [ ] All tests pass.
-- [ ] `fuzz 1000` gives zero uncontrolled errors, with three different seeds.
-- [ ] Every fuzz failure found has become a unit test.
+- [x] `fuzz 1000` gives zero uncontrolled errors, with three different seeds.
+- [x] Every fuzz failure found has become a unit test.
 
 ## Phase 3: Layout
 
@@ -166,12 +166,12 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 **Description:** Implement the SPEC.md element table in `layout.lua`: dropped elements, `title` to status, headings, block breaks, `br`, `hr`, emphasis, links, `img` alt text, `li` prefix, and the open-element stack for unclosed and stray tags.
 
 **Acceptance criteria:**
-- [ ] Each row of the element table has a test.
-- [ ] Unclosed tags close at the parent end or document end. Stray end tags are ignored.
-- [ ] Unknown tags are inline and keep their content.
+- [x] Each row of the element table has a test.
+- [x] Unclosed tags close at the parent end or document end. Stray end tags are ignored.
+- [x] Unknown tags are inline and keep their content.
 
 **Verification:**
-- [ ] Tests pass: `pwsh tests/docker/test.ps1`
+- [x] Tests pass: `pwsh tests/docker/test.ps1`
 
 **Dependencies:** Checkpoint 2
 
@@ -184,14 +184,14 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 **Description:** Collapse whitespace outside `pre`. Keep it inside `pre`. Wrap the cleaned text at word boundaries to a given width with `unicode.wlen`. Split words longer than the width. The inline style bytes never count toward the width.
 
 **Acceptance criteria:**
-- [ ] Whitespace tests pass for normal text and `pre`.
-- [ ] Wrapped lines never exceed the width, including with wide characters.
-- [ ] Style bytes do not count toward the width.
-- [ ] Styles stay correct across a wrap.
-- [ ] Inside `pre`, each tab expands to spaces up to the next 8-column stop before the width is measured (the game draws a tab as a 2-cell glyph). Outside `pre`, the whitespace collapse removes tabs.
+- [x] Whitespace tests pass for normal text and `pre`.
+- [x] Wrapped lines never exceed the width, including with wide characters.
+- [x] Style bytes do not count toward the width.
+- [x] Styles stay correct across a wrap.
+- [x] Inside `pre`, each tab expands to spaces up to the next 8-column stop before the width is measured (the game draws a tab as a 2-cell glyph). Outside `pre`, the whitespace collapse removes tabs.
 
 **Verification:**
-- [ ] Tests pass: `pwsh tests/docker/test.ps1`
+- [x] Tests pass: `pwsh tests/docker/test.ps1`
 
 **Dependencies:** Task 7
 
@@ -204,14 +204,14 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 **Description:** Add hand-written cases with expected text in `tests/cases/` and saved real pages in `tests/real/`. The runner compares cases with expected text and checks that real pages render.
 
 **Acceptance criteria:**
-- [ ] At least 10 hand-written cases cover the element table, broken markup and entities.
-- [ ] One GT:NH wiki page, one Wikipedia article and one plain documentation page are in `tests/real/` and render more than zero lines without error.
-- [ ] The comparison removes `\r`, trailing spaces and tabs on each line, and blank lines at the end. Every other difference fails.
-- [ ] The runner shows a readable diff when a case fails.
+- [x] At least 10 hand-written cases cover the element table, broken markup and entities.
+- [x] One GT:NH wiki page, one Wikipedia article and one plain documentation page are in `tests/real/` and render more than zero lines without error.
+- [x] The comparison removes `\r`, trailing spaces and tabs on each line, and blank lines at the end. Every other difference fails.
+- [x] The runner shows a readable diff when a case fails.
 
 **Verification:**
-- [ ] Tests pass: `pwsh tests/docker/test.ps1`
-- [ ] Fuzz run: `pwsh tests/docker/test.ps1 fuzz 1000`
+- [x] Tests pass: `pwsh tests/docker/test.ps1`
+- [x] Fuzz run: `pwsh tests/docker/test.ps1 fuzz 1000`
 
 **Dependencies:** Task 8
 
@@ -231,20 +231,20 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 **Description:** Implement `lib/html/viewer.lua` as in SPEC.md "Viewer". Draw the styled lines and a status line. Scroll with Up, Down, PgUp, PgDn, Home and End.
 
 **Acceptance criteria:**
-- [ ] All scroll keys work and stop at the start and the end.
-- [ ] The status line shows the title (or file name), the position in percent and the key hint.
-- [ ] The screen size comes from `gpu.getResolution()`.
-- [ ] On start, the resolution is set to maxResolution unless `--no-rescale` is given. Tested with a fake GPU that starts at 120x60.
-- [ ] Depth 8 and 4 show colors as RGB values. Depth 1 shows plain text. No palette indices are used.
-- [ ] `setForeground` and `setBackground` are called only when the color changes.
-- [ ] A one-line scroll uses `gpu.copy` and draws only the new row. `copy` leaves the source row, so the new row is always drawn.
-- [ ] Keys: the standard codes 199, 200, 201, 207, 208 and 209 are always accepted. The NumPad codes 71, 72, 73, 79, 80 and 81 are Home, Up, PgUp, End, Down and PgDn only when char is 0. Tests: NumPad codes with char 0 navigate. NumPad codes with a digit char (for example code 73 with char 57) do not.
-- [ ] Queued scroll events are added up before a redraw (key repeat: about 28 events per second).
-- [ ] The color cache keeps the current foreground and background. Same-color calls are skipped.
-- [ ] On exit, the viewer restores the screen, calls `term.clear()` and sets the cursor.
+- [x] All scroll keys work and stop at the start and the end.
+- [x] The status line shows the title (or file name), the position in percent and the key hint.
+- [x] The screen size comes from `gpu.getResolution()`.
+- [x] On start, the resolution is set to maxResolution unless `--no-rescale` is given. Tested with a fake GPU that starts at 120x60.
+- [x] Depth 8 and 4 show colors as RGB values. Depth 1 shows plain text. No palette indices are used.
+- [x] `setForeground` and `setBackground` are called only when the color changes.
+- [x] A one-line scroll uses `gpu.copy` and draws only the new row. `copy` leaves the source row, so the new row is always drawn.
+- [x] Keys: the standard codes 199, 200, 201, 207, 208 and 209 are always accepted. The NumPad codes 71, 72, 73, 79, 80 and 81 are Home, Up, PgUp, End, Down and PgDn only when char is 0. Tests: NumPad codes with char 0 navigate. NumPad codes with a digit char (for example code 73 with char 57) do not.
+- [x] Queued scroll events are added up before a redraw (key repeat: about 28 events per second).
+- [x] The color cache keeps the current foreground and background. Same-color calls are skipped.
+- [x] On exit, the viewer restores the screen, calls `term.clear()` and sets the cursor.
 
 **Verification:**
-- [ ] Tests pass: `pwsh tests/docker/test.ps1` (tested with a fake GPU at depth 8, 4 and 1, and at 120x60, 80x25 and 50x16)
+- [x] Tests pass: `pwsh tests/docker/test.ps1` (tested with a fake GPU at depth 8, 4 and 1, and at 120x60, 80x25 and 50x16)
 - [ ] Manual check (user, in game): scroll a real page on a depth 8, 4 and 1 screen.
 
 **Dependencies:** Checkpoint 2
@@ -258,19 +258,19 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 **Description:** Finish `bin/html.lua` and connect the viewer. Add the `q` quit-or-cancel prompt, the file-size check before reading, controlled and uncontrolled error output, `/tmp/html-error.log`, Ctrl+C handling, screen restore on every exit, and usage for `html` and `html --help`.
 
 **Acceptance criteria:**
-- [ ] `q` shows the prompt. Cancel returns to the page. Quit exits.
-- [ ] Every exit path (quit, controlled error, uncontrolled error, Ctrl+C) restores the screen, restores the original resolution and leaves a usable shell prompt.
-- [ ] Argument parsing accepts `--no-rescale`.
-- [ ] A missing file, a directory or a file too large for free memory gives a one-line message.
-- [ ] A string error with the prefix `html: ` prints as it is. Any other error prints one line and writes the traceback to `/tmp/html-error.log`.
-- [ ] `bin/html.lua` takes the traceback function as a parameter. The tests pass a fake one, because the sandbox has no `debug`.
-- [ ] `/tmp/html-error.log` never exceeds 8 KB. The newest content is kept.
-- [ ] Ctrl+C: the viewer quits on `key_down` char 3 and on the "interrupted" event from `event.pull` (measured: both arrive, and neither is an error).
-- [ ] The error log and `--stats-out` writes check `write`, `flush` and `close` (a full `/tmp` fails only at flush or close). Done in bin/html.lua for the stdout mode. Keep it when the viewer is connected.
-- [ ] The `--stats` lines print after the screen restore.
+- [x] `q` shows the prompt. Cancel returns to the page. Quit exits.
+- [x] Every exit path (quit, controlled error, uncontrolled error, Ctrl+C) restores the screen, restores the original resolution and leaves a usable shell prompt.
+- [x] Argument parsing accepts `--no-rescale`.
+- [x] A missing file, a directory or a file too large for free memory gives a one-line message.
+- [x] A string error with the prefix `html: ` prints as it is. Any other error prints one line and writes the traceback to `/tmp/html-error.log`.
+- [x] `bin/html.lua` takes the traceback function as a parameter. The tests pass a fake one, because the sandbox has no `debug`.
+- [x] `/tmp/html-error.log` never exceeds 8 KB. The newest content is kept.
+- [x] Ctrl+C: the viewer quits on `key_down` char 3 and on the "interrupted" event from `event.pull` (measured: both arrive, and neither is an error).
+- [x] The error log and `--stats-out` writes check `write`, `flush` and `close` (a full `/tmp` fails only at flush or close). Done in bin/html.lua for the stdout mode. Keep it when the viewer is connected.
+- [x] The `--stats` lines print after the screen restore.
 
 **Verification:**
-- [ ] Tests pass: `pwsh tests/docker/test.ps1`
+- [x] Tests pass: `pwsh tests/docker/test.ps1`
 - [ ] Manual check (user, in game): each exit path, and a page of about 1 MB.
 
 **Dependencies:** Task 9, Task 10

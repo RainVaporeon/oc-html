@@ -39,6 +39,23 @@ local function find_release_versions()
   return versions
 end
 
+
+-- Test case names (tests/cases/*.html), listed once like the test files.
+local function find_cases()
+  local pipe = assert(io.popen("ls -1 tests/cases", "r"))
+  local cases = {}
+  for name in pipe:lines() do
+    local base = name:match("^([%w_%-]+)%.html$")
+    if base then
+      cases[#cases + 1] = base
+    end
+  end
+  pipe:close()
+  table.sort(cases)
+  return cases
+end
+
+local CASES = find_cases()
 local RELEASE_VERSIONS = find_release_versions()
 
 local SKIP = {}
@@ -288,6 +305,11 @@ local function build_env()
   -- The release folder names under releases/, sorted.
   function test_api.release_versions()
     return copy(RELEASE_VERSIONS)
+  end
+
+  -- The base names of tests/cases/*.html, sorted.
+  function test_api.list_cases()
+    return copy(CASES)
   end
 
   -- Reads a file under releases/<version>/ or tools/, outside the env

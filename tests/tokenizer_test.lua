@@ -141,14 +141,15 @@ function T.bogus_comments_skipped()
   check("a<! x >b<?xml y?>c<!>d", { "text:abcd" })
 end
 
-function T.cdata_is_text()
-  check("a<![CDATA[<b>&amp;</b>]]>c", { "text:a<b>&amp;</b>c" })
-  check("<![CDATA[a]]b]>]]>c", { "text:a]]b]>c" })
-  check("<![CDATA[\xC3\xA9\1]]>", { "text:\xC3\xA9" })
+function T.cdata_is_skipped()
+  check("a<![CDATA[<b>&amp;</b>]]>c", { "text:ac" })
+  check("<![CDATA[a]]b]>]]>c", { "text:c" })
+  check("<![CDATA[\xC3\xA9\1]]>", {})
 end
 
-function T.unclosed_cdata_is_text()
-  check("<![CDATA[x<y]", { "text:x<y]" })
+function T.unclosed_cdata_is_dropped()
+  check("a<![CDATA[x<y]", { "text:a" })
+  check("<![CDATA[x<y]", {})
 end
 
 -- Attributes
@@ -457,11 +458,10 @@ function T.removed_byte_in_entity_in_rcdata()
   end
 end
 
--- CDATA is cleaned, not decoded. A removed character cut by a chunk edge
--- is removed whole.
-function T.cdata_cleans_across_chunks()
-  check_text("<![CDATA[a\xE2\x80\x8Bb&copy\x04c\xC2\xADd]]>", "ab&copycd")
-  check_text("<![CDATA[\xE4\xB8\xAD\xE2\x80", "\xE4\xB8\xAD?")
+-- CDATA gives no text at any chunk size.
+function T.cdata_skipped_across_chunks()
+  check_text("<![CDATA[a\xE2\x80\x8Bb&copy\x04c]]>d", "d")
+  check_text("<![CDATA[\xE4\xB8\xAD\xE2\x80", "")
 end
 
 -- Every fuzz failure file that the env can read gives the same tokens at

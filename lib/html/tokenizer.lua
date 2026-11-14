@@ -10,10 +10,9 @@
 --   nil                 (end of input)
 -- Names are lowercase. attrs maps a lowercase name to its cleaned and
 -- decoded value, or is nil when the tag has no attributes.
--- Comments, doctype and processing instructions are skipped. CDATA content
--- is text (cleaned, not decoded). The content of script and style is
--- skipped up to the matching end tag. The content of title and textarea is
--- text up to the matching end tag.
+-- Comments, doctype, CDATA and processing instructions are skipped. The
+-- content of script and style is skipped up to the matching end tag. The
+-- content of title and textarea is text up to the matching end tag.
 --
 -- Recovery for broken markup:
 --   "<" + non-letter is text. "</>" is dropped. "</" + non-letter is a bogus
@@ -28,8 +27,8 @@
 --   the first ">" after its "<", with no attributes.
 --   An attribute name with a quote or "<", or one that starts with "=", is
 --   dropped. For a duplicate name, the first value is kept.
---   An unclosed comment, bogus comment or raw text element ends with the
---   input. Unclosed CDATA, title or textarea content is text.
+--   An unclosed comment, bogus comment, CDATA or raw text element ends with
+--   the input. Unclosed title or textarea content is text.
 
 local guard = require("html.guard")
 local text = require("html.text")
@@ -85,8 +84,6 @@ function M.new(read, progress)
   local skip_to
   -- Name of the open raw text element, and true when its content is text.
   local raw, rcdata
-  -- True inside a CDATA section.
-  local cdata
   -- Cleaned end of the current text run that may start an entity. It waits
   -- for the rest of the run, so the run gives decode(clean(run)).
   local pend = ""
@@ -227,34 +224,6 @@ function M.new(read, progress)
     pos = pos + 2
     if rcdata then
       return "text", "</"
-    end
-    return nil
-  end
-
-  -- Streams CDATA content up to "]]>".
-  local function cdata_step()
-    if pos > #buf and not fill() then
-      cdata = nil
-      return nil
-    end
-    local k = find(buf, "]]>", pos, true)
-    if k then
-      local s = sub(buf, pos, k - 1)
-      pos = k + 3
-      cdata = nil
-      return "text", clean(s)
-    end
-    -- Keep the bytes that can start "]]>" and a cut UTF-8 sequence.
-    local cut = utf8_cut(buf, pos, max(pos, #buf - 1) - 1)
-    local s = sub(buf, pos, cut - 1)
-    pos = cut
-    if not fill() then
-      s = s .. sub(buf, pos)
-      pos = #buf + 1
-      cdata = nil
-    end
-    if s ~= "" then
-      return "text", clean(s)
     end
     return nil
   end
@@ -428,7 +397,7 @@ function M.new(read, progress)
           skip_to, pos = "-->", pos + 4
         end
       elseif sub(buf, pos + 2, pos + 8) == "[CDATA[" then
-        cdata, pos = true, pos + 9
+        skip_to, pos = "]]>", pos + 9
       else
         skip_to, pos = ">", pos + 2
       end
@@ -505,11 +474,6 @@ function M.new(read, progress)
         skip()
       elseif raw then
         local kind, s = raw_step()
-        if kind then
-          return kind, s
-        end
-      elseif cdata then
-        local kind, s = cdata_step()
         if kind then
           return kind, s
         end

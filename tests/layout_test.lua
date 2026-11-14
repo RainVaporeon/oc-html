@@ -514,12 +514,6 @@ local function normalize(s)
   return table.concat(out, "\n")
 end
 
--- The env has no directory listing, so a case is listed here by hand. A
--- case needs tests/cases/<name>.html and tests/cases/<name>.txt.
-local CASES = { "attributes", "basic", "broken", "comments", "elements",
-  "entities", "images", "nested", "pretabs", "styles", "title",
-  "whitespace", "wide" }
-
 local function escape(s)
   return (s:gsub("[^\32-\126]", function(c)
     if c:byte() >= 128 then
@@ -564,13 +558,21 @@ end
 
 function T.cases_match_expected_text()
   local failures = {}
-  for _, name in ipairs(CASES) do
-    local lines = render("tests/cases/" .. name .. ".html")
-    local diff = line_diff(
-      normalize(read_file("tests/cases/" .. name .. ".txt")),
-      normalize(table.concat(plain(lines), "\n")))
-    if diff then
-      failures[#failures + 1] = "case " .. name .. ": " .. diff
+  -- A case needs tests/cases/<name>.html and tests/cases/<name>.txt.
+  for _, name in ipairs(t.list_cases()) do
+    local f = io.open("tests/cases/" .. name .. ".txt", "rb")
+    if not f then
+      failures[#failures + 1] = "case " .. name .. ": missing tests/cases/"
+        .. name .. ".txt"
+    else
+      local expected = f:read("a")
+      f:close()
+      local lines = render("tests/cases/" .. name .. ".html")
+      local diff = line_diff(normalize(expected),
+        normalize(table.concat(plain(lines), "\n")))
+      if diff then
+        failures[#failures + 1] = "case " .. name .. ": " .. diff
+      end
     end
   end
   t.ok(#failures == 0, "\n" .. table.concat(failures, "\n"))

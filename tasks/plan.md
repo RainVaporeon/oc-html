@@ -30,22 +30,22 @@ Tasks with acceptance criteria are in `tasks/todo.md`.
 ### Checkpoint 1: Foundation and in-game confirmation of FACTS.md — done
 
 ### Phase 2: Parser robustness
-- [ ] Task 4: Complete tokenizer rules and chunk streaming
+- [x] Task 4: Complete tokenizer rules and chunk streaming
 - [x] Task 5: Entities and UTF-8 validation
-- [ ] Task 6: Fuzz generator
+- [x] Task 6: Fuzz generator
 
 ### Checkpoint 2: Parser survives fuzzing
 
 ### Phase 3: Layout
-- [ ] Task 7: Element handling table
-- [ ] Task 8: Whitespace, pre and word wrap
-- [ ] Task 9: Test corpus with expected output and real pages
+- [x] Task 7: Element handling table
+- [x] Task 8: Whitespace, pre and word wrap
+- [x] Task 9: Test corpus with expected output and real pages
 
 ### Checkpoint 3: Correct text output
 
 ### Phase 4: Viewer and entry point
-- [ ] Task 10: Viewer: drawing, status line, scrolling, colors by depth
-- [ ] Task 11: Entry point: quit prompt, error boundary, screen restore, usage
+- [x] Task 10: Viewer: drawing, status line, scrolling, colors by depth
+- [x] Task 11: Entry point: quit prompt, error boundary, screen restore, usage
 
 ### Checkpoint 4: MVP complete (all SPEC.md success criteria)
 
