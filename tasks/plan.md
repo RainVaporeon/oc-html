@@ -23,7 +23,7 @@ Tasks with acceptance criteria are in `tasks/todo.md`.
 
 ### Phase 1: Foundation
 - [x] Task 0: In-game data collector (probe) — done
-- [ ] Task 1: Docker test sandbox and runner
+- [x] Task 1: Docker test sandbox and runner
 - [ ] Task 2: Guard module (yield and memory)
 - [ ] Task 3: Tracer bullet: file to plain text on stdout
 

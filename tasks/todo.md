@@ -31,15 +31,15 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 **Description:** Build the test image and a sandboxed Lua test runner with OpenOS shims. Every later task uses it.
 
 **Acceptance criteria:**
-- [ ] `docker build -t oc-html-test tests/docker` succeeds. `pwsh tests/docker/test.ps1` runs and reports "0 failed".
-- [ ] The container uses every flag in SPEC.md "Sandbox". The repo is read-only. Only `tests/fuzz-failures/` is writable.
-- [ ] Sandbox self-tests pass: `os.execute`, `io.popen`, `debug` are nil. `io.open` for writing fails. `io.open` outside `tests/` fails. Binary chunks are refused.
-- [ ] `.gitattributes` contains `* text=auto eol=lf`.
-- [ ] The shims copy `docs/probe/FACTS.md`: the `unicode.*` results for every probe test string, no `collectgarbage` in the env, and an option for `freeMemory()` jitter.
+- [x] `docker build -t oc-html-test tests/docker` succeeds. `pwsh tests/docker/test.ps1` runs and reports "0 failed".
+- [x] The container uses every flag in SPEC.md "Sandbox". The repo is read-only. Only `tests/fuzz-failures/` is writable.
+- [x] Sandbox self-tests pass: `os.execute`, `io.popen`, `debug` are nil. `io.open` for writing fails. `io.open` outside `tests/` fails. Binary chunks are refused.
+- [x] `.gitattributes` contains `* text=auto eol=lf`.
+- [x] The shims copy `docs/probe/FACTS.md`: the `unicode.*` results for every probe test string, no `collectgarbage` in the env, and an option for `freeMemory()` jitter.
 
 **Verification:**
-- [ ] Tests pass: `pwsh tests/docker/test.ps1`
-- [ ] Manual check: a test that tries to write `/src/x` fails.
+- [x] Tests pass: `pwsh tests/docker/test.ps1`
+- [x] Manual check: a test that tries to write `/src/x` fails.
 
 **Dependencies:** None (can run in parallel with Task 0)
 
