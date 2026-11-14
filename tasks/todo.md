@@ -52,14 +52,14 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 **Description:** Implement `lib/html/guard.lua` as in SPEC.md: timed yields with `os.clock()` and a memory reserve check that raises a controlled error.
 
 **Acceptance criteria:**
-- [ ] `tick()` yields when `YIELD_INTERVAL` (1 s of `os.clock()`) has passed, and not before (tested with a fake clock).
-- [ ] `MEMORY_RESERVE` is 128 KB.
-- [ ] Below the reserve, `tick()` yields a few times, reads `freeMemory()` again and uses the highest reading. A jitter-only drop does not raise an error (tested with the jitter shim).
-- [ ] When the settled reading is still below the reserve, `tick()` raises the string error `html: page too large for available memory (rendered N lines before stopping)` with `error(msg, 0)`.
-- [ ] The module never calls `collectgarbage` and has no other side effects.
+- [x] `tick()` yields when `YIELD_INTERVAL` (1 s of `os.clock()`) has passed, and not before (tested with a fake clock).
+- [x] `MEMORY_RESERVE` is 128 KB.
+- [x] Below the reserve, `tick()` yields a few times, reads `freeMemory()` again and uses the highest reading. A jitter-only drop does not raise an error (tested with the jitter shim).
+- [x] When the settled reading is still below the reserve, `tick()` raises the string error `html: page too large for available memory (rendered N lines before stopping)` with `error(msg, 0)`.
+- [x] The module never calls `collectgarbage` and has no other side effects.
 
 **Verification:**
-- [ ] Tests pass: `pwsh tests/docker/test.ps1`
+- [x] Tests pass: `pwsh tests/docker/test.ps1`
 
 **Dependencies:** Task 1
 
@@ -118,19 +118,19 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 **Description:** Implement `lib/html/entities.lua` (named and numeric entities) and the text cleaning in SPEC.md "Text cleaning". Cleaning runs before any `unicode.*` call.
 
 **Acceptance criteria:**
-- [ ] The named entities in SPEC.md, `&#N;` and `&#xN;` decode correctly. Unknown entities stay as written.
-- [ ] Out-of-range and surrogate code points become `?`.
-- [ ] Invalid sequences, truncated sequences, overlong forms and encoded surrogates become `?`. Valid multibyte text is unchanged.
-- [ ] U+200B, U+200C, U+200D and U+FEFF are removed.
-- [ ] Control bytes below 0x20 are removed, except tab and newline. `\r` is removed.
-- [ ] Every probe test string in `docs/probe/FACTS.md` (ascii, é, box, CJK, Japanese, emoji, combining, lone 0x80, truncated, overlong, surrogate, U+200B) has a test.
+- [x] The named entities in SPEC.md, `&#N;` and `&#xN;` decode correctly. Unknown entities stay as written.
+- [x] Out-of-range and surrogate code points become `?`.
+- [x] Invalid sequences, truncated sequences, overlong forms and encoded surrogates become `?`. Valid multibyte text is unchanged.
+- [x] U+200B, U+200C, U+200D and U+FEFF are removed.
+- [x] Control bytes below 0x20 are removed, except tab and newline. `\r` is removed.
+- [x] Every probe test string in `docs/probe/FACTS.md` (ascii, é, box, CJK, Japanese, emoji, combining, lone 0x80, truncated, overlong, surrogate, U+200B) has a test.
 
 **Verification:**
-- [ ] Tests pass: `pwsh tests/docker/test.ps1`
+- [x] Tests pass: `pwsh tests/docker/test.ps1`
 
 **Dependencies:** Task 1
 
-**Files likely touched:** `lib/html/entities.lua`, `tests/entities_test.lua`
+**Files likely touched:** `lib/html/entities.lua`, `tests/entities_test.lua`, `lib/html/text.lua`, `tests/text_test.lua`
 
 **Estimated scope:** Small
 

@@ -24,14 +24,14 @@ Tasks with acceptance criteria are in `tasks/todo.md`.
 ### Phase 1: Foundation
 - [x] Task 0: In-game data collector (probe) — done
 - [x] Task 1: Docker test sandbox and runner
-- [ ] Task 2: Guard module (yield and memory)
+- [x] Task 2: Guard module (yield and memory)
 - [ ] Task 3: Tracer bullet: file to plain text on stdout
 
 ### Checkpoint 1: Foundation and in-game confirmation of FACTS.md
 
 ### Phase 2: Parser robustness
 - [ ] Task 4: Complete tokenizer rules and chunk streaming
-- [ ] Task 5: Entities and UTF-8 validation
+- [x] Task 5: Entities and UTF-8 validation
 - [ ] Task 6: Fuzz generator
 
 ### Checkpoint 2: Parser survives fuzzing

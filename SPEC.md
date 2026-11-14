@@ -63,10 +63,12 @@ Inside the container, the script runs `lua5.3 tests/run.lua` and `lua5.3 tests/f
 bin/html.lua            entry point: argument parsing, error boundary, screen restore
 lib/html/guard.lua      yield timing and memory checks, shared by all stages
 lib/html/entities.lua   named and numeric entity decoding
+lib/html/text.lua       UTF-8 cleaning and the chunk split helper
 lib/html/tokenizer.lua  streaming, forgiving tokenizer (reads the file in chunks)
 lib/html/layout.lua     turns tokens into wrapped, styled lines (no DOM tree)
 lib/html/viewer.lua     screen drawing, scrolling, keys, quit prompt
 tests/run.lua           desktop test runner
+tests/*_test.lua        unit tests, one file per module
 tests/shim/             desktop replacements for OpenOS libraries
 tests/cases/            small hand-written HTML files with expected output
 tests/real/             saved real-world pages
@@ -104,6 +106,10 @@ The tokenizer and layout never call `component`. They take `guard` as their only
 - Attribute values may be quoted or unquoted. Broken attributes are dropped.
 - Text is treated as UTF-8 and is cleaned before any `unicode.*` call (see "Text cleaning").
 - Entities: the common named entities (`&amp; &lt; &gt; &quot; &apos; &nbsp; &copy; &reg; &mdash; &ndash; &hellip;` and similar) and numeric `&#N;` and `&#xN;`. An unknown entity stays as written.
+  - Named entities: the list above, all Latin-1 names and a set of common typographic names. Names are case-sensitive.
+  - Numeric references 128 to 159 use the Windows-1252 table.
+  - A numeric reference without ";" decodes. Only amp, lt, gt, quot, nbsp, copy and reg decode without ";", and only when the next byte is not a letter, digit or "=".
+  - A reference to 0, a surrogate or a code point above U+10FFFF gives "?". A reference to a control or invisible character gives "".
 
 ### Element handling
 
@@ -131,9 +137,12 @@ Whitespace collapses to one space outside `pre`. Lines wrap at word boundaries t
 `unicode.*` never throws on bad bytes. It turns them into U+FFFD and can count a wrong width. `utf8.len` accepts encoded surrogates. So the program cleans all text before any `unicode.*` call:
 
 - Invalid sequences, truncated sequences, overlong forms and encoded surrogates (U+D800 to U+DFFF) become `?`.
-- Zero-width characters U+200B, U+200C, U+200D and U+FEFF are removed. (`unicode.wlen` counts U+200B as width 2.)
+- One `?` replaces each maximal invalid subpart (Unicode recommended practice). So an encoded surrogate gives 3 `?` (the game shows one U+FFFD).
+- DEL 0x7F and the C1 controls U+0080 to U+009F are removed.
+- The removed zero-width and invisible characters are U+00AD, U+200B, U+200C, U+200D, U+200E, U+200F and U+FEFF. (`unicode.wlen` counts U+200B as width 2.)
 - Control bytes below 0x20 are removed, except tab and newline. `\r` is removed.
 - Decoded entities pass through the same rules.
+- The tokenizer calls `entities.decode(text.clean(s))`. A partial UTF-8 sequence or entity at a chunk end is held back with `text.split_tail` and joined to the next chunk.
 
 ### Viewer
 
@@ -154,7 +163,7 @@ Whitespace collapses to one space outside `pre`. Lines wrap at word boundaries t
 
 There are no fixed size caps. The program measures and stops before damage happens.
 
-- `guard.tick()` is called in every loop of the tokenizer and layout. It measures time with `os.clock()`, which has sub-millisecond steps (`computer.uptime()` moves in 50 ms steps). It yields with `os.sleep(0)` when more than `YIELD_INTERVAL` (1 s) has passed since the last yield. This is well below the 5 second OpenOS timeout.
+- `guard.tick()` is called in every loop of the tokenizer and layout. It measures time with `os.clock()`, which has sub-millisecond steps (`computer.uptime()` moves in 50 ms steps). It yields with `os.sleep(0)` when more than `YIELD_INTERVAL` (1 s) has passed since the last yield. This is well below the 5 second OpenOS timeout. `guard.reset()` restarts the yield timer, and the tests use it.
 - `guard.tick()` also checks `computer.freeMemory()` against `MEMORY_RESERVE` (128 KB). A reading can be up to about 200 KB too low, because garbage is not collected yet. Below the reserve, the guard yields a few times, reads `freeMemory()` again and uses the highest reading. Only when that reading is still below the reserve does it raise the controlled error "html: page too large for available memory (rendered N lines before stopping)".
 - The program never calls `collectgarbage`. OpenComputers removes it on purpose.
 - Before parsing, `bin/html.lua` compares the file size with free memory. If the file clearly cannot fit, it stops before reading.
