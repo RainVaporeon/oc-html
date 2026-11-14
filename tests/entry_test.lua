@@ -1,5 +1,7 @@
--- Tests for the entry point in bin/html.lua: modes, file checks, Ctrl+C,
--- exit codes and the cleanup on every exit path.
+-- Tests for the entry point in bin/html.lua: modes, the output width, file
+-- checks, URL errors, error status, Ctrl+C and unexpected errors. Each table
+-- row is one scenario. spec/cli.md, spec/errors.md and spec/fetch.md give
+-- the expected values.
 
 local t = require("test")
 
@@ -7,12 +9,19 @@ local T = {}
 
 local html = t.load_bin("html")({})
 local guard = require("html.guard")
+local internet = require("internet")
+local computer = require("computer")
 
 local PAGE = "<html><head><title>My Page</title></head><body>"
   .. "<h1>Head</h1><p>Some text in a paragraph.</p></body></html>"
 
 -- A page with many tokens, so the guard ticks after the second read.
 local LONG = string.rep("<p>word word word word word</p>\n", 1000)
+
+local URL = "http://example.com/"
+
+local function no() return false end
+local function yes() return true end
 
 -- A fake file over text. state counts the reads and records the close.
 -- on_read(n) is called before the nth read.
@@ -55,6 +64,10 @@ local function fake_gpu(max, cur, screen)
   }
 end
 
+-- The record of the run in progress, so the hooks in a row reach the
+-- listener and the output counters.
+local last
+
 -- Runs main with a fake file and fake viewer deps. extra replaces deps.
 -- Returns the exit code and a record: out, err, events (in order), views
 -- (the lines and opts of each viewer call), the file state and the
@@ -62,6 +75,7 @@ end
 local function run(args, text, extra)
   local rec = { out = {}, err = {}, events = {}, views = {}, listens = 0,
     removes = 0 }
+  last = rec
   local file, state = fake_file(text or PAGE, extra and extra.on_read)
   rec.file = state
   local deps = {
@@ -99,317 +113,6 @@ local function run(args, text, extra)
   return code, rec
 end
 
--- Checks that the listener is gone and the guard has no interrupt check.
-local function check_clean(rec)
-  t.eq(rec.removes, rec.listens, "listener removed")
-  local ok = pcall(guard.tick)
-  t.ok(ok, "guard has no interrupt check")
-  t.ok(rec.file.closed or rec.file.reads == 0, "file closed")
-end
-
-local function max_width(lines)
-  local wlen = require("unicode").wlen
-  local w = 0
-  for _, line in ipairs(lines) do
-    w = math.max(w, wlen((line:gsub("[\1-\5]", ""))))
-  end
-  return w
-end
-
-function T.default_mode_opens_the_viewer_with_the_title()
-  local code, rec = run({ "page.html" })
-  t.eq(code, 0)
-  t.eq(rec.out, {})
-  t.eq(rec.err, {})
-  t.eq(#rec.views, 1)
-  local v = rec.views[1]
-  t.eq(v.opts.title, "My Page")
-  t.eq(v.opts.file, "page.html")
-  t.eq(v.opts.no_rescale, nil)
-  t.ok(#v.lines > 0)
-  t.ok(rec.file.closed, "file closed before the viewer")
-  check_clean(rec)
-end
-
-function T.viewer_lines_keep_style_bytes()
-  local _, rec = run({ "page.html" })
-  t.ok(rec.views[1].lines[1]:find("[\1-\5]"), "style bytes kept")
-end
-
-function T.viewer_width_is_the_max_resolution()
-  local _, rec = run({ "page.html" }, LONG)
-  t.eq(max_width(rec.views[1].lines) <= 60, true)
-  local _, wide = run({ "page.html" }, string.rep("word ", 200))
-  t.eq(max_width(wide.views[1].lines), 59, "wraps at 60 columns")
-end
-
-function T.no_rescale_uses_the_current_resolution()
-  local code, rec = run({ "--no-rescale", "page.html" },
-    string.rep("word ", 200))
-  t.eq(code, 0)
-  t.eq(rec.views[1].opts.no_rescale, true)
-  t.eq(max_width(rec.views[1].lines), 39, "wraps at 40 columns")
-end
-
-function T.page_without_title_shows_the_file_name()
-  local _, rec = run({ "page.html" }, "<p>x</p>")
-  t.eq(rec.views[1].opts.title, nil)
-  t.eq(rec.views[1].opts.file, "page.html")
-end
-
-function T.print_writes_plain_text_without_the_viewer()
-  local code, rec = run({ "--print", "page.html" })
-  t.eq(code, 0)
-  t.eq(#rec.views, 0)
-  t.eq(rec.err, {})
-  t.ok(#rec.out > 0)
-  for _, line in ipairs(rec.out) do
-    t.ok(not line:find("[\1-\5]"), "no style bytes")
-  end
-  t.ok(max_width(rec.out) <= 50, "term width")
-  check_clean(rec)
-end
-
-function T.width_sets_print()
-  local code, rec = run({ "--width", "20", "page.html" },
-    string.rep("word ", 50))
-  t.eq(code, 0)
-  t.eq(#rec.views, 0)
-  t.eq(max_width(rec.out), 19)
-end
-
-function T.no_gpu_or_screen_falls_back_to_print()
-  for _, gpu in ipairs({ false, fake_gpu({ 60, 20 }, { 40, 10 }, nil),
-      { getScreen = function() error("no gpu") end } }) do
-    local code, rec = run({ "page.html" }, nil, { gpu = gpu })
-    t.eq(code, 0)
-    t.eq(#rec.views, 0)
-    t.eq(rec.err, { "html: no screen found, printing the text" })
-    t.ok(#rec.out > 0)
-    check_clean(rec)
-  end
-end
-
-function T.stats_print_after_the_viewer_returns()
-  local code, rec = run({ "--stats", "page.html" })
-  t.eq(code, 0)
-  t.eq(rec.events[1], "view")
-  t.ok(#rec.err > 0)
-  for i = 2, #rec.events do
-    t.eq(rec.events[i], "err")
-  end
-  t.ok(rec.err[1]:find("^stats: file="), rec.err[1])
-  t.eq(rec.err[2], "stats: width=60")
-end
-
-function T.stats_out_in_viewer_mode()
-  local written
-  local code, rec = run({ "--stats-out", "s.txt", "page.html" }, nil, {
-    write_file = function(_, text) written = text return true end,
-  })
-  t.eq(code, 0)
-  t.eq(written, table.concat(rec.err, "\n") .. "\n")
-end
-
-function T.missing_file_gives_one_line()
-  local opened = false
-  local code, rec = run({ "nope.html" }, nil, {
-    exists = function() return false end,
-    open = function() opened = true end,
-  })
-  t.eq(code, 1)
-  t.eq(rec.err, { "html: file not found: nope.html" })
-  t.eq(opened, false)
-  t.eq(rec.listens, 0)
-end
-
-function T.directory_gives_one_line()
-  local code, rec = run({ "dir" }, nil, {
-    exists = function() return true end,
-    is_dir = function() return true end,
-  })
-  t.eq(code, 1)
-  t.eq(rec.err, { "html: not a file: dir" })
-  t.eq(#rec.views, 0)
-end
-
-function T.empty_file_shows_an_empty_page()
-  local code, rec = run({ "empty.html" }, "")
-  t.eq(code, 0)
-  t.eq(rec.err, {})
-  t.eq(#rec.views, 1)
-  t.eq(rec.views[1].lines, {})
-  t.eq(rec.views[1].opts.file, "empty.html")
-  code, rec = run({ "--print", "empty.html" }, "")
-  t.eq(code, 0)
-  t.eq(rec.out, {})
-  t.eq(rec.err, {})
-end
-
-function T.oversized_file_stops_before_reading()
-  -- The shim gives 1800000 free. 0.5 units per byte cannot fit 4000000.
-  local code, rec = run({ "--stats", "big.html" }, nil, {
-    size = function() return 4000000 end,
-  })
-  t.eq(code, 1)
-  t.eq(rec.err[1], "html: file too large for available memory "
-    .. "(4000000 bytes, 1800000 free)")
-  t.eq(rec.file.reads, 0)
-  t.eq(#rec.views, 0)
-  t.eq(rec.err[#rec.err], "stats: stopped=" .. rec.err[1])
-  check_clean(rec)
-end
-
-function T.file_just_under_the_size_limit_renders()
-  local code, rec = run({ "page.html" }, nil, {
-    size = function() return 3600000 end,
-  })
-  t.eq(code, 0)
-  t.eq(#rec.views, 1)
-end
-
--- The run helper returns rec only at the end, so the hooks reach the
--- listener through this upvalue.
----@class Listener
----@field interrupt function
----@field removes integer
----@field count integer?
-
----@type Listener
-local current = { interrupt = function() end, removes = 0 }
-
-local function capture_listener(fn)
-  current = { interrupt = fn, removes = 0 }
-  return function() current.removes = current.removes + 1 end
-end
-
-function T.ctrl_c_during_the_render_stops_with_130()
-  local code, rec = run({ "page.html" }, LONG, {
-    on_read = function(n)
-      if n == 2 then
-        current.interrupt("interrupted")
-      end
-    end,
-    on_interrupt = capture_listener,
-  })
-  t.eq(code, 130)
-  t.eq(rec.err, { "html: interrupted" })
-  t.eq(#rec.views, 0)
-  t.ok(rec.file.reads < 5, "stopped early: " .. rec.file.reads .. " reads")
-  t.eq(current.removes, 1)
-  check_clean(rec)
-end
-
-function T.ctrl_c_at_the_last_read_stops_before_the_viewer()
-  local code, rec = run({ "--stats", "page.html" }, PAGE, {
-    on_read = function(n)
-      if n == 2 then
-        current.interrupt()
-      end
-    end,
-    on_interrupt = capture_listener,
-  })
-  t.eq(code, 130)
-  t.eq(rec.err[1], "html: interrupted")
-  t.eq(rec.err[#rec.err], "stats: stopped=html: interrupted")
-  t.eq(#rec.views, 0)
-  t.eq(current.removes, 1)
-end
-
-function T.ctrl_c_during_print_output_stops_with_130()
-  local code, rec = run({ "--print", "page.html" }, LONG, {
-    out = function()
-      current.count = (current.count or 0) + 1
-      current.interrupt()
-    end,
-    on_interrupt = capture_listener,
-  })
-  t.eq(code, 130)
-  t.eq(rec.err, { "html: interrupted" })
-  t.eq(current.count, 1)
-  t.eq(current.removes, 1)
-end
-
-function T.listener_removed_before_the_viewer()
-  local code = run({ "page.html" }, nil, {
-    on_interrupt = capture_listener,
-    view = function()
-      t.eq(current.removes, 1)
-      current.interrupt()
-      return "quit"
-    end,
-  })
-  t.eq(code, 0, "a late flag does not change a normal quit")
-end
-
-function T.ctrl_c_in_the_viewer_exits_with_130()
-  local code, rec = run({ "page.html" }, nil, {
-    view = function() return "interrupted" end,
-  })
-  t.eq(code, 130)
-  t.eq(rec.err, {})
-  check_clean(rec)
-end
-
-function T.viewer_error_gives_one_line_log_and_exit_1()
-  local logged
-  local code, rec = run({ "--stats", "page.html" }, nil, {
-    view = function() error("boom\nmore") end,
-    log = function(text) logged = text return true end,
-  })
-  t.eq(code, 1)
-  t.ok(rec.err[1]:find("^html: unexpected error: .*boom %(details in "
-    .. "/tmp/html%-error%.log%)$"), rec.err[1])
-  t.ok(logged:find("stack traceback"), "traceback logged")
-  t.ok(rec.err[#rec.err]:find("^stats: stopped=html: unexpected error: "),
-    rec.err[#rec.err])
-  check_clean(rec)
-end
-
-function T.viewer_controlled_error_prints_as_it_is()
-  local code, rec = run({ "page.html" }, nil, {
-    view = function() error("html: screen lost", 0) end,
-  })
-  t.eq(code, 1)
-  t.eq(rec.err, { "html: screen lost" })
-end
-
-function T.render_error_removes_the_listener()
-  local code, rec = run({ "page.html" }, nil, {
-    open = function()
-      return { read = function() error("disk") end,
-        seek = function() return 10 end, close = function() end }
-    end,
-  })
-  t.eq(code, 1)
-  t.ok(rec.err[1]:find("^html: unexpected error: .*disk"), rec.err[1])
-  t.eq(rec.removes, 1)
-  t.ok(pcall(guard.tick), "guard has no interrupt check")
-end
-
-function T.usage_lists_every_option()
-  for _, flag in ipairs({ "--print", "--width", "--stats", "--stats-out",
-      "--no-rescale", "--help" }) do
-    t.ok(html.USAGE:find(flag, 1, true), flag)
-  end
-end
-
-function T.parse_args_modes()
-  t.eq(html.parse_args({ "a", n = 1 }).print, nil)
-  t.eq(html.parse_args({ "--print", "a", n = 2 }).print, true)
-  local o = html.parse_args({ "--width", "30", "a", n = 3 })
-  t.eq(o.print, true)
-  t.eq(o.width, 30)
-  t.eq(html.parse_args({ "--no-rescale", "a", n = 2 }).no_rescale, true)
-end
-
--- URL arguments -------------------------------------------------------------
-
-local internet = require("internet")
-local computer = require("computer")
-
-local URL = "http://example.com/"
-
 -- Runs main with a fake card. card_opts go to internet.new. extra replaces
 -- deps. rec.ctl is the card controller.
 local function run_url(args, card_opts, extra)
@@ -433,21 +136,139 @@ local function page_script(body, extra)
   return s
 end
 
-local function url_clean(rec)
-  check_clean(rec)
-  for i, h in ipairs(rec.ctl.handles) do
-    t.eq(h.closed, 1, "handle " .. i .. " closed once")
+local function max_width(lines)
+  local wlen = require("unicode").wlen
+  local w = 0
+  for _, line in ipairs(lines) do
+    w = math.max(w, wlen((line:gsub("[\1-\5]", ""))))
   end
+  return w
 end
 
--- The stats line that starts with prefix, or nil.
-local function stats_line(rec, prefix)
-  for _, line in ipairs(rec.err) do
-    if line:sub(1, #prefix) == prefix then
-      return line
+-- True when the listener is gone, the guard has no interrupt check and
+-- every file and card handle is closed.
+local function is_clean(rec)
+  if rec.removes ~= rec.listens then
+    return false
+  end
+  if not pcall(guard.tick) then
+    return false
+  end
+  if not (rec.file.closed or rec.file.reads == 0) then
+    return false
+  end
+  for _, h in ipairs(rec.ctl and rec.ctl.handles or {}) do
+    if h.closed ~= 1 then
+      return false
     end
   end
-  return nil
+  return true
+end
+
+-- Removes the file position the Lua error adds to a message.
+local function without_position(line)
+  return (line:gsub("[%w_/%.]+%.lua:%d+: ", ""))
+end
+
+-- Runs one scenario and returns what it did. input fields: args, text (the
+-- page), card (card options, makes it a URL run), deps (extra deps), gpu.
+local function scenario(input)
+  local extra = {}
+  for k, v in pairs(input.deps or {}) do
+    extra[k] = v
+  end
+  if input.gpu ~= nil then
+    extra.gpu = input.gpu
+  end
+  local code, rec
+  if input.card then
+    code, rec = run_url(input.args, input.card, extra)
+  else
+    code, rec = run(input.args, input.text, extra)
+  end
+  local view = rec.views[1]
+  local lines = view and view.lines or rec.out
+  local err = {}
+  for i, line in ipairs(rec.err) do
+    err[i] = without_position(line)
+  end
+  local reads = rec.file.reads
+  if rec.ctl and rec.ctl.handles[1] then
+    reads = rec.ctl.handles[1].reads
+  end
+  return {
+    code = code,
+    err = err,
+    out = #rec.out,
+    views = #rec.views,
+    mode = view and "viewer" or (#rec.out > 0 and "print" or "none"),
+    width = max_width(lines),
+    lines = #lines,
+    title = view and (view.opts.title or false),
+    file = view and (view.opts.file or false),
+    no_rescale = view and (view.opts.no_rescale or false),
+    error_opt = view and (view.opts.error or false),
+    events = rec.events,
+    reads = reads,
+    listens = rec.listens,
+    removes = rec.removes,
+    outs = rec.outs,
+    logged = rec.logged and (rec.logged:find("stack traceback", 1, true)
+      and "traceback" or rec.logged) or false,
+    removed_at_view = rec.removed_at_view,
+    requests = rec.ctl and #rec.ctl.requests,
+    clean = is_clean(rec),
+  }
+end
+
+-- Registers T[name], a table test over scenario rows. Each row compares only
+-- the fields that its expected table names.
+local function scenarios(name, rows)
+  for _, row in ipairs(rows) do
+    local keys = {}
+    for k in pairs(row[3]) do
+      keys[#keys + 1] = k
+    end
+    row[2].keys = keys
+  end
+  t.cases(T, name, rows, function(input)
+    local obs, out = scenario(input), {}
+    for _, k in ipairs(input.keys) do
+      out[k] = obs[k]
+    end
+    return out
+  end)
+end
+
+-- The default viewer and print modes -----------------------------------------
+
+function T.default_mode_opens_the_viewer_with_the_title()
+  local code, rec = run({ "page.html" })
+  t.eq(code, 0)
+  t.eq(rec.out, {})
+  t.eq(rec.err, {})
+  t.eq(#rec.views, 1)
+  local v = rec.views[1]
+  t.eq(v.opts.title, "My Page")
+  t.eq(v.opts.file, "page.html")
+  t.eq(v.opts.no_rescale, nil)
+  t.eq(v.opts.error, nil)
+  t.ok(#v.lines > 0)
+  t.ok(v.lines[1]:find("[\1-\5]"), "style bytes kept")
+  t.ok(rec.file.closed, "file closed before the viewer")
+  t.ok(is_clean(rec))
+end
+
+function T.print_writes_plain_text_without_the_viewer()
+  local code, rec = run({ "--print", "page.html" })
+  t.eq(code, 0)
+  t.eq(#rec.views, 0)
+  t.eq(rec.err, {})
+  t.ok(#rec.out > 0)
+  for _, line in ipairs(rec.out) do
+    t.ok(not line:find("[\1-\5]"), "no style bytes")
+  end
+  t.ok(is_clean(rec))
 end
 
 function T.url_opens_the_viewer()
@@ -458,321 +279,442 @@ function T.url_opens_the_viewer()
   t.eq(rec.views[1].opts.title, "My Page")
   t.eq(rec.views[1].opts.file, URL)
   t.eq(rec.ctl.requests, { URL })
-  url_clean(rec)
+  t.ok(is_clean(rec))
 end
 
-function T.url_without_title_shows_the_url()
-  local _, rec = run_url({ "https://x.org/a#f" },
-    { default = page_script("<p>x</p>") })
-  t.eq(rec.views[1].opts.title, nil)
-  t.eq(rec.views[1].opts.file, "https://x.org/a")
+-- Width and mode (spec/cli.md "Output width", "Local files") ------------------
+-- The gpu of run() has the maximum 60 and the current resolution 40. The
+-- terminal width is 50. The widest line is the width minus 1.
+
+-- One long word, so the widest line is the layout width.
+local WORDS = string.rep("x", 500)
+local NO_GPU_LINE = "html: no screen found, printing the text"
+local WIDTH_ERROR = " (see html --help)"
+local E60 = "html: --width needs a whole number from 1 to 60" .. WIDTH_ERROR
+local E160 = "html: --width needs a whole number from 1 to 160" .. WIDTH_ERROR
+
+scenarios("width_and_mode", {
+  { "viewer: the maximum resolution",
+    { args = { "page.html" }, text = WORDS },
+    { code = 0, mode = "viewer", width = 59, no_rescale = false, err = {} } },
+  { "viewer with --no-rescale: the current resolution",
+    { args = { "--no-rescale", "page.html" }, text = WORDS },
+    { code = 0, mode = "viewer", width = 39, no_rescale = true, err = {} } },
+  { "--print: the terminal width",
+    { args = { "--print", "page.html" }, text = WORDS },
+    { code = 0, mode = "print", width = 49, err = {} } },
+  { "--width turns on --print",
+    { args = { "--width", "20", "page.html" }, text = WORDS },
+    { code = 0, mode = "print", width = 19, err = {} } },
+  { "--width at the maximum",
+    { args = { "--width", "60", "page.html" }, text = WORDS },
+    { code = 0, mode = "print", width = 59, err = {} } },
+  { "--width above the maximum",
+    { args = { "--width", "61", "page.html" }, text = WORDS },
+    { code = 2, mode = "none", width = 0, err = { E60 } } },
+  { "--width far above the maximum",
+    { args = { "--width", "9223372036854775807", "page.html" }, text = WORDS },
+    { code = 2, mode = "none", width = 0, err = { E60 } } },
+  { "no GPU: print mode and one line",
+    { args = { "page.html" }, text = WORDS, gpu = false },
+    { code = 0, mode = "print", width = 49, err = { NO_GPU_LINE } } },
+  { "no screen on the GPU: print mode and one line",
+    { args = { "page.html" }, text = WORDS,
+      gpu = fake_gpu({ 60, 20 }, { 40, 10 }, nil) },
+    { code = 0, mode = "print", width = 49, err = { NO_GPU_LINE } } },
+  { "GPU call fails: print mode and one line",
+    { args = { "page.html" }, text = WORDS,
+      gpu = { getScreen = function() error("no gpu") end } },
+    { code = 0, mode = "print", width = 49, err = { NO_GPU_LINE } } },
+  { "no GPU: the maximum --width is 160",
+    { args = { "--width", "160", "page.html" }, text = WORDS,
+      gpu = false },
+    { code = 0, mode = "print", width = 159, err = {} } },
+  { "no GPU: --width 161 is a usage error",
+    { args = { "--width", "161", "page.html" }, gpu = false },
+    { code = 2, mode = "none", width = 0, err = { E160 } } },
+  { "URL with --print --width",
+    { args = { "--print", "--width", "30", URL },
+      card = { default = page_script(WORDS) } },
+    { code = 0, mode = "print", width = 29, err = {} } },
+  { "URL with --no-rescale",
+    { args = { "--no-rescale", URL }, card = { default = page_script(WORDS) } },
+    { code = 0, mode = "viewer", width = 39, no_rescale = true, err = {} } },
+})
+
+-- The viewer title and file name (spec/viewer.md, spec/fetch.md) ---------------
+
+local gone = { code = 404, message = "Not Found" }
+
+scenarios("viewer_title", {
+  { "file with a title",
+    { args = { "page.html" } },
+    { title = "My Page", file = "page.html" } },
+  { "file without a title shows the file name",
+    { args = { "page.html" }, text = "<p>x</p>" },
+    { title = false, file = "page.html" } },
+  { "URL with a title",
+    { args = { URL }, card = { default = page_script() } },
+    { title = "My Page", file = URL } },
+  { "URL without a title shows the URL without the fragment",
+    { args = { "https://x.org/a#f" },
+      card = { default = page_script("<p>x</p>") } },
+    { title = false, file = "https://x.org/a" } },
+  { "the final URL after a redirect",
+    { args = { URL }, card = { routes = {
+      [URL] = { code = 301, headers = { Location = { "/new" } } },
+      ["http://example.com/new"] = page_script("<p>x</p>") } } },
+    { title = false, file = "http://example.com/new" } },
+  { "error status with a title",
+    { args = { URL }, card = { default = page_script(
+      "<title>Oops</title><p>gone</p>", gone) } },
+    { title = "[HTTP 404] Oops", file = URL } },
+  { "error status without a title",
+    { args = { URL }, card = { default = page_script("<p>gone</p>",
+      { code = 500 }) } },
+    { title = "[HTTP 500] " .. URL, file = URL } },
+})
+
+-- File checks (spec/cli.md "Local files", spec/guard.md) -----------------------
+
+local function failing_open() error("the file must not open") end
+
+local function reader_file(chunks)
+  local f = {}
+  local n = 0
+  function f.read()
+    n = n + 1
+    return table.unpack(chunks[n] or {})
+  end
+  function f.seek() return 10 end
+  function f.close() end
+  return f
 end
 
-function T.url_title_shows_the_final_url_after_a_redirect()
-  local _, rec = run_url({ URL }, { routes = {
-    [URL] = { code = 301, headers = { Location = { "/new" } } },
-    ["http://example.com/new"] = page_script("<p>x</p>") } })
-  t.eq(rec.views[1].opts.file, "http://example.com/new")
-  url_clean(rec)
+scenarios("file_checks", {
+  { "missing file: one line and no listener",
+    { args = { "nope.html" },
+      deps = { exists = no, open = failing_open } },
+    { code = 1, err = { "html: file not found: nope.html" }, views = 0,
+      listens = 0 } },
+  { "directory",
+    { args = { "dir" }, deps = { exists = yes, is_dir = yes } },
+    { code = 1, err = { "html: not a file: dir" }, views = 0, listens = 0 } },
+  { "open fails on a missing file (no exists check)",
+    { args = { "page.html" }, deps = { open = function()
+      return nil, "page.html: No such file or directory" end } },
+    { code = 1, err = { "html: file not found: page.html" }, views = 0 } },
+  { "open fails on an existing file",
+    { args = { "page.html" }, deps = { exists = yes, open = function()
+      return nil, "denied" end } },
+    { code = 1, err = { "html: read error: denied" }, views = 0 } },
+  { "read error in a local file",
+    { args = { "page.html" }, deps = { open = function()
+      return reader_file({ { "<p>hello" }, { nil, "io error" } }) end } },
+    { code = 1, err = { "html: read error: io error" }, views = 0,
+      clean = true } },
+  { "empty file in the viewer",
+    { args = { "empty.html" }, text = "" },
+    { code = 0, err = {}, views = 1, lines = 0, file = "empty.html" } },
+  { "empty file in print mode writes nothing",
+    { args = { "--print", "empty.html" }, text = "" },
+    { code = 0, err = {}, views = 0, out = 0 } },
+  { "local file too large: stops before the first read",
+    { args = { "big.html" }, deps = { size = function() return 4000000 end } },
+    { code = 1, err = { "html: file too large for available memory "
+      .. "(4000000 bytes, 1800000 free)" }, views = 0, reads = 0,
+      clean = true } },
+  { "local file just under the size limit",
+    { args = { "page.html" }, deps = { size = function() return 3600000 end } },
+    { code = 0, views = 1 } },
+  { "remote page too large by Content-Length: stops before the first read",
+    { args = { URL }, card = { default = page_script(nil,
+      { headers = { ["Content-Length"] = { "4000000" } } }) } },
+    { code = 1, err = { "html: page too large for available memory "
+      .. "(4000000 bytes, 1800000 free)" }, views = 0, reads = 0,
+      clean = true } },
+})
+
+-- Ctrl+C (spec/errors.md "Ctrl+C", spec/loading.md, spec/viewer.md) ------------
+
+local function interrupt_now() last.interrupt("interrupted") end
+
+local function interrupt_in_sleep(s)
+  last.interrupt()
+  os.sleep(s)
 end
 
-function T.url_with_print_width_and_stats()
-  local code, rec = run_url({ "--print", "--width", "30", "--stats", URL },
-    { default = page_script() })
-  t.eq(code, 0)
-  t.eq(#rec.views, 0)
-  t.ok(#rec.out > 0)
-  t.ok(max_width(rec.out) <= 30)
-  t.eq(rec.err[1], "stats: file=" .. #PAGE .. " bytes")
-  t.eq(rec.err[2], "stats: url=" .. URL)
-  t.ok(rec.err[3]:find("^stats: http=200 redirects=0 fetch=%d+%.%d%d s$"),
-    rec.err[3])
-  t.eq(rec.err[4], "stats: width=30")
-  url_clean(rec)
+local INTERRUPTED = { "html: interrupted" }
+
+scenarios("interrupts", {
+  { "during the render",
+    { args = { "page.html" }, text = LONG, deps = { on_read = function(n)
+      if n == 2 then
+        interrupt_now()
+      end
+    end } },
+    { code = 130, err = INTERRUPTED, views = 0, removes = 1, clean = true } },
+  { "at the last read, before the viewer",
+    { args = { "page.html" }, deps = { on_read = function(n)
+      if n == 2 then
+        interrupt_now()
+      end
+    end } },
+    { code = 130, err = INTERRUPTED, views = 0, removes = 1, clean = true } },
+  { "during the print output",
+    { args = { "--print", "page.html" }, text = LONG, deps = { out = function()
+      last.outs = (last.outs or 0) + 1
+      interrupt_now()
+    end } },
+    { code = 130, err = INTERRUPTED, outs = 1, removes = 1 } },
+  { "the listener is gone before the viewer; a late flag keeps exit 0",
+    { args = { "page.html" }, deps = { view = function()
+      last.removed_at_view = last.removes
+      interrupt_now()
+      return "quit"
+    end } },
+    { code = 0, err = {}, removed_at_view = 1, removes = 1 } },
+  { "the viewer returns interrupted",
+    { args = { "page.html" }, deps = { view = function()
+      return "interrupted"
+    end } },
+    { code = 130, err = {}, clean = true } },
+  { "the viewer raises a bare interrupted error",
+    { args = { "page.html" }, deps = { view = function()
+      error("interrupted", 0)
+    end, log = function(text) last.logged = text return true end } },
+    { code = 130, err = INTERRUPTED, logged = false, clean = true } },
+  { "during the connect",
+    { args = { URL }, card = { default = { connect_polls = 100 } },
+      deps = { sleep = interrupt_in_sleep } },
+    { code = 130, err = INTERRUPTED, removes = 1, clean = true } },
+  { "during the body",
+    { args = { URL }, card = { default = { endless = true,
+      body = { "<p>a</p>", "", "", "", "", "", "", "", "", "" } } },
+      deps = { sleep = interrupt_in_sleep } },
+    { code = 130, err = INTERRUPTED, removes = 1, clean = true } },
+  { "an interrupted event raised by the sleep",
+    { args = { URL }, card = { default = { connect_polls = 5 } },
+      deps = { sleep = function() error("interrupted", 0) end } },
+    { code = 130, err = INTERRUPTED, clean = true } },
+})
+
+-- Errors (spec/errors.md "Controlled and unexpected errors") -------------------
+
+local function keep_log(text)
+  last.logged = text
+  return true
 end
 
-function T.url_with_stats_out_and_no_rescale()
-  local written
-  local code, rec = run_url({ "--no-rescale", "--stats-out", "s.txt", URL },
-    { default = page_script() }, {
-      write_file = function(_, text) written = text return true end,
-    })
-  t.eq(code, 0)
-  t.eq(rec.views[1].opts.no_rescale, true)
-  t.eq(written, table.concat(rec.err, "\n") .. "\n")
-  t.ok(written:find("stats: url=" .. URL, 1, true))
-end
-
-function T.url_usage_errors_exit_2()
-  local long = "http://example.com/" .. string.rep("a", 2048)
-  local cases = {
-    { "ftp://example.com", "html: unsupported URL scheme: ftp" },
-    { "http://exa mple.com", "html: invalid URL: http://exa mple.com" },
-    { "http://", "html: invalid URL: http://" },
-    { long, "html: invalid URL: too long" },
-  }
-  for _, c in ipairs(cases) do
-    local code, rec = run_url({ c[1] }, {})
-    t.eq(code, 2, c[1])
-    t.eq(rec.err, { c[2] }, c[1])
-    t.eq(#rec.ctl.requests, 0)
+local function broken_file(message)
+  return function()
+    return { read = function() error(message) end,
+      seek = function() return 10 end, close = function() end }
   end
 end
 
-function T.url_without_a_card()
-  local code, rec = run_url({ URL }, {}, { internet = false })
-  t.eq(code, 1)
-  t.eq(rec.err, { "html: no internet card found (needed for " .. URL .. ")" })
-  t.eq(#rec.views, 0)
-  check_clean(rec)
-end
+local UNEXPECTED = "html: unexpected error: "
 
-function T.url_with_http_disabled()
-  local code, rec = run_url({ URL }, { http = false })
-  t.eq(code, 1)
-  t.eq(rec.err, { "html: HTTP requests are disabled on this server" })
-end
+scenarios("errors", {
+  { "unexpected error in the viewer: one line, log, exit 1",
+    { args = { "page.html" }, deps = { log = keep_log, view = function()
+      error("boom\nmore")
+    end } },
+    { code = 1, err = { UNEXPECTED
+      .. "boom (details in /tmp/html-error.log)" }, logged = "traceback",
+      clean = true } },
+  { "unexpected error in the render in print mode",
+    { args = { "--print", "page.html" }, deps = { log = keep_log,
+      open = broken_file("disk") } },
+    { code = 1, err = { UNEXPECTED
+      .. "disk (details in /tmp/html-error.log)" }, out = 0,
+      logged = "traceback", removes = 1 } },
+  { "a controlled error from the viewer prints as it is",
+    { args = { "page.html" }, deps = { view = function()
+      error("html: screen lost", 0)
+    end } },
+    { code = 1, err = { "html: screen lost" } } },
+  { "the log fails with a reason",
+    { args = { "page.html" }, deps = { open = broken_file("boom"),
+      log = function() return nil, "not enough space" end } },
+    { code = 1, err = { UNEXPECTED
+      .. "boom (cannot write /tmp/html-error.log: not enough space)" } } },
+  { "the log raises",
+    { args = { "page.html" }, deps = { open = broken_file("boom"),
+      log = function() error("log boom\nsecond line") end } },
+    { code = 1, err = { UNEXPECTED
+      .. "boom (cannot write /tmp/html-error.log: log boom)" } } },
+  { "no log function",
+    { args = { "page.html" }, deps = { open = broken_file("boom") } },
+    { code = 1, err = { UNEXPECTED .. "boom" } } },
+  { "a failing close still removes the listener",
+    { args = { "page.html" }, deps = { open = function()
+      local f = fake_file(PAGE)
+      f.close = function() error("close boom", 0) end
+      return f
+    end } },
+    { code = 1, err = { UNEXPECTED .. "close boom" }, listens = 1,
+      removes = 1 } },
+})
 
-function T.url_size_check_with_content_length()
-  local code, rec = run_url({ "--stats", URL }, { default = page_script(nil,
-    { headers = { ["Content-Length"] = { "4000000" } } }) })
-  t.eq(code, 1)
-  t.eq(rec.err[1], "html: page too large for available memory "
-    .. "(4000000 bytes, 1800000 free)")
-  t.eq(rec.ctl.handles[1].reads, 0)
-  t.eq(rec.err[#rec.err], "stats: stopped=" .. rec.err[1])
-  t.eq(stats_line(rec, "stats: file="), "stats: file=0 bytes")
-  url_clean(rec)
-end
+-- URL errors (spec/fetch.md "Errors", spec/url.md) -----------------------------
 
-function T.url_fetch_error_with_stats()
-  local code, rec = run_url({ "--stats", URL },
-    { default = { connect_error = "unknown host" } })
-  t.eq(code, 1)
-  local msg = "html: cannot connect: " .. URL .. ": unknown host"
-  t.eq(rec.err[1], msg)
-  t.eq(stats_line(rec, "stats: url="), "stats: url=" .. URL)
-  t.ok(stats_line(rec, "stats: http="):find("^stats: http=n/a redirects=0 "
-    .. "fetch="), stats_line(rec, "stats: http="))
-  t.eq(rec.err[#rec.err], "stats: stopped=" .. msg)
-  url_clean(rec)
-end
+local LONG_URL = URL .. string.rep("a", 2048)
+local no_local = { exists = no }
+local SUFFIX = " (no local file named example.com)"
 
-function T.url_read_error_exit_1()
-  local code, rec = run_url({ "--print", URL }, { default =
-    page_script(PAGE, { read_error = "reset" }) })
-  t.eq(code, 1)
-  t.eq(rec.err, { "html: read error: reset" })
-  url_clean(rec)
-end
+scenarios("url_errors", {
+  { "unsupported scheme",
+    { args = { "ftp://example.com" }, card = {} },
+    { code = 2, err = { "html: unsupported URL scheme: ftp" },
+      requests = 0 } },
+  { "a space in the host",
+    { args = { "http://exa mple.com" }, card = {} },
+    { code = 2, err = { "html: invalid URL: http://exa mple.com" },
+      requests = 0 } },
+  { "no host",
+    { args = { "http://" }, card = {} },
+    { code = 2, err = { "html: invalid URL: http://" }, requests = 0 } },
+  { "URL too long",
+    { args = { LONG_URL }, card = {} },
+    { code = 2, err = { "html: invalid URL: too long" }, requests = 0 } },
+  { "a scheme is never a local path",
+    { args = { "ftp://example.com" }, card = {},
+      deps = { exists = function() error("not checked") end } },
+    { code = 2, err = { "html: unsupported URL scheme: ftp" } } },
+  { "no internet card",
+    { args = { URL }, card = {}, deps = { internet = false } },
+    { code = 1, err = { "html: no internet card found (needed for " .. URL
+      .. ")" }, views = 0, clean = true } },
+  { "HTTP disabled",
+    { args = { URL }, card = { http = false } },
+    { code = 1, err = { "html: HTTP requests are disabled on this server" } } },
+  { "connect fails",
+    { args = { URL }, card = { default = { connect_error = "unknown host" } } },
+    { code = 1, err = { "html: cannot connect: " .. URL .. ": unknown host" },
+      clean = true } },
+  { "read error with a 2xx status",
+    { args = { "--print", URL }, card = { default = page_script(PAGE,
+      { read_error = "reset" }) } },
+    { code = 1, err = { "html: read error: reset" }, clean = true } },
+  { "content type that is not a page",
+    { args = { URL }, card = { default = { headers =
+      { ["Content-Type"] = { "application/pdf" } } } } },
+    { code = 1, err = { "html: not an HTML page: application/pdf" },
+      clean = true } },
+  { "guessed URL: connect error names the argument",
+    { args = { "example.com" }, deps = no_local,
+      card = { default = { connect_error = "refused" } } },
+    { code = 1, err = { "html: cannot connect: http://example.com: refused"
+      .. SUFFIX } } },
+  { "guessed URL: read error names the argument",
+    { args = { "--print", "example.com" }, deps = no_local,
+      card = { default = page_script(PAGE, { read_error = "reset" }) } },
+    { code = 1, err = { "html: read error: reset" .. SUFFIX } } },
+  { "guessed URL: no card names the argument",
+    { args = { "example.com" }, card = {},
+      deps = { exists = no, internet = false } },
+    { code = 1, err = { "html: no internet card found (needed for "
+      .. "http://example.com)" .. SUFFIX } } },
+})
 
-function T.url_content_type_error()
-  local code, rec = run_url({ URL }, { default = { headers =
-    { ["Content-Type"] = { "application/pdf" } } } })
-  t.eq(code, 1)
-  t.eq(rec.err, { "html: not an HTML page: application/pdf" })
-  url_clean(rec)
-end
+-- Error status (spec/fetch.md "HTTP status and content type") ------------------
 
-function T.url_ctrl_c_during_connect()
-  local code, rec = run_url({ URL }, { default = { connect_polls = 100 } }, {
-    on_interrupt = capture_listener,
-    sleep = function(s) current.interrupt() os.sleep(s) end,
-  })
-  t.eq(code, 130)
-  t.eq(rec.err, { "html: interrupted" })
-  t.eq(current.removes, 1)
-  url_clean(rec)
-end
+local PART = page_script("<p>part</p>", { code = 500, message = "Err",
+  read_error = "reset" })
+local NOTICE = "html: HTTP 500 Err: " .. URL
+local READ_ERROR = "html: read error: reset"
 
-function T.url_ctrl_c_during_the_body()
-  local body = { "<p>a</p>" }
-  for _ = 1, 20 do
-    body[#body + 1] = ""
-  end
-  local code, rec = run_url({ "--stats", URL }, { default = { body = body,
-    endless = true } }, {
-    on_interrupt = capture_listener,
-    sleep = function(s) current.interrupt() os.sleep(s) end,
-  })
-  t.eq(code, 130)
-  t.eq(rec.err[1], "html: interrupted")
-  t.eq(rec.err[#rec.err], "stats: stopped=html: interrupted")
-  url_clean(rec)
-end
+scenarios("error_status", {
+  { "viewer: the body renders, no stderr, exit 0, no popup",
+    { args = { URL }, card = { default = page_script("<p>gone</p>", gone) } },
+    { code = 0, err = {}, views = 1, error_opt = false, clean = true } },
+  { "print: the notice comes first, then the text",
+    { args = { "--print", URL }, card = { default = page_script("<p>gone</p>",
+      gone) } },
+    { code = 0, err = { "html: HTTP 404 Not Found: " .. URL }, out = 1,
+      events = { "err", "out" }, clean = true } },
+  { "print: an empty body gives the short page",
+    { args = { "--print", URL }, card = { default = { code = 503,
+      message = "Unavailable", body = {} } } },
+    { code = 0, err = { "html: HTTP 503 Unavailable: " .. URL }, out = 3 } },
+  { "print, partial body: the text, then the error line, exit 0",
+    { args = { "--print", URL }, card = { default = PART } },
+    { code = 0, err = { NOTICE, READ_ERROR }, out = 1,
+      events = { "err", "out", "err" }, clean = true } },
+  { "viewer, partial body: the error goes to the popup, not to stderr",
+    { args = { URL }, card = { default = PART } },
+    { code = 0, err = {}, views = 1, error_opt = READ_ERROR,
+      events = { "view" }, clean = true } },
+  { "viewer, partial body, guessed URL: the popup line names the argument",
+    { args = { "example.com" }, deps = no_local, card = { default = PART } },
+    { code = 0, err = {}, views = 1, error_opt = READ_ERROR .. SUFFIX } },
+  { "no screen, partial body: print the text, then the error line",
+    { args = { URL }, gpu = false, card = { default = PART } },
+    { code = 0, err = { NO_GPU_LINE, NOTICE, READ_ERROR }, out = 1, views = 0,
+      events = { "err", "err", "out", "err" } } },
+})
 
-function T.url_event_interrupt_error_closes_the_handle()
-  local code, rec = run_url({ URL }, { default = { connect_polls = 5 } }, {
-    sleep = function() error("interrupted", 0) end,
-  })
-  t.eq(code, 130)
-  t.eq(rec.err, { "html: interrupted" })
-  url_clean(rec)
-end
+-- Arguments without a scheme (spec/url.md) -------------------------------------
 
--- Error status --------------------------------------------------------------
-
-function T.error_status_in_the_viewer()
-  local code, rec = run_url({ URL }, { default = page_script(
-    "<title>Oops</title><p>gone</p>", { code = 404, message = "Not Found" }) })
-  t.eq(code, 0)
-  t.eq(rec.err, {})
-  t.eq(rec.views[1].opts.title, "[HTTP 404] Oops")
-  url_clean(rec)
-  code, rec = run_url({ URL }, { default = page_script("<p>gone</p>",
-    { code = 500 }) })
-  t.eq(code, 0)
-  t.eq(rec.views[1].opts.title, "[HTTP 500] " .. URL)
-end
-
-function T.error_status_in_print_mode()
-  local code, rec = run_url({ "--print", "--stats", URL }, { default =
-    page_script("<p>gone</p>", { code = 404, message = "Not Found" }) })
-  t.eq(code, 0)
-  t.eq(rec.err[1], "html: HTTP 404 Not Found: " .. URL)
-  t.eq(rec.events[1], "err")
-  t.eq(rec.events[2], "out")
-  t.eq(rec.out, { "gone" })
-  t.ok(stats_line(rec, "stats: http=404 redirects=0 fetch="))
-  t.eq(stats_line(rec, "stats: stopped="), nil)
-end
-
-function T.error_status_short_page_in_print_mode()
-  local code, rec = run_url({ "--print", URL }, { default = { code = 503,
-    message = "Unavailable", body = {} } })
-  t.eq(code, 0)
-  t.eq(rec.err, { "html: HTTP 503 Unavailable: " .. URL })
-  t.eq(rec.out, { "HTTP 503 Unavailable", "", URL })
-end
-
-function T.error_status_read_error_after_the_text()
-  local code, rec = run_url({ "--print", URL }, { default = page_script(
-    "<p>part</p>", { code = 500, message = "Err", read_error = "reset" }) })
-  t.eq(code, 0)
-  t.eq(rec.err, { "html: HTTP 500 Err: " .. URL, "html: read error: reset" })
-  t.eq(rec.events[#rec.events], "err")
-  t.eq(rec.out, { "part" })
-  code, rec = run_url({ URL }, { default = page_script("<p>part</p>",
-    { code = 500, read_error = "reset" }) })
-  t.eq(code, 0)
-  t.eq(rec.events, { "view", "err" })
-  t.eq(rec.err, { "html: read error: reset" })
-end
-
--- Arguments without a scheme ------------------------------------------------
+local nf = "html: file not found: "
 
 -- Runs one argument with a fake exists. Returns "local", "url <requested>",
 -- or the error line, and the exit code.
-local function classify(arg, exists)
-  local code, rec = run_url({ arg }, { default = page_script() }, {
-    exists = function() return exists end,
+local function classify(input)
+  local code, rec = run_url({ input[1] }, { default = page_script() }, {
+    exists = function() return input[2] end,
   })
   if #rec.ctl.requests > 0 then
-    return "url " .. rec.ctl.requests[1], code
+    return { "url " .. rec.ctl.requests[1], code }
   end
   if code == 0 and #rec.views == 1 then
-    return "local", code
+    return { "local", code }
   end
-  return rec.err[1], code
+  return { rec.err[1], code }
 end
 
-function T.arguments_without_a_scheme()
-  local nf = "html: file not found: "
-  local cases = {
-    { "./x.html", true, "local" },
-    { "./x.html", false, nf .. "./x.html" },
-    { "x.html", true, "local" },
-    { "x.html", false, nf .. "x.html" },
-    { "dir/x.html", false, nf .. "dir/x.html" },
-    { "dir/example.com", false, nf .. "dir/example.com" },
-    { "example.com", true, "local" },
-    { "example.com", false, "url http://example.com" },
-    { "EXAMPLE.COM", false, "url http://EXAMPLE.COM" },
-    { "example.com/path", false, "url http://example.com/path" },
-    { "example.com/", false, "url http://example.com/" },
-    { "example.com:8080/a?b=1", false, "url http://example.com:8080/a?b=1" },
-    { "example.com#top", false, "url http://example.com" },
-    { "localhost", false, "url http://localhost" },
-    { "localhost:8080", false, "url http://localhost:8080" },
-    { "192.168.0.1", false, "url http://192.168.0.1" },
-    { "foo", false, nf .. "foo" },
-    { "foo:8080", false, nf .. "foo:8080" },
-    { "example..com", false, nf .. "example..com" },
-    { "a.-b.com", false, nf .. "a.-b.com" },
-    { "example.com:", false, nf .. "example.com:" },
-    { "example.com:0", false, nf .. "example.com:0" },
-    { "example.com:99999", false, nf .. "example.com:99999" },
-    { "exa mple.com", false, nf .. "exa mple.com" },
-    { "ex\195\164mple.com", false, nf .. "ex\195\164mple.com" },
-    { "~/example.com", false, nf .. "~/example.com" },
-  }
-  for _, c in ipairs(cases) do
-    local got, code = classify(c[1], c[2])
-    t.eq(got, c[3], c[1] .. " exists=" .. tostring(c[2]))
-    t.eq(code, got:sub(1, 6) == "html: " and 1 or 0, c[1])
-  end
-  local code, rec = run_url({ "ftp://example.com" }, {}, {
-    exists = function() error("not checked") end,
-  })
-  t.eq(code, 2)
-  t.eq(rec.err, { "html: unsupported URL scheme: ftp" })
-end
-
-function T.guessed_url_errors_name_the_argument()
-  local suffix = " (no local file named example.com)"
-  local code, rec = run_url({ "example.com" }, { default =
-    { connect_error = "refused" } }, { exists = function() return false end })
-  t.eq(code, 1)
-  t.eq(rec.err, { "html: cannot connect: http://example.com: refused"
-    .. suffix })
-  code, rec = run_url({ "--print", "example.com" }, { default =
-    page_script(PAGE, { read_error = "reset" }) },
-    { exists = function() return false end })
-  t.eq(rec.err, { "html: read error: reset" .. suffix })
-  code, rec = run_url({ "example.com" }, {}, { internet = false,
-    exists = function() return false end })
-  t.eq(rec.err, { "html: no internet card found (needed for "
-    .. "http://example.com)" .. suffix })
-end
-
-function T.usage_lists_the_url_forms()
-  t.ok(html.USAGE:find("http://", 1, true))
-  t.ok(html.USAGE:find("https://", 1, true))
-end
-
--- A fake package.loaded with html modules and one other module.
-local function fake_loaded()
-  return { ["html.guard"] = {}, ["html.viewer"] = {}, computer = {} }
-end
-
-function T.module_cache_cleared_on_every_path()
-  local cases = {
-    { args = { "page.html" }, code = 0 },
-    { args = { "page.html" }, code = 130,
-      view = function() return "interrupted" end },
-    { args = { "page.html" }, code = 1, view = function() error("boom") end },
-    { args = { "nope.html" }, code = 1, exists = function() return false end },
-    { args = { "--bad" }, code = 2 },
-  }
-  for i, c in ipairs(cases) do
-    local loaded = fake_loaded()
-    local file = fake_file(PAGE)
-    local code = html.run_program(c.args, function()
-      return {
-        out = function() end, err = function() end, width = 50,
-        open = function() return file end,
-        traceback = function(msg) return msg end, clock = os.clock,
-        gpu = fake_gpu({ 60, 20 }, { 40, 10 }, "screen"),
-        view = c.view or function() return "quit" end,
-        exists = c.exists,
-        on_interrupt = function() return function() end end,
-      }
-    end, loaded)
-    t.eq(code, c.code, "case " .. i)
-    t.eq(loaded["html.guard"], nil, "case " .. i)
-    t.eq(loaded["html.viewer"], nil, "case " .. i)
-    t.ok(loaded.computer, "case " .. i)
-  end
-end
+t.cases(T, "arguments_without_a_scheme", {
+  { "./x.html exists", { "./x.html", true }, { "local", 0 } },
+  { "./x.html missing", { "./x.html", false }, { nf .. "./x.html", 1 } },
+  { "x.html exists", { "x.html", true }, { "local", 0 } },
+  { "x.html missing", { "x.html", false }, { nf .. "x.html", 1 } },
+  { "dir/x.html missing", { "dir/x.html", false },
+    { nf .. "dir/x.html", 1 } },
+  { "dir/example.com missing", { "dir/example.com", false },
+    { nf .. "dir/example.com", 1 } },
+  { "example.com exists", { "example.com", true }, { "local", 0 } },
+  { "example.com missing", { "example.com", false },
+    { "url http://example.com", 0 } },
+  { "EXAMPLE.COM", { "EXAMPLE.COM", false },
+    { "url http://EXAMPLE.COM", 0 } },
+  { "example.com/path", { "example.com/path", false },
+    { "url http://example.com/path", 0 } },
+  { "example.com/", { "example.com/", false },
+    { "url http://example.com/", 0 } },
+  { "example.com:8080/a?b=1", { "example.com:8080/a?b=1", false },
+    { "url http://example.com:8080/a?b=1", 0 } },
+  { "example.com#top", { "example.com#top", false },
+    { "url http://example.com", 0 } },
+  { "localhost", { "localhost", false }, { "url http://localhost", 0 } },
+  { "localhost:8080", { "localhost:8080", false },
+    { "url http://localhost:8080", 0 } },
+  { "192.168.0.1", { "192.168.0.1", false },
+    { "url http://192.168.0.1", 0 } },
+  { "foo", { "foo", false }, { nf .. "foo", 1 } },
+  { "foo:8080", { "foo:8080", false }, { nf .. "foo:8080", 1 } },
+  { "example..com", { "example..com", false }, { nf .. "example..com", 1 } },
+  { "a.-b.com", { "a.-b.com", false }, { nf .. "a.-b.com", 1 } },
+  { "example.com:", { "example.com:", false }, { nf .. "example.com:", 1 } },
+  { "example.com:0", { "example.com:0", false },
+    { nf .. "example.com:0", 1 } },
+  { "example.com:99999", { "example.com:99999", false },
+    { nf .. "example.com:99999", 1 } },
+  { "a space", { "exa mple.com", false }, { nf .. "exa mple.com", 1 } },
+  { "non-ASCII", { "ex\195\164mple.com", false },
+    { nf .. "ex\195\164mple.com", 1 } },
+  { "~/example.com", { "~/example.com", false },
+    { nf .. "~/example.com", 1 } },
+}, classify)
 
 return T

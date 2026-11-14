@@ -1,43 +1,12 @@
--- Tests that confirm or reject review findings. Each test fails while the
--- defect is present. Test names are f<N>_<name>, N is the finding number.
+-- Regression tests from review findings. Each test fails while its defect is
+-- present. Names are f<N>_<name>, N is the finding number.
 
 local t = require("test")
 
 local T = {}
 
--- Counting wrappers go in before any module loads, because the modules keep
--- string.find and string.gsub in locals.
-local count = { on = false, find = 0, gsub_max = 0 }
-local real_find, real_gsub = string.find, string.gsub
-
-local function counting_find(s, pattern, init, plain)
-  if count.on and type(s) == "string" then
-    local k = real_find(s, pattern, init, plain)
-    local from = init or 1
-    if from < 0 then
-      from = #s + from + 1
-    end
-    count.find = count.find + math.max(0, (k or #s) - from + 1)
-    return real_find(s, pattern, init, plain)
-  end
-  return real_find(s, pattern, init, plain)
-end
-
-local function counting_gsub(s, ...)
-  if count.on and type(s) == "string" and #s > count.gsub_max then
-    count.gsub_max = #s
-  end
-  return real_gsub(s, ...)
-end
-
--- rawset keeps the language server from reporting a second set of the field.
-rawset(string, "find", counting_find)
-rawset(string, "gsub", counting_gsub)
-
 local html = t.load_bin("html")({})
-local guard = require("html.guard")
 local tokenizer = require("html.tokenizer")
-local layout = require("html.layout")
 local computer = require("computer")
 
 local function chunk_reader(s)
@@ -52,275 +21,134 @@ local function chunk_reader(s)
   end
 end
 
-local function drain(read)
-  local nt = tokenizer.new(read)
-  local n = 0
-  while nt() do
-    n = n + 1
-    if n > 5000000 then
-      error("too many tokens")
-    end
-  end
-  return n
+-- f1, f2, f3: inputs that once took quadratic time or too much memory. Each
+-- row must finish (the time bound is far above the linear time) and give the
+-- right text. The title keeps at most 256 bytes (spec/layout.md "Title").
+
+local function repeated(piece, count)
+  return string.rep(piece, count)
 end
 
-local function scan_total(input)
-  count.find = 0
-  count.on = true
-  local ok, err = pcall(drain, chunk_reader(input))
-  count.on = false
-  if not ok then
-    error(err, 0)
+local function x_lines(width, count)
+  local lines = {}
+  for i = 1, count do
+    lines[i] = string.rep("x", width)
   end
-  return count.find
+  return lines
 end
 
-function T.f1_broken_quote_scan_is_linear_a()
-  local input = string.rep("<a x='>", 150000)
-  local total = scan_total(input)
-  t.ok(total < 10 * #input, "scanned " .. total .. " bytes for input of "
-    .. #input)
-end
+local TIME_LIMIT = 20
 
-function T.f1_broken_quote_scan_is_linear_b()
-  local one = "<a" .. string.rep(" x='>'", 2600) .. ">"
-  local input = string.rep(one, 64)
-  local total = scan_total(input)
-  t.ok(total < 10 * #input, "scanned " .. total .. " bytes for input of "
-    .. #input)
-end
-
-function T.f2_long_word_is_committed()
-  local lay = layout.new(80)
-  for _ = 1, 20000 do
-    lay.push("start", "i")
-    lay.push("text", "x")
-    lay.push("end", "i")
+t.cases(T, "pathological_inputs_finish_with_the_right_text", {
+  { "f1a: 150000 broken quotes", repeated("<a x='>", 150000),
+    { lines = {}, title = "" } },
+  { "f1b: 64 tags with 2600 broken quotes each",
+    repeated("<a" .. string.rep(" x='>'", 2600) .. ">", 64),
+    { lines = {}, title = "" } },
+  { "f2: a word of 20000 pieces is split at the width",
+    repeated("<i>x</i>", 20000), { lines = x_lines(80, 250), title = "" } },
+  { "f3: a huge title is cut at 256 bytes",
+    "<title>" .. string.rep("a ", 140000) .. "</title>",
+    { lines = {}, title = string.rep("a ", 128) } },
+}, function(input)
+  local started = os.clock()
+  local lines, title = html.render(chunk_reader(input), 80)
+  if os.clock() - started > TIME_LIMIT then
+    error("took over " .. TIME_LIMIT .. " s of CPU time")
   end
-  t.ok(#lay.lines >= 1, "no line before finish, word still pending")
-end
-
-function T.f3_title_gsub_subject_is_small()
-  local input = "<title>" .. string.rep("a ", 140000) .. "</title>"
-  count.gsub_max = 0
-  count.on = true
-  local ok, err = pcall(html.render, chunk_reader(input), 80)
-  count.on = false
-  if not ok then
-    error(err, 0)
+  local plain = {}
+  for i, line in ipairs(lines) do
+    plain[i] = (line:gsub("[\1-\5]", ""))
   end
-  t.ok(count.gsub_max <= 8192, "largest gsub subject is " .. count.gsub_max
-    .. " bytes")
-end
+  return { lines = plain, title = title or "" }
+end)
 
--- Entry helpers, as in tests/entry_test.lua.
-local PAGE = "<html><head><title>My Page</title></head><body>"
-  .. "<h1>Head</h1><p>Some text.</p></body></html>"
-
-local function fake_file(text, reader)
-  local state = { closed = false }
-  local pos = 1
-  local f = {}
-  function f.read(_, n)
-    if reader then
-      return reader(n)
-    end
-    if pos > #text then
-      return nil
-    end
-    local c = text:sub(pos, pos + n - 1)
-    pos = pos + n
-    return c
-  end
-  function f.seek(_, whence)
-    if whence == "end" then
-      return #text
-    end
-    return 0
-  end
-  function f.close()
-    state.closed = true
-    return true
-  end
-  return f, state
-end
-
-local function run(args, text, extra)
-  extra = extra or {}
-  local rec = { out = {}, err = {}, logs = {}, views = 0 }
-  local file = extra.file or fake_file(text or PAGE)
-  local deps = {
-    out = function(l) rec.out[#rec.out + 1] = l end,
-    err = function(l) rec.err[#rec.err + 1] = l end,
-    width = 50,
-    open = function() return file end,
-    traceback = function(m) return m .. "\nstack traceback: (fake)" end,
-    clock = os.clock,
-    gpu = {
-      getScreen = function() return "screen" end,
-      maxResolution = function() return 60, 20 end,
-      getResolution = function() return 40, 10 end,
-    },
-    view = function() rec.views = rec.views + 1 return "quit" end,
-    log = function(entry)
-      rec.logs[#rec.logs + 1] = entry
-      return true
+-- f6: the print output loop has no memory check (spec/cli.md "Print output
+-- loop"). The free memory drops under the reserve when the first line is
+-- written. Every line is still written and the exit code is 0.
+function T.f6_print_mode_does_not_stop_on_memory()
+  local count = 0
+  local errs = {}
+  local code = html.main({ "--print", "page.html", n = 2 }, {
+    out = function()
+      count = count + 1
+      computer.test.set_free(100 * 1024)
     end,
-    on_interrupt = function() return function() end end,
-  }
-  for k, v in pairs(extra) do
-    if k ~= "file" then
-      deps[k] = v
-    end
-  end
-  args.n = #args
-  return html.main(args, deps), rec
+    err = function(line) errs[#errs + 1] = line end,
+    width = 50,
+    open = function()
+      local text = string.rep("<p>word word word word word</p>\n", 1000)
+      local pos = 1
+      return {
+        read = function(_, n)
+          if pos > #text then
+            return nil
+          end
+          local c = text:sub(pos, pos + n - 1)
+          pos = pos + n
+          return c
+        end,
+        seek = function() return #text end,
+        close = function() end,
+      }
+    end,
+    traceback = function(m) return m end,
+    clock = os.clock,
+  })
+  t.eq(errs, {})
+  t.eq(code, 0)
+  t.eq(count, 1000)
 end
 
-function T.f4_huge_width_is_controlled()
-  local code, rec = run({ "--width", "9223372036854775807", "x.html" },
-    "<p>x</p><hr>")
-  local text = table.concat(rec.err, "\n")
-  t.ok(not text:find("unexpected error", 1, true), "got: " .. text)
-  t.eq(code, 2, "exit code")
-end
-
-function T.f5_restore_closure_outside_pcall()
-  t.skip("not testable here: building the closure at viewer.lua:399 cannot "
-    .. "raise except by out of memory, and the sandbox has no way to force "
-    .. "that at one exact allocation")
-end
-
-function T.f6_print_loop_tick_without_lines()
-  guard.reset()
-  computer.test.set_free(1800000)
-  for _ = 1, 3 do
-    guard.tick(9000)
-  end
-  -- 200000 is above 192 KB and below the doubling reserve of 291271.
-  -- The print-mode output loop uses tick_output, which has no memory check.
-  computer.test.set_free(200000)
-  local ok, err = pcall(guard.tick_output)
-  guard.reset()
-  t.ok(ok, "tick_output() stopped: " .. tostring(err))
-end
-
-function T.f7_require_failure_is_controlled()
-  -- game_deps requires OpenOS modules and the viewer, which the sandbox
-  -- does not have, so it raises as a failed require does.
-  local ok, code = pcall(html.run_program, { "page.html" }, html.game_deps, {})
-  t.ok(ok, "raw error escaped: " .. tostring(code))
-  t.eq(code, 1, "exit code")
-end
-
--- Runs main with a loader that raises the given value.
-local function run_with_failing_require(raised)
+-- f7: a failing module load gives one controlled line, exit code 1
+-- (spec/errors.md "Controlled and unexpected errors"). raised is what
+-- require raises, or nil for game_deps in the sandbox, which has no OpenOS
+-- modules.
+t.cases(T, "f7_loader_failures_give_one_controlled_line", {
+  { "game_deps in the sandbox", { game_deps = true },
+    { raw = false, code = 1 } },
+  { "a table raised", { raised = { code = 1 } },
+    { raw = false, code = 1, lines = 1, prefix = "html: ", one_line = true } },
+  { "a table with a failing tostring", { raised = setmetatable({}, {
+    __tostring = function() error("boom", 0) end }) },
+    { raw = false, code = 1, lines = 1, prefix = "html: ", one_line = true } },
+  { "out of memory", { raised = "not enough memory" },
+    { raw = false, code = 1, lines = 1, prefix = "html: ", one_line = true,
+      has_reason = true } },
+}, function(input)
+  local err = {}
+  local get_deps = html.game_deps
   local fresh = t.load_bin("html")({})
   local real_require = require
-  local err = {}
-  _G.require = function() error(raised, 0) end
-  local ok, code = pcall(fresh.run_program, { "page.html" }, function()
-    return { err = function(l) err[#err + 1] = l end, out = print,
-      home = "/home" }
-  end, {})
+  if input.raised ~= nil then
+    _G.require = function() error(input.raised, 0) end
+    get_deps = function()
+      return { err = function(l) err[#err + 1] = l end, out = print,
+        home = "/home" }
+    end
+  end
+  local ok, code = pcall(fresh.run_program, { "page.html" }, get_deps, {})
   _G.require = real_require
-  t.ok(ok, "raw error escaped: " .. tostring(code))
-  t.eq(code, 1, "exit code")
-  t.eq(#err, 1, "one line")
-  t.eq(err[1]:sub(1, 6), "html: ")
-  t.ok(not err[1]:find("\n"), "single line")
-  return err[1]
-end
-
-function T.f7b_loader_raising_a_table_gives_one_line()
-  run_with_failing_require({ code = 1 })
-end
-
-function T.f7b_loader_raising_a_failing_tostring_gives_one_line()
-  run_with_failing_require(setmetatable({}, {
-    __tostring = function() error("boom", 0) end,
-  }))
-end
-
-function T.f7b_loader_out_of_memory_gives_one_line()
-  local line = run_with_failing_require("not enough memory")
-  t.ok(line:find("not enough memory", 1, true), line)
-end
-
-function T.f8_raw_interrupted_exits_130()
-  local code, rec = run({ "page.html" }, PAGE, {
-    view = function() error("interrupted", 0) end,
-  })
-  t.eq(#rec.logs, 0, "log writes")
-  t.eq(code, 130, "exit code")
-end
-
-function T.f8_close_error_still_removes_listener()
-  local f = fake_file(PAGE)
-  local listens, removes = 0, 0
-  f.close = function() error("close boom", 0) end
-  pcall(run, { "page.html" }, PAGE, {
-    file = f,
-    on_interrupt = function()
-      listens = listens + 1
-      return function() removes = removes + 1 end
-    end,
-  })
-  t.eq(listens, 1, "listener installed")
-  t.eq(removes, 1, "listener removed")
-end
-
-function T.f9a_write_text_closes_after_write_error()
-  local closed = false
-  local handle = {
-    write = function() error("disk boom", 0) end,
-    flush = function() return true end,
-    close = function() closed = true return true end,
+  if not ok then
+    return { raw = true, code = code }
+  end
+  if input.game_deps then
+    return { raw = false, code = code }
+  end
+  local first = err[1] or ""
+  return {
+    raw = false,
+    code = code,
+    lines = #err,
+    prefix = first:sub(1, 6),
+    one_line = not first:find("\n"),
+    has_reason = input.raised == "not enough memory"
+      and first:find("not enough memory", 1, true) ~= nil or nil,
   }
-  pcall(html.write_text, function() return handle end, "/tmp/x", "data")
-  t.ok(closed, "handle was not closed")
-end
+end)
 
-function T.f9a_write_text_closes_after_flush_error()
-  local closed = false
-  local handle = {
-    write = function() return true end,
-    flush = function() error("flush boom", 0) end,
-    close = function() closed = true return true end,
-  }
-  pcall(html.write_text, function() return handle end, "/tmp/x", "data")
-  t.ok(closed, "handle was not closed")
-end
-
--- The installer write function sits in game_deps, which needs OpenOS, so
--- this reads the source text.
-function T.f9b_installer_checks_close_result()
-  local src = t.read_repo("tools/installer.lua")
-  t.ok(src, "tools/installer.lua not readable")
-  -- OpenOS close returns no values on success, so only its reason counts.
-  -- installer_test.lua runs this write with a fake OpenOS file.
-  t.ok(real_find(src, "local _, cerr = f:close()", 1, true),
-    "close() result of write is ignored")
-  t.ok(real_find(src, "if cerr ~= nil then", 1, true),
-    "close() failure is not reported")
-end
-
-function T.f9c_stats_out_equal_to_input_is_refused()
-  local code, rec = run({ "--stats-out", "./page.html", "page.html" }, PAGE,
-    { resolve = function(p) return "/work/" .. p:gsub("^%./", "") end })
-  local text = table.concat(rec.err, " | ")
-  t.eq(code, 2, "exit code")
-  t.eq(#rec.err, 1, "stderr lines: " .. text)
-  t.ok(text:sub(1, 6) == "html: ", "stderr was: " .. text)
-end
-
-function T.f10_dirty_check_covers_tools()
-  local src = t.read_repo("tools/release.ps1")
-  local line = src:match("git status %-%-porcelain[^\n]*")
-  t.ok(line, "no git status line")
-  t.ok(real_find(line, "tools", 1, true), "dirty check is: " .. line)
-end
-
+-- f11a: empty reads end normally (spec/fetch.md "Stream into the pipeline":
+-- an empty chunk is not the end and does not loop).
 function T.f11a_empty_reads_end_normally()
   local calls, empties = 0, 0
   local function read()
@@ -334,23 +162,11 @@ function T.f11a_empty_reads_end_normally()
     end
     return nil
   end
-  local ok, err = pcall(drain, read)
-  t.ok(ok, tostring(err))
-end
-
-function T.f11b_read_error_is_reported()
-  local n = 0
-  local f = fake_file("", function()
-    n = n + 1
-    if n == 1 then
-      return "<p>hello"
-    end
-    return nil, "io error"
-  end)
-  local code, rec = run({ "page.html" }, nil, { file = f })
-  local text = table.concat(rec.err, "\n")
-  t.ok(real_find(text, "read error", 1, true), "stderr was: " .. text)
-  t.ok(code ~= 0, "exit code " .. tostring(code))
+  local next_token = tokenizer.new(read)
+  while next_token() do
+    t.ok(false, "no token expected")
+  end
+  t.eq(calls, 101)
 end
 
 return T

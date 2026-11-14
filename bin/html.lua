@@ -62,8 +62,8 @@ local EXIT_ERROR = 1
 local EXIT_USAGE = 2
 local EXIT_INTERRUPTED = 130
 local INTERRUPTED = "html: interrupted"
--- The largest --width.
-local MAX_WIDTH = 1024
+-- The largest --width with no GPU or no screen (the tier 3 maximum).
+local NO_SCREEN_MAX_WIDTH = 160
 
 M.USAGE = [[
 Usage: html [options] <file | url>
@@ -78,40 +78,29 @@ Options:
   --width <n>         wrap lines at n columns (sets --print,
                       default: the terminal width)
   --no-rescale        keep the current screen resolution in the viewer
-  --stats             print file size, line count, render time and memory
-                      to stderr (after the viewer closes)
-  --stats-out <path>  also write the stats lines to a file (sets --stats)
   --help              show this help
 Viewer keys: Up Down PgUp PgDn Home End, q quit, Ctrl+C exit.]]
 
--- Returns an options table, or nil and a controlled error message.
-function M.parse_args(argv)
+-- max_width is the largest --width (see max_width_of). Returns an options
+-- table, or nil and a controlled error message.
+function M.parse_args(argv, max_width)
+  max_width = max_width or NO_SCREEN_MAX_WIDTH
   local opts = {}
   local i, count = 1, argv.n or #argv
   while i <= count do
     local a = tostring(argv[i])
     if a == "--help" or a == "-h" then
       opts.help = true
-    elseif a == "--stats" then
-      opts.stats = true
     elseif a == "--print" then
       opts.print = true
     elseif a == "--no-rescale" then
       opts.no_rescale = true
-    elseif a == "--stats-out" then
-      i = i + 1
-      local p = argv[i]
-      if type(p) ~= "string" or p == "" then
-        return nil, "html: --stats-out needs a file path"
-      end
-      opts.stats = true
-      opts.stats_out = p
     elseif a == "--width" then
       i = i + 1
       local w = math.tointeger(tonumber(argv[i]))
-      if not w or w < 1 or w > MAX_WIDTH then
+      if not w or w < 1 or w > max_width then
         return nil, "html: --width needs a whole number from 1 to "
-          .. MAX_WIDTH
+          .. max_width
       end
       opts.width = w
       opts.print = true
@@ -271,16 +260,14 @@ end
 -- Checks the input size, renders the input, and prints the lines or opens
 -- the viewer. source: read() (a chunk, or nil at the end; it raises on an
 -- error), size (bytes known before reading, or nil), kind ("file" or
--- "page", for the size message), name (shown without a title) and prefix
--- (put before the title, or nil).
--- Fills st with the stats values as it goes, so a render that stops still
--- has the values up to that point. done() is called when the render ends.
--- Returns the viewer result, or nil in print mode.
-local function run(source, opts, deps, st, done)
+-- "page", for the size message), name (shown without a title), prefix (put
+-- before the title, or nil) and tail_error() (optional, the error line of a
+-- body that ended at a read error, or nil). width is the output width: the
+-- layout wraps at width - 1 (see spec/cli.md "Output width"). done() is
+-- called when the render ends. Returns the viewer result, or nil in print
+-- mode.
+local function run(source, opts, deps, width, done)
   local free = guard.settled_free()
-  if opts.stats then
-    st.free_before = free
-  end
   local size = source.size
   if is_num(size) and size * SIZE_COST_MIN > free then
     error("html: " .. source.kind .. " too large for available memory ("
@@ -288,17 +275,9 @@ local function run(source, opts, deps, st, done)
   end
   -- The lowest free reading starts here, after the settled reading.
   guard.reset()
-  local clock0, wall0 = deps.clock(), deps.uptime and deps.uptime()
-  local lines, title = M.render(source.read, st.width)
-  st.cpu = deps.clock() - clock0
-  if wall0 then
-    st.wall = deps.uptime() - wall0
-  end
-  st.lines = #lines
-  if opts.stats then
-    st.free_after = guard.settled_free()
-  end
+  local lines, title = M.render(source.read, width - 1)
   done()
+  local tail_error = source.tail_error and source.tail_error()
   if not opts.print then
     if title == "" then
       title = nil
@@ -307,143 +286,16 @@ local function run(source, opts, deps, st, done)
       title = source.prefix .. (title or source.name)
     end
     return deps.view(lines, { title = title, file = source.name,
-      no_rescale = opts.no_rescale })
+      no_rescale = opts.no_rescale, error = tail_error })
   end
   local out = deps.out
   for i = 1, #lines do
     guard.tick_output()
     out(plain(lines[i]))
   end
-end
-
-local function per_line(bytes, lines)
-  if lines then
-    return string.format(" (%.1f per line)", bytes / math.max(1, lines))
+  if tail_error then
+    deps.err(tail_error)
   end
-  return ""
-end
-
--- A missing value prints as "n/a", so a stats report never fails.
-local function bytes_text(v)
-  if is_num(v) then
-    return int_text(v) .. " bytes"
-  end
-  return NA
-end
-
-local function seconds_text(fmt, v)
-  if is_num(v) then
-    return string.format(fmt, v) .. " s"
-  end
-  return NA
-end
-
--- Returns the stats lines for the values in st. lowest is the lowest free
--- memory reading of the guard, or nil. trace is the memory trace text of the
--- guard, or nil. counts is nil or a table with the guard settle counters
--- settles, gc_seen and settle_yields.
-function M.stats_lines(st, lowest, trace, counts)
-  local s = {}
-  local function add(line)
-    s[#s + 1] = "stats: " .. line
-  end
-  add("file=" .. bytes_text(st.size))
-  if st.url ~= nil then
-    add("url=" .. tostring(st.url))
-    add("http=" .. int_text(st.http) .. " redirects="
-      .. int_text(st.redirects) .. " fetch=" .. seconds_text("%.2f", st.fetch))
-  end
-  add("width=" .. int_text(st.width))
-  local lines = is_num(st.lines) and st.lines or nil
-  if st.lines ~= nil then
-    add("lines=" .. int_text(st.lines))
-    add("cpu=" .. seconds_text("%.3f", st.cpu))
-    if st.wall ~= nil then
-      add("wall=" .. seconds_text("%.2f", st.wall))
-    end
-  end
-  if st.free_before ~= nil then
-    local before = st.free_before
-    add("free_before=" .. bytes_text(before))
-    if st.free_after ~= nil then
-      add("free_after=" .. bytes_text(st.free_after))
-      if is_num(before) and is_num(st.free_after) then
-        local delta = before - st.free_after
-        add("delta=" .. bytes_text(delta) .. per_line(delta, lines))
-      else
-        add("delta=" .. NA)
-      end
-    end
-    if not is_num(lowest) then
-      lowest = is_num(st.free_after) and st.free_after or before
-    end
-    add("lowest_free=" .. bytes_text(lowest))
-    if is_num(before) and is_num(lowest) then
-      local peak = before - lowest
-      add("peak_used=" .. bytes_text(peak) .. per_line(peak, lines))
-    else
-      add("peak_used=" .. NA)
-    end
-    counts = type(counts) == "table" and counts or {}
-    add("settles=" .. int_text(counts.settles) .. " gc_seen="
-      .. int_text(counts.gc_seen) .. " settle_yields="
-      .. int_text(counts.settle_yields))
-  end
-  if type(trace) == "string" and trace ~= "" then
-    add("trace=" .. trace)
-  else
-    add("trace=" .. NA)
-  end
-  if st.stopped ~= nil then
-    add("stopped=" .. tostring(st.stopped))
-  end
-  return s
-end
-
--- Calls a guard function by name. Returns nil when the function is missing
--- or fails, for example with a guard module from an older version.
-local function guard_value(name)
-  local fn = type(guard) == "table" and guard[name]
-  if type(fn) ~= "function" then
-    return nil
-  end
-  local ok, value = pcall(fn)
-  if ok then
-    return value
-  end
-  return nil
-end
-
--- Prints the stats lines to stderr and writes them to opts.stats_out.
--- Returns false when the file write fails.
-local function report_stats(st, opts, deps)
-  local lines = M.stats_lines(st, st.free_before and guard_value("lowest_free"),
-    guard_value("trace_text"), {
-      settles = guard_value("settles"),
-      gc_seen = guard_value("gc_seen"),
-      settle_yields = guard_value("settle_yields"),
-    })
-  for i = 1, #lines do
-    deps.err(lines[i])
-  end
-  if not opts.stats_out then
-    return true
-  end
-  local path = opts.stats_path
-  local ok, done, why = false, nil, "no file access"
-  if deps.write_file then
-    ok, done, why = pcall(deps.write_file, path,
-      table.concat(lines, "\n") .. "\n")
-  end
-  if ok and done then
-    return true
-  end
-  if not ok then
-    why = done
-  end
-  deps.err("html: cannot write stats file: " .. opts.stats_out .. " ("
-    .. reason(why) .. ")")
-  return false
 end
 
 -- Returns the file size from deps.size, or from seek.
@@ -475,6 +327,23 @@ local function screen_width(gpu, no_rescale)
     return w
   end
   return nil
+end
+
+-- Returns the largest --width: the width of gpu.maxResolution(), or 160 with
+-- no GPU or no screen.
+local function max_width_of(gpu)
+  if type(gpu) == "table" then
+    local ok, w = pcall(function()
+      if gpu.getScreen and not gpu.getScreen() then
+        return nil
+      end
+      return (gpu.maxResolution())
+    end)
+    if ok and math.tointeger(w) and w > 0 then
+      return w
+    end
+  end
+  return NO_SCREEN_MAX_WIDTH
 end
 
 -- Prints one line for an unexpected error and writes the details to the
@@ -515,8 +384,6 @@ end
 --   size(path)             optional, file size in bytes
 --   log(text)              optional, keeps the details of an unexpected
 --                          error. Returns true, or nil and a reason
---   write_file(path, text) optional, for --stats-out. Returns true, or nil
---                          and a reason
 --   gpu                    optional, the GPU proxy. Without it, or without
 --                          a screen, the page prints as text
 --   view(lines, opts)      optional, runs the viewer (see viewer.run).
@@ -527,7 +394,7 @@ end
 --   sleep(seconds)         optional, os.sleep. The fetch waits with it
 -- Returns the exit code.
 function M.main(argv, deps)
-  local opts, msg = M.parse_args(argv)
+  local opts, msg = M.parse_args(argv, max_width_of(deps.gpu))
   if not opts then
     deps.err(msg .. " (see html --help)")
     return EXIT_USAGE
@@ -545,16 +412,6 @@ function M.main(argv, deps)
   else
     path = M.expand_home(arg, deps.home)
     path = deps.resolve and deps.resolve(path) or path
-  end
-  if opts.stats_out then
-    local out_path = M.expand_home(opts.stats_out, deps.home)
-    out_path = deps.resolve and deps.resolve(out_path) or out_path
-    opts.stats_path = out_path
-    if path and out_path == path then
-      deps.err("html: --stats-out must not be the input file: "
-        .. opts.stats_out)
-      return EXIT_USAGE
-    end
   end
   -- load_modules can fail while it builds its message (for example out of
   -- memory), so it runs protected and any failure gives one controlled line.
@@ -610,9 +467,16 @@ function M.main(argv, deps)
   end
   local f
   if path then
-    f = deps.open(path, "rb")
+    local why
+    f, why = deps.open(path, "rb")
     if not f then
-      deps.err("html: cannot open file: " .. arg)
+      -- The file can vanish between the check and the open. An open that
+      -- fails on an existing file is a read error.
+      if deps.exists and deps.exists(path) then
+        deps.err("html: read error: " .. reason(why or "cannot open"))
+      else
+        deps.err("html: file not found: " .. arg)
+      end
       return EXIT_ERROR
     end
   end
@@ -651,7 +515,6 @@ function M.main(argv, deps)
     end
     return traceback(tostring(e), 2)
   end
-  local st = { width = width }
   -- For a URL: the fetch progress (fetch.open fills it), the response and
   -- the clock of the fetch.
   local info, resp = {}, nil
@@ -669,7 +532,6 @@ function M.main(argv, deps)
   -- Returns the source for run: the file, or the response of url.
   local function open_source()
     if not url then
-      st.size = file_size(f, path, deps)
       return {
         read = function()
           local chunk, why = f:read(CHUNK)
@@ -680,10 +542,9 @@ function M.main(argv, deps)
           end
           return chunk
         end,
-        size = st.size, kind = "file", name = arg,
+        size = file_size(f, path, deps), kind = "file", name = arg,
       }
     end
-    st.url = url
     local why
     resp, why = fetch.open(url, { internet = deps.internet,
       clock = fetch_clock, sleep = deps.sleep or os.sleep,
@@ -708,12 +569,17 @@ function M.main(argv, deps)
       end,
       size = resp.length, kind = "page", name = resp.final_url,
       prefix = resp.is_error and ("[" .. status .. "] ") or nil,
+      -- An error status ends its body at a read error. The received part
+      -- renders, and the error line follows (popup or stderr).
+      tail_error = function()
+        return resp.read_error and (resp.read_error .. suffix) or nil
+      end,
     }
   end
 
   local ok, result = xpcall(function()
     local source = open_source()
-    local viewed = run(source, opts, deps, st, function()
+    return run(source, opts, deps, width, function()
       close_file()
       if interrupted then
         error(INTERRUPTED, 0)
@@ -724,29 +590,10 @@ function M.main(argv, deps)
         stop_listening()
       end
     end)
-    -- An error status ends its body at a read error. The received part
-    -- rendered, so the error follows the page text or the viewer.
-    if resp and resp.read_error then
-      deps.err(resp.read_error .. suffix)
-    end
-    return viewed
   end, handler)
   -- Each step runs alone, so a failure in one does not skip the other.
   pcall(stop_listening)
   pcall(close_file)
-  if url then
-    st.url = info.url or url
-    st.size = resp and resp.bytes or 0
-    st.http = info.status
-    st.redirects = info.redirects
-    if is_num(info.started) then
-      local ended = info.ended
-      if not is_num(ended) then
-        ended = fetch_clock()
-      end
-      st.fetch = ended - info.started
-    end
-  end
 
   local code = 0
   if not ok and result == "interrupted" then
@@ -757,18 +604,14 @@ function M.main(argv, deps)
     code = EXIT_ERROR
     if is_controlled(result) then
       deps.err(result)
-      st.stopped = result
       if result == INTERRUPTED then
         code = EXIT_INTERRUPTED
       end
     else
-      st.stopped = report_unexpected(result, deps)
+      report_unexpected(result, deps)
     end
   elseif result == "interrupted" then
     code = EXIT_INTERRUPTED
-  end
-  if opts.stats and not report_stats(st, opts, deps) then
-    code = EXIT_ERROR
   end
   return code
 end
@@ -819,9 +662,6 @@ function M.game_deps()
         text = sub(text, -ERROR_LOG_MAX)
       end
       return M.write_text(io.open, ERROR_LOG, text)
-    end,
-    write_file = function(path, text)
-      return M.write_text(io.open, path, text)
     end,
     gpu = gpu,
     internet = internet,

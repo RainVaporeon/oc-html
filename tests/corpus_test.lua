@@ -1,17 +1,18 @@
--- Renders the saved real pages in tests/real through the tokenizer and the
--- layout at three widths. A page must render without an error, give more
--- than 0 lines and keep every line within the width.
+-- The case files and the saved real pages through bin/html.lua, from a local
+-- file and through the fake internet card. Spec: spec/testing.md "Success
+-- criteria", spec/fetch.md "Stream into the pipeline" and "HTTP status and
+-- content type".
 
 local t = require("test")
-local layout = require("html.layout")
-local tokenizer = require("html.tokenizer")
 local unicode = require("unicode")
+local internet = require("internet")
+local computer = require("computer")
 
 local T = {}
 
-local PAGES = { "wiki", "wikipedia", "manual" }
-local WIDTHS = { 40, 80, 160 }
-local CHUNK = 4096
+local html = t.load_bin("html")({})
+
+local URL = "http://example.com/page"
 
 local function read_file(path)
   local f = assert(io.open(path, "rb"))
@@ -20,83 +21,7 @@ local function read_file(path)
   return s
 end
 
-local function render(doc, width)
-  local lay = layout.new(width)
-  local pos = 1
-  local next_token = tokenizer.new(function()
-    if pos > #doc then
-      return nil
-    end
-    local piece = doc:sub(pos, pos + CHUNK - 1)
-    pos = pos + CHUNK
-    return piece
-  end, lay.count)
-  while true do
-    local kind, value, attrs, self_closing = next_token()
-    if not kind then
-      break
-    end
-    lay.push(kind, value, attrs, self_closing)
-  end
-  return lay.finish()
-end
-
-for _, name in ipairs(PAGES) do
-  for _, width in ipairs(WIDTHS) do
-    T["real_" .. name .. "_at_" .. width] = function()
-      local doc = read_file("tests/real/" .. name .. ".html")
-      local started = os.clock()
-      local lines = render(doc, width)
-      local seconds = os.clock() - started
-      print(string.format("corpus %s width %d: %d lines, %.2f s", name,
-        width, #lines, seconds))
-      t.ok(#lines > 0, name .. " gave no lines")
-      for i, line in ipairs(lines) do
-        local text = line:gsub("[\1-\5]", "")
-        t.ok(unicode.wlen(text) <= width, string.format(
-          "%s width %d line %d is too wide", name, width, i))
-      end
-    end
-  end
-end
-
--- Pages through the fake internet card ---------------------------------------
--- Each case is served in chunks of 1, 7, 4096 and 65536 bytes with "" gaps
--- and rendered by bin/html.lua with --print --width 40. The text must equal
--- the .txt file, as for a local file.
-
-local internet = require("internet")
-local computer = require("computer")
-local html = t.load_bin("html")({})
-
-local CARD_CHUNKS = { 1, 7, 4096, 65536 }
-local URL = "http://example.com/page"
-
--- Runs main for url with a fake card that serves text in pieces of size.
--- Returns the exit code, the stdout lines, the stderr lines and the card
--- controller.
-local function fetch_main(args, text, size)
-  local card, ctl = internet.new({ default = {
-    headers = { ["Content-Type"] = { "text/html" } },
-    body = internet.pieces(text, size, true) } })
-  local out, err = {}, {}
-  args.n = #args
-  local code = html.main(args, {
-    out = function(line) out[#out + 1] = line end,
-    err = function(line) err[#err + 1] = line end,
-    width = 80,
-    open = function() error("a URL opens no file") end,
-    traceback = function(msg) return msg end,
-    clock = os.clock,
-    uptime = computer.uptime,
-    sleep = os.sleep,
-    internet = card,
-  })
-  return code, out, err, ctl
-end
-
--- The same normalization as the layout case test: no "\r", no trailing
--- spaces, no blank lines at the end.
+-- Removes "\r", trailing spaces and tabs, and blank lines at the end.
 local function normalize(s)
   local out = {}
   for line in (s .. "\n"):gmatch("([^\n]*)\n") do
@@ -108,63 +33,161 @@ local function normalize(s)
   return table.concat(out, "\n")
 end
 
-local function closed_once(ctl, what)
-  for i, h in ipairs(ctl.handles) do
-    t.eq(h.closed, 1, what .. ": handle " .. i .. " closed once")
-  end
-end
-
-function T.cases_through_the_card_match_expected_text()
-  local failures = {}
-  for _, name in ipairs(t.list_cases()) do
-    local doc = read_file("tests/cases/" .. name .. ".html")
-    local expected = normalize(read_file("tests/cases/" .. name .. ".txt"))
-    for _, size in ipairs(CARD_CHUNKS) do
-      local code, out, err, ctl = fetch_main({ "--width", "40", URL }, doc,
-        size)
-      local what = name .. " in chunks of " .. size
-      closed_once(ctl, what)
-      if code ~= 0 or #err > 0 then
-        failures[#failures + 1] = what .. ": exit " .. code .. " "
-          .. table.concat(err, " | ")
-      elseif normalize(table.concat(out, "\n")) ~= expected then
-        failures[#failures + 1] = what .. ": text differs"
-      end
+-- A file that gives at most size bytes per read.
+local function chunked_file(text, size)
+  local pos = 1
+  local state = { closed = 0 }
+  local f = {}
+  function f.read()
+    if pos > #text then
+      return nil
     end
+    local chunk = text:sub(pos, pos + size - 1)
+    pos = pos + size
+    return chunk
   end
-  t.ok(#failures == 0, "\n" .. table.concat(failures, "\n"))
+  function f.seek(_, whence)
+    if whence == "end" then
+      return #text
+    end
+    return 0
+  end
+  function f.close()
+    state.closed = state.closed + 1
+  end
+  return f, state
 end
 
--- Real pages and the large page: no uncontrolled error.
-local function through_card(path, size, width)
-  local doc = read_file(path)
-  local code, out, err, ctl = fetch_main({ "--width", tostring(width), URL },
-    doc, size)
-  closed_once(ctl, path)
-  for _, line in ipairs(err) do
-    t.ok(not line:find("unexpected error", 1, true), path .. ": " .. line)
-  end
-  t.ok(code == 0 or code == 1, path .. ": exit " .. code)
-  if code == 0 then
-    t.ok(#out > 0, path .. " gave no lines")
+local function gpu(width)
+  return {
+    getScreen = function() return "screen" end,
+    maxResolution = function() return width, 25 end,
+    getResolution = function() return width, 25 end,
+  }
+end
+
+-- Runs one document through main. mode is "local" (a file in pieces), "card"
+-- (the fake card, print mode), "card404" (the card with a 404 status) or
+-- "viewer" (the card, viewer mode with the lines captured). width is the
+-- output width. Returns the exit code, the stderr lines, the text and
+-- whether every file and card handle closed once.
+local function run_doc(doc, mode, size, width)
+  local out, err, viewed = {}, {}, nil
+  local args = { "--width", tostring(width), URL }
+  local deps = {
+    out = function(line) out[#out + 1] = line end,
+    err = function(line) err[#err + 1] = line end,
+    width = 80,
+    traceback = function(msg) return msg end,
+    clock = os.clock,
+    uptime = computer.uptime,
+    sleep = os.sleep,
+  }
+  local handles = {}
+  if mode == "local" then
+    args = { "--width", tostring(width), "page.html" }
+    local file, state = chunked_file(doc, size)
+    handles[1] = state
+    deps.open = function() return file end
   else
-    t.ok(err[1] and err[1]:find("^html: "), path .. ": " .. tostring(err[1]))
+    local script = { headers = { ["Content-Type"] = { "text/html" } },
+      body = internet.pieces(doc, size, true) }
+    if mode == "card404" then
+      script.code, script.message = 404, "Not Found"
+    end
+    local card, ctl = internet.new({ default = script })
+    handles = ctl.handles
+    deps.internet = card
+    deps.open = function() error("a URL opens no file") end
+  end
+  if mode == "viewer" then
+    args = { URL }
+    deps.gpu = gpu(width)
+    deps.view = function(lines)
+      viewed = {}
+      for i, line in ipairs(lines) do
+        viewed[i] = line:gsub("[\1-\5]", "")
+      end
+      return "quit"
+    end
+  end
+  args.n = #args
+  local code = html.main(args, deps)
+  local closed = true
+  for _, h in ipairs(handles) do
+    if h.closed ~= 1 then
+      closed = false
+    end
+  end
+  return code, err, normalize(table.concat(viewed or out, "\n")), closed
+end
+
+-- C1: every case file, in every mode and chunk size ----------------------------
+-- The case files hold the text for the layout width 40, so --width 41 (the
+-- widest line is the width minus 1).
+
+local CHUNKS = { 1, 2, 3, 7, 4096, 65536 }
+local NOTICE = "html: HTTP 404 Not Found: " .. URL
+
+local case_rows = {}
+for _, name in ipairs(t.list_cases()) do
+  local doc = read_file("tests/cases/" .. name .. ".html")
+  local text = normalize(read_file("tests/cases/" .. name .. ".txt"))
+  for _, mode in ipairs({ "local", "card", "card404", "viewer" }) do
+    case_rows[#case_rows + 1] = { name .. " " .. mode,
+      { doc = doc, mode = mode },
+      { code = 0, err = mode == "card404" and { NOTICE } or {}, text = text,
+        closed = true } }
   end
 end
 
-for _, name in ipairs(PAGES) do
-  T["real_" .. name .. "_through_the_card"] = function()
-    for _, size in ipairs({ 7, 4096 }) do
-      through_card("tests/real/" .. name .. ".html", size, 80)
+t.cases(T, "cases_match_expected_text", case_rows, function(input, size)
+  local code, err, text, closed = run_doc(input.doc, input.mode, size, 41)
+  return { code = code, err = err, text = text, closed = closed }
+end, { sizes = CHUNKS })
+
+-- RP1: the saved real pages and the large page ---------------------------------
+-- A page renders, gives lines, keeps every line within the width minus 1 and
+-- gives no unexpected error.
+
+local function check_page(input)
+  local doc = read_file(input.path)
+  local started = os.clock()
+  local code, err, text, closed = run_doc(doc, input.mode, 4096, input.width)
+  local seconds = os.clock() - started
+  local too_wide, unexpected = 0, 0
+  for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+    if unicode.wlen(line) > input.width - 1 then
+      too_wide = too_wide + 1
+    end
+  end
+  for _, line in ipairs(err) do
+    if line:find("unexpected error", 1, true) then
+      unexpected = unexpected + 1
+    end
+  end
+  print(string.format("corpus %s %s width %d: %d lines, %.2f s", input.path,
+    input.mode, input.width, select(2, text:gsub("\n", "")) + 1, seconds))
+  return { code = code, has_lines = #text > 0, too_wide = too_wide,
+    unexpected = unexpected, closed = closed }
+end
+
+local OK = { code = 0, has_lines = true, too_wide = 0, unexpected = 0,
+  closed = true }
+
+local page_rows = {}
+for _, name in ipairs({ "wiki", "wikipedia", "manual" }) do
+  for _, width in ipairs({ 40, 80, 160 }) do
+    for _, mode in ipairs({ "local", "card" }) do
+      page_rows[#page_rows + 1] = { name .. " " .. mode .. " width " .. width,
+        { path = "tests/real/" .. name .. ".html", mode = mode,
+          width = width }, OK }
     end
   end
 end
+page_rows[#page_rows + 1] = { "large page through the card",
+  { path = "tests/pages/large.html", mode = "card", width = 160 }, OK }
 
-function T.large_page_through_the_card()
-  local started = os.clock()
-  through_card("tests/pages/large.html", 4096, 160)
-  print(string.format("large.html through the card: %.2f s",
-    os.clock() - started))
-end
+t.cases(T, "real_pages_render", page_rows, check_page)
 
 return T
