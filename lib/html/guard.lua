@@ -2,8 +2,10 @@ local computer = require("computer")
 
 local M = {}
 
--- OpenOS kills a program that runs for 5 s without yielding.
-local YIELD_INTERVAL = 1
+-- CPU seconds between yields. OpenOS kills a program that runs for 5 s
+-- without yielding, and a short interval lets Ctrl+C and q respond fast
+-- during load.
+local YIELD_INTERVAL = 0.25
 -- In freeMemory() units (real bytes / ramScale).
 local MEMORY_RESERVE = 192 * 1024
 -- freeMemory() units are real bytes / RAM_SCALE (measured 1.800 in probe v2).

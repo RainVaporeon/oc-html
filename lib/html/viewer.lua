@@ -11,7 +11,7 @@ local M = {}
 
 local byte, find, sub, rep, format = string.byte, string.find, string.sub,
   string.rep, string.format
-local wlen, wtrunc = unicode.wlen, unicode.wtrunc
+local wlen, wtrunc, usub = unicode.wlen, unicode.wtrunc, unicode.sub
 
 -- Style bytes, as in lib/html/layout.lua.
 local NORMAL, HEADING, EMPHASIS, LINK, PRE = 1, 2, 3, 4, 5
@@ -33,6 +33,8 @@ local PLAIN = {
   [NORMAL] = WHITE, [HEADING] = WHITE, [EMPHASIS] = WHITE, [LINK] = WHITE,
   [PRE] = WHITE,
 }
+-- The status line and the popup are black on white at every depth.
+local BAR_FG, BAR_BG = BLACK, WHITE
 
 -- Standard key codes are always navigation keys.
 local STANDARD_KEYS = {
@@ -47,6 +49,8 @@ local NUMPAD_KEYS = {
 local CHAR_CTRL_C = 3
 local CHAR_ENTER = 13
 local CODE_ENTER = 28
+local CHAR_ESC = 27
+local CODE_ESC = 1
 local CHAR_Q, CHAR_UPPER_Q = 113, 81
 local CHAR_Y, CHAR_UPPER_Y = 121, 89
 
@@ -58,6 +62,7 @@ local SHORT_HINT = "q:quit"
 -- The full hint is used only when the title keeps this many columns.
 local TITLE_MIN = 20
 local PROMPT = " Quit? (y/n)"
+local POPUP_HINT = "Enter: close"
 
 -- Returns "interrupted", "quit", a navigation name, or nil for other events.
 local function classify(name, char, code)
@@ -87,6 +92,10 @@ local function is_nav(action)
   return action ~= nil and action ~= "quit" and action ~= "interrupted"
 end
 
+local function is_enter(char, code)
+  return char == CHAR_ENTER or code == CODE_ENTER
+end
+
 -- Truncates s to at most width columns.
 local function fit(s, width)
   if width <= 0 then
@@ -99,37 +108,105 @@ local function fit(s, width)
   return wtrunc(s, width + 1)
 end
 
-local function view(lines, opts, gpu, pull)
-  local w, h = gpu.getResolution()
-  local rows = h - 1
-  local count = #lines
-  local max_top = math.max(1, count - rows + 1)
-  local page = math.max(1, rows - 1)
-  local top = 1
-
-  local color = gpu.getDepth() > 1 and COLORS or PLAIN
-  local status_fg, status_bg = WHITE, BLACK
-  if color == COLORS then
-    status_fg, status_bg = BLACK, WHITE
+-- Splits text at newlines and wraps each part to at most width columns.
+-- A line breaks at its last space that fits, else inside the word. Control
+-- bytes show as spaces.
+local function wrap(text, width)
+  local out = {}
+  for part in (text .. "\n"):gmatch("([^\n]*)\n") do
+    part = part:gsub("%c", " ")
+    while wlen(part) > width do
+      local head = fit(part, width)
+      local cut = head:match("^(.*[^ ]) ")
+      if cut then
+        head = cut
+      elseif head == "" then
+        head = usub(part, 1, 1)
+      end
+      out[#out + 1] = head
+      part = sub(part, #head + 1):gsub("^ +", "")
+    end
+    out[#out + 1] = part
   end
+  return out
+end
 
-  local title = opts.title or opts.file or ""
-  title = title:gsub("%c", " ")
+-- Drawing shared by the page view and the popup: the cached colors, the
+-- status row and the popup box. The loading screen draws with it too.
+local function new_screen(gpu, w, h)
+  local s = {}
 
   -- The colors are unknown at start, so the first set always happens.
   local cur_fg, cur_bg
-  local function set_fg(c)
+  function s.fg(c)
     if c ~= cur_fg then
       gpu.setForeground(c)
       cur_fg = c
     end
   end
-  local function set_bg(c)
+  function s.bg(c)
     if c ~= cur_bg then
       gpu.setBackground(c)
       cur_bg = c
     end
   end
+
+  -- Fills row h with text in the status colors.
+  function s.status(text)
+    s.fg(BAR_FG)
+    s.bg(BAR_BG)
+    text = fit(text, w)
+    gpu.set(1, h, text .. rep(" ", w - wlen(text)))
+  end
+
+  -- Draws text in a box centred over rows 1 to h-1, one column of padding
+  -- on each side and one row above and below. Returns the first and last
+  -- row it covers.
+  function s.popup(text)
+    local rows = h - 1
+    local inner = math.max(1, w - 4)
+    local list = wrap(text, inner)
+    local width = 0
+    for i = 1, #list do
+      width = math.max(width, wlen(list[i]))
+    end
+    while #list > math.max(1, rows - 2) do
+      list[#list] = nil
+    end
+    local bw = math.min(w, width + 2)
+    local bh = math.min(rows, #list + 2)
+    local x0 = (w - bw) // 2 + 1
+    local y0 = (rows - bh) // 2 + 1
+    s.fg(BAR_FG)
+    s.bg(BAR_BG)
+    gpu.fill(x0, y0, bw, bh, " ")
+    for i = 1, #list do
+      local y = y0 + i
+      if y < y0 + bh then
+        gpu.set(x0 + 1, y, fit(list[i], bw - 2))
+      end
+    end
+    return y0, y0 + bh - 1
+  end
+
+  return s
+end
+
+local function view(lines, opts, gpu, pull)
+  local w, h = gpu.getResolution()
+  local rows = h - 1
+  local count = #lines
+  local max_top = math.max(1, count - rows + 1)
+  -- One page is h-2 lines, the largest scroll that still uses copy.
+  local page = math.max(1, rows - 1)
+  local top = 1
+
+  local color = gpu.getDepth() > 1 and COLORS or PLAIN
+  local screen = new_screen(gpu, w, h)
+  local set_fg, set_bg = screen.fg, screen.bg
+
+  local title = opts.title or opts.file or ""
+  title = title:gsub("%c", " ")
 
   local function draw_row(y)
     local line = lines[top + y - 1] or ""
@@ -162,13 +239,6 @@ local function view(lines, opts, gpu, pull)
     end
   end
 
-  local function draw_status_text(text)
-    set_fg(status_fg)
-    set_bg(status_bg)
-    text = fit(text, w)
-    gpu.set(1, h, text .. rep(" ", w - wlen(text)))
-  end
-
   local function draw_status()
     local pct = 100
     if max_top > 1 then
@@ -179,7 +249,7 @@ local function view(lines, opts, gpu, pull)
       right = format(" %3d%%  %s ", pct, SHORT_HINT)
     end
     local left = " " .. fit(title, w - 1 - #right)
-    draw_status_text(left .. rep(" ", w - #right - wlen(left)) .. right)
+    screen.status(left .. rep(" ", w - #right - wlen(left)) .. right)
   end
 
   local function move(target, action)
@@ -221,7 +291,7 @@ local function view(lines, opts, gpu, pull)
 
   -- Returns "quit", "interrupted", or nil when the user cancels.
   local function confirm_quit()
-    draw_status_text(PROMPT)
+    screen.status(PROMPT)
     while true do
       local name, _, char, code = pull(IDLE_TIMEOUT)
       if name == "interrupted" then
@@ -231,8 +301,7 @@ local function view(lines, opts, gpu, pull)
         if char == CHAR_CTRL_C then
           return "interrupted"
         end
-        if char == CHAR_Y or char == CHAR_UPPER_Y or char == CHAR_ENTER
-            or code == CODE_ENTER then
+        if char == CHAR_Y or char == CHAR_UPPER_Y or is_enter(char, code) then
           return "quit"
         end
         draw_status()
@@ -241,8 +310,32 @@ local function view(lines, opts, gpu, pull)
     end
   end
 
+  -- Shows the popup until Enter or Esc. Other keys are ignored. Returns
+  -- "interrupted" on Ctrl+C, else nil.
+  local function show_popup(text)
+    local first, last = screen.popup(text .. "\n\n" .. POPUP_HINT)
+    while true do
+      local name, _, char, code = pull(IDLE_TIMEOUT)
+      if name == "interrupted" then
+        return "interrupted"
+      end
+      if name == "key_down" then
+        if char == CHAR_CTRL_C then
+          return "interrupted"
+        end
+        if is_enter(char, code) or char == CHAR_ESC or code == CODE_ESC then
+          draw_rows(first, last)
+          return nil
+        end
+      end
+    end
+  end
+
   draw_rows(1, rows)
   draw_status()
+  if opts.error and show_popup(opts.error) then
+    return "interrupted"
+  end
 
   local pending
   while true do
@@ -282,7 +375,9 @@ local function view(lines, opts, gpu, pull)
 end
 
 -- Shows lines until the user quits. Returns "quit" or "interrupted".
--- opts: title, file (shown when there is no title), no_rescale.
+-- opts: title, file (shown when there is no title), no_rescale, error.
+-- opts.error is a text shown in a popup over the first screen. Enter or Esc
+-- closes it, then the user browses as usual.
 -- An error inside restores the screen and is raised again.
 function M.run(lines, opts, deps)
   opts = opts or {}
