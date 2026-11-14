@@ -49,7 +49,8 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 **Steps:**
 - [x] The user answers Q1 to Q4 (2026-11-14).
 - [x] The user approves the spec section and answers Q5 and Q6 (2026-11-14).
-- [ ] Write `tools/netprobe.lua` (`docs/netprobe-plan.md` "Probe script plan") and run it in game. Record N1 to N15 in `docs/probe/FACTS.md`.
+- [x] Write `tools/netprobe.lua` (`docs/netprobe-plan.md` "Probe script plan"; tests in `tests/netprobe_test.lua`, in-game steps in `docs/ingame/netprobe.md`) (2026-11-15).
+- [ ] Run `tools/netprobe.lua` in game and copy the report to `datacollection/netprobe.txt`. Record N1 to N15 in `docs/probe/FACTS.md`.
 - [ ] Update the spec with the measured values (timeouts, chunk size, redirect and error behavior).
 - [x] Implement `fetch.lua`, the fake card and the tests (2026-11-14, committed in 010a24e, released in 0.2.0a). `spec/fetch.md` "Implementation notes" lists the choices. The measured values can still change the timeouts, the chunk size and the wait order.
 - [ ] In game: fetch the three real pages and a 1 MB page.
@@ -166,4 +167,4 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 
 ## Next recommended step
 
-Write `tools/netprobe.lua` (`docs/netprobe-plan.md` "Probe script plan") and run it in game to measure N1 to N15.
+Run `tools/netprobe.lua` in game (`docs/ingame/netprobe.md`) to measure N1 to N15.

@@ -7,6 +7,8 @@
 --   connect_error   then finishConnect() returns nil and this reason
 --   connect_raise   then finishConnect() raises this value
 --   response_polls  response() returns nil this many times first
+--   response_after_read
+--                   response() returns nil until read() was called once
 --   code, message, headers
 --                   the response() values (code 200, message "OK" and an
 --                   empty headers table by default)
@@ -71,6 +73,9 @@ function M.new(opts)
     end
 
     function h.response()
+      if script.response_after_read and h.reads == 0 then
+        return nil
+      end
       if response_polls > 0 then
         response_polls = response_polls - 1
         return nil
@@ -81,7 +86,6 @@ function M.new(opts)
 
     function h.read(n)
       h.reads = h.reads + 1
-      n = n or math.huge
       while piece <= #body do
         local s = body[piece]
         if s == "" then
@@ -89,7 +93,7 @@ function M.new(opts)
           return ""
         end
         if pos <= #s then
-          local out = s:sub(pos, pos + n - 1)
+          local out = s:sub(pos, pos + (n or #s) - 1)
           pos = pos + #out
           if pos > #s then
             piece, pos = piece + 1, 1

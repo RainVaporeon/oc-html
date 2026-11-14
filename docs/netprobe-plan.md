@@ -28,11 +28,11 @@ The test URLs need a stable server. Use the repository raw files for large pages
 
 ## Probe script plan
 
-The `tools/probe2.lua` pattern fits. A new `tools/netprobe.lua` (not part of a release, not written yet):
+The `tools/probe2.lua` pattern fits. `tools/netprobe.lua` exists (written 2026-11-15; not part of a release). The in-game steps are in `docs/ingame/netprobe.md`. Tests: `tests/netprobe_test.lua`. The plan below is what it follows, with these choices:
 
-- Usage: `netprobe [--out <path>] [--base <url>] [--echo <url>] [--skip-large]`.
+- Usage: `netprobe [--out <path>] [--base <url>] [--echo <url>] [--skip-large] [--leak] [<url> ...]`. The default output is `/home/netprobe.txt`. The URLs replace the default small pages (`http://example.com/`, `https://example.com/`, `<base>/AGENTS.md`). `--leak` is the cross-exit part of N13.
 - Same output format as probe2: one `net.<group>.<name>=<value>` fact per line, one output file, long values split into numbered parts.
 - It yields at least every 0.25 s and closes every handle it opens, also on an error and on Ctrl+C.
-- Sections in order: `api` (N1), `connect` (N2, N3), `read` (N4, N5, N6), `large` (N7, skipped with `--skip-large`), `redirect` (N9), `status` (N10), `fail` (N11, N12), `limit` (N13, last, because it may leave slots open), `headers` (N14, N15). N8 is a manual step in a `docs/ingame/` checklist.
+- Sections in order: `api` (N1), `connect` (N2, N3), `read` (N4, N5, N6), `large` (N7, skipped with `--skip-large`), `redirect` (N9), `status` (N10), `fail` (N11, N12), `headers` (N14, N15), `limit` (N13, last, because it may leave slots open). N8 is a manual step in `docs/ingame/netprobe.md`; the report only records `net.probe.interrupted_at`.
 - Each failure inside a section is recorded as a fact (`net.<group>.<name>.error=<reason>`). The probe goes on with the next section.
 - Tests: `tests/netprobe_test.lua` runs it against the fake card from `tests/shim/internet.lua`, like the memprobe tests.

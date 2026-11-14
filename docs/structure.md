@@ -24,6 +24,7 @@ tools/genpage.lua       deterministic generator of tests/pages/large.html (runs 
 tools/memprobe.lua      in-game memory experiments (Task 3c). Not part of a release
 tools/probe.lua         in-game machine probe (Task 0). Not part of a release
 tools/probe2.lua        in-game probe v2 for the open assumptions (0.0.4a). Not part of a release
+tools/netprobe.lua      in-game internet card probe for N1 to N15 (remote fetching). Not part of a release
 tasks/todo.md           roadmap after the MVP
 tasks/archive/          finished plans (the MVP plan and task list)
 docs/HANDOFF.md         handoff note for a new agent session

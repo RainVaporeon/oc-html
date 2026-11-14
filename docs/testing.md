@@ -8,6 +8,7 @@ Moved from `SPEC.md` "Testing Strategy" and from `SPEC.md` "Remote fetching", se
 - Unit tests: tokenizer (each parsing rule), entities, layout (each row of the element table, wrapping, whitespace).
 - Module cache tests use a fake `package.loaded` table: `M.clear_modules`, the chunk load with a fake global `package`, and `M.run_program` on a normal exit and on an error.
 - memprobe tests: `tools/memprobe.lua` with fake machine links (step 1 and 2, reboot, failed allocation, errors, Ctrl+C, write failure).
+- netprobe tests: `tools/netprobe.lua` with the fake card (report format, one failing step, Ctrl+C, write failure, arguments, the N facts per fake script).
 - Installer tests: the template with a fake filesystem (install, upgrade, dry run, short space, read-only, write, read-back and rename failures), the long-bracket encoder, and every `releases/*/html-install.lua` against its release files (skipped while no release has one).
 - Corpus tests: each file in `tests/cases/` has an expected text output. Each file in `tests/real/` must render without an error and with more than zero lines.
 - Large page: `tests/pages/large.html` renders at width 160 with no uncontrolled error. The test prints its size, line count and CPU time. To make the page again: `docker run ... oc-html-test lua5.3 tools/genpage.lua > tests/pages/large.html` (same flags as `test.ps1`). The fixed seed gives the same bytes.
