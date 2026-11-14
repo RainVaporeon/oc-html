@@ -61,6 +61,37 @@ pwsh tests/docker/test.ps1 fuzz 1000           run 1000 fuzz documents through t
 
 Inside the container, the script runs `lua5.3 tests/run.lua` and `lua5.3 tests/fuzz.lua <n>`.
 
+## Releases
+
+A release is a fixed copy of the in-game files.
+
+- Path: `releases/<version>[suffix]/<output>`.
+- Version: `major.minor.patch`. Suffix `a` is alpha, `b` is beta, no suffix is a real release.
+- Plan: the tracer bullet is `0.0.1a`. Test builds before the MVP are `0.0.x` with `a`. The MVP is `0.1.0a`.
+- `releases/latest` is a symlink to the newest release folder.
+
+Release command (from the project root, Docker Desktop running):
+```
+pwsh tools/release.ps1 0.0.1a
+```
+
+The script stops when:
+- the version does not match `major.minor.patch` with an optional `a` or `b`,
+- `releases/<version>` already exists (a release is never overwritten),
+- `bin/` or `lib/` has uncommitted changes (a release always matches a commit),
+- `pwsh tests/docker/test.ps1` fails.
+
+Then it copies the files, writes `files.txt` and updates `releases/latest`. If a real symlink cannot be created, it records the link in the git index only.
+
+Layout (mirrors the in-game paths under `/home`):
+```
+releases/<version>/bin/html.lua         goes to /home/bin/html.lua
+releases/<version>/lib/html/*.lua       goes to /home/lib/html/
+releases/<version>/files.txt            one relative path per line, sorted, LF endings
+```
+
+`files.txt` lists the files of the release, not itself. A later installer reads it.
+
 ## Project Structure
 
 ```
@@ -82,6 +113,8 @@ tests/docker/test.ps1   runs the tests in the container with the sandbox flags
 docs/intent/mvp.md      confirmed statement of intent
 docs/probe/             in-game probe outputs and FACTS.md (measured machine facts)
 docs/ingame/            in-game test steps, one file per task
+tools/release.ps1        publishes a release and updates releases/latest
+releases/               published release folders and the latest symlink
 types/openos.lua        LuaLS type stubs for OpenOS
 .luarc.json             LuaLS settings (Lua 5.3, loads types/)
 SPEC.md                 this file
@@ -273,6 +306,7 @@ Lua environment (`tests/run.lua` and `tests/fuzz.lua`):
   - Show a raw traceback on the screen.
   - Run test code on the host outside the container.
   - Remove a sandbox flag or widen the Lua environment without asking.
+  - Change or delete a published release folder.
 
 ## Success Criteria
 

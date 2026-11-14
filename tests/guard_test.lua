@@ -41,8 +41,9 @@ function T.low_memory_raises_controlled_string()
   local ok, err = pcall(guard.tick, 42)
   t.eq(ok, false)
   t.eq(type(err), "string")
-  t.eq(err:sub(1, 6), "html: ")
-  t.ok(err:find("42 lines", 1, true), err)
+  local msg = tostring(err)
+  t.eq(msg:sub(1, 6), "html: ")
+  t.ok(msg:find("42 lines", 1, true), msg)
   t.ok(computer.test.sleeps() >= 1, "settled before the error")
 end
 
@@ -51,7 +52,7 @@ function T.low_memory_error_without_progress()
   computer.test.set_free(100 * 1024)
   local ok, err = pcall(guard.tick)
   t.eq(ok, false)
-  t.eq(err:sub(1, 6), "html: ")
+  t.eq(tostring(err):sub(1, 6), "html: ")
 end
 
 function T.jitter_drop_does_not_raise()

@@ -7,8 +7,9 @@ numbers in `docs/probe/FACTS.md`.
 
 Fetch each file from the remote source to the path in the right column.
 `<BASE>` is the raw URL of the repository source.
+`releases/latest/` points to the newest build, if the host follows symlinks.
 
-| Repository file | Path in game |
+| Source file (`bin/` and `lib/` are under `releases/0.0.1a/`) | Path in game |
 |---|---|
 | `bin/html.lua` | `/home/bin/html.lua` |
 | `lib/html/guard.lua` | `/home/lib/html/guard.lua` |
@@ -24,12 +25,12 @@ Example commands:
 ```
 mkdir /home/bin
 mkdir /home/lib/html
-wget -f <BASE>/bin/html.lua /home/bin/html.lua
-wget -f <BASE>/lib/html/guard.lua /home/lib/html/guard.lua
-wget -f <BASE>/lib/html/text.lua /home/lib/html/text.lua
-wget -f <BASE>/lib/html/entities.lua /home/lib/html/entities.lua
-wget -f <BASE>/lib/html/tokenizer.lua /home/lib/html/tokenizer.lua
-wget -f <BASE>/lib/html/layout.lua /home/lib/html/layout.lua
+wget -f <BASE>/releases/0.0.1a/bin/html.lua /home/bin/html.lua
+wget -f <BASE>/releases/0.0.1a/lib/html/guard.lua /home/lib/html/guard.lua
+wget -f <BASE>/releases/0.0.1a/lib/html/text.lua /home/lib/html/text.lua
+wget -f <BASE>/releases/0.0.1a/lib/html/entities.lua /home/lib/html/entities.lua
+wget -f <BASE>/releases/0.0.1a/lib/html/tokenizer.lua /home/lib/html/tokenizer.lua
+wget -f <BASE>/releases/0.0.1a/lib/html/layout.lua /home/lib/html/layout.lua
 wget -f <BASE>/tests/cases/basic.html /home/basic.html
 wget -f <BASE>/tests/cases/basic.txt /home/basic.txt
 ```
