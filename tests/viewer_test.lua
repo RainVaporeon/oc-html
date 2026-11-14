@@ -29,7 +29,7 @@ local CTRL_C = key(46, 3)
 local INTERRUPTED = { "interrupted" }
 local TOUCH = { "touch", "screen", 1, 1, 0, "player" }
 
-local HINT = "Up Dn PgUp PgDn Home End q:quit"
+local HINT = "Tab:link Enter:open Bksp:back r:reload q:quit"
 local SHORT_HINT = "q:quit"
 local ERROR_TEXT = "html: read error: closed"
 
@@ -100,6 +100,7 @@ local function run(o)
   end
   local result = viewer.run(o.lines, o.opts or {}, {
     gpu = gpu, pull = (queue(list, ctl)), term = term,
+    shift_down = o.shift_down,
   })
   return result, ctl, term, gpu
 end
@@ -317,13 +318,13 @@ local STATUS = {
   status_row("a page of exactly one screen shows 100 percent",
     { opts = { title = "T" }, n = 24 }, "T", 100, HINT),
   status_row("a long title is cut to fit", { opts = { title = LONG_TITLE } },
-    string.rep("abcdefghij", 4), 0, HINT),
+    string.rep("abcdefghij", 2) .. "abcdef", 0, HINT),
   status_row("20 title columns keep the full hint",
-    { opts = { title = "Title" }, size = size(60, 16) }, "Title", 0, HINT,
-    60),
+    { opts = { title = "Title" }, size = size(74, 16) }, "Title", 0, HINT,
+    74),
   status_row("19 title columns use the short hint",
-    { opts = { title = "Title" }, size = size(59, 16) }, "Title", 0,
-    SHORT_HINT, 59),
+    { opts = { title = "Title" }, size = size(73, 16) }, "Title", 0,
+    SHORT_HINT, 73),
   status_row("a narrow screen uses the short hint",
     { opts = { title = "Title" }, size = size(50, 16) }, "Title", 0,
     SHORT_HINT, 50),
@@ -1001,6 +1002,15 @@ t.cases(T, "session_poll", {
   { "Ctrl+C while the prompt shows", { Q, CTRL_C },
     { "interrupted", PROMPT_TEXT } },
   { "q while the prompt shows cancels it", { Q, Q }, { nil, "load" } },
+  { "z aborts", { key(44, 122) }, { "abort", "load" } },
+  { "Z aborts", { key(44, 90) }, { "abort", "load" } },
+  { "z after other keys and events aborts",
+    { key(DOWN), TOUCH, key(44, 122) }, { "abort", "load" } },
+  { "z while the prompt shows only cancels it", { Q, key(44, 122) },
+    { nil, "load" } },
+  { "z does not abort when Ctrl+C comes first", { CTRL_C, key(44, 122) },
+    { "interrupted", "load" } },
+  { "key_up of z does not abort", { key_up(44, 122) }, { nil, "load" } },
 }, function(events)
   local s, ctl = open_session(events, { status = "load" })
   local result = s.poll()
@@ -1109,6 +1119,741 @@ function T.session_show_error_keeps_the_screen_for_close()
   t.eq(term.cleared, 0, "show does not restore")
   s.close()
   t.eq(term.cleared, 1)
+end
+
+-- Links, selection and the visible cursor (spec/viewer.md "Link keys",
+-- "Visible cursor", "Status line") ------------------------------------------
+
+local TAB = key(15, 9)
+local KEY_G = key(34, 103)
+local HELP = key(53, 63)
+local BS = key(14, 8)
+local SELECT_BG = 0x6699FF
+local LSHIFT_DOWN, RSHIFT_DOWN = key(42, 0), key(54, 0)
+local NOOP2 = function() end
+
+-- A packed link span (spec/layout.md "Links and anchors").
+local function span(fl, fc, tl, tc)
+  return fl << 32 | fc << 24 | (tl - fl) << 8 | tc
+end
+
+-- Five links on "line N" rows: the cells 1 to 4 ("line") of lines 3, 10,
+-- 30, 60 and 95.
+local function fixture()
+  return {
+    span = { span(3, 1, 3, 4), span(10, 1, 10, 4), span(30, 1, 30, 4),
+      span(60, 1, 60, 4), span(95, 1, 95, 4) },
+    href = { "a3.html", "a10.html", "a30.html", "a60.html", "a95.html" },
+    count = 5,
+  }
+end
+
+local function resolve(href)
+  if href:find("^mailto:") then
+    return nil, "mailto: links are not supported"
+  end
+  return "R:" .. href
+end
+
+-- The highlighted cells of rows 1 to h-1 as "row:first-last" strings.
+local function highlights(ctl, w, h, bg)
+  local out = {}
+  for y = 1, h - 1 do
+    local first, last
+    for x = 1, w do
+      local _, _, b = ctl.cell(x, y)
+      if b == bg then
+        first = first or x
+        last = x
+      elseif first then
+        out[#out + 1] = y .. ":" .. first .. "-" .. last
+        first = nil
+      end
+    end
+    if first then
+      out[#out + 1] = y .. ":" .. first .. "-" .. last
+    end
+  end
+  return out
+end
+
+-- Runs events on 100 lines with the fixture. The result has the viewer
+-- result, and the top line, the highlighted cells and the status title at
+-- the end of the events. o: events, opts (added to the defaults), links,
+-- shift_down, depth, lines.
+local function link_run(o)
+  local out = {}
+  local events = {}
+  for _, e in ipairs(o.events) do
+    events[#events + 1] = e
+  end
+  events[#events + 1] = function(ctl)
+    local bg = (o.depth == 1) and WHITE or SELECT_BG
+    out.top = line_at(ctl, 1)
+    out.hl = highlights(ctl, 80, 25, bg)
+    out.title = parse_status(ctl.row(25)).title
+  end
+  events[#events + 1] = Q
+  events[#events + 1] = Y
+  local opts = { title = "T", links = o.links or fixture(),
+    resolve = resolve }
+  for k, v in pairs(o.opts or {}) do
+    opts[k] = v
+  end
+  out.result = run({ lines = o.lines or make_lines(100), opts = opts,
+    events = events, shift_down = o.shift_down,
+    gpu = size(80, 25, o.depth) })
+  return out
+end
+
+local function shift_yes() return true end
+local function shift_no() return false end
+
+local function sel_row(top, hl, title)
+  return { result = "quit", top = top, hl = hl, title = title }
+end
+
+-- Selection and scroll rules.
+t.cases(T, "links_select", {
+  { "no selection at the start", { events = {} }, sel_row(1, {}, "T") },
+  { "Tab picks the first link at or after top",
+    { events = { TAB } }, sel_row(1, { "3:1-4" }, "-> R:a3.html") },
+  { "Tab twice picks the second link",
+    { events = { TAB, TAB } }, sel_row(1, { "10:1-4" }, "-> R:a10.html") },
+  { "Tab to a link below the screen scrolls the least amount",
+    { events = { TAB, TAB, TAB } },
+    sel_row(7, { "24:1-4" }, "-> R:a30.html") },
+  { "Tab at the last link does nothing",
+    { events = { TAB, TAB, TAB, TAB, TAB, TAB } },
+    sel_row(72, { "24:1-4" }, "-> R:a95.html") },
+  { "Tab events with draws in between give the same result",
+    { events = { TAB, NOOP2, TAB, NOOP2, TAB } },
+    sel_row(7, { "24:1-4" }, "-> R:a30.html") },
+  { "Tab with the selection off screen picks the first link at or after top",
+    { events = { TAB, NOOP2, key(END), NOOP2, TAB } },
+    sel_row(77, { "19:1-4" }, "-> R:a95.html") },
+  { "Tab with no link below does nothing",
+    { events = { key(END), NOOP2, TAB, TAB, TAB } },
+    sel_row(77, { "19:1-4" }, "-> R:a95.html") },
+  { "Tab with no links does nothing",
+    { events = { TAB }, links = { span = {}, href = {}, count = 0 } },
+    sel_row(1, {}, "T") },
+  { "Shift+Tab with no selection picks the last visible link",
+    { events = { TAB }, shift_down = shift_yes },
+    sel_row(1, { "10:1-4" }, "-> R:a10.html") },
+  { "the dep false: Tab stays Tab",
+    { events = { LSHIFT_DOWN, TAB }, shift_down = shift_no },
+    sel_row(1, { "3:1-4" }, "-> R:a3.html") },
+  { "Shift+Tab with a selection picks the previous link",
+    { events = { TAB, TAB, NOOP2, LSHIFT_DOWN, TAB } },
+    sel_row(1, { "3:1-4" }, "-> R:a3.html") },
+  { "Shift+Tab scrolls the least amount up",
+    { events = { LSHIFT_DOWN, key(END), NOOP2, TAB, TAB } },
+    sel_row(60, { "1:1-4" }, "-> R:a60.html") },
+  { "Shift+Tab at the first link does nothing",
+    { events = { TAB, LSHIFT_DOWN, TAB, TAB } },
+    sel_row(1, { "3:1-4" }, "-> R:a3.html") },
+  { "Shift+Tab with no link at or before the bottom does nothing",
+    { events = { LSHIFT_DOWN, TAB }, links = { span = { span(40, 1, 40, 4) },
+      href = { "x" }, count = 1 } },
+    sel_row(1, {}, "T") },
+  { "Shift by the left Shift key tracking",
+    { events = { LSHIFT_DOWN, TAB, key_up(42, 0), TAB } },
+    sel_row(7, { "24:1-4" }, "-> R:a30.html") },
+  { "Shift by the right Shift key tracking",
+    { events = { RSHIFT_DOWN, TAB, key_up(54, 0), TAB } },
+    sel_row(7, { "24:1-4" }, "-> R:a30.html") },
+  { "Shift tracking: key_up of one Shift keeps the other",
+    { events = { LSHIFT_DOWN, RSHIFT_DOWN, key_up(42, 0), TAB } },
+    sel_row(1, { "10:1-4" }, "-> R:a10.html") },
+  { "the dep wins over the key tracking",
+    { events = { RSHIFT_DOWN, TAB }, shift_down = shift_no },
+    sel_row(1, { "3:1-4" }, "-> R:a3.html") },
+  { "scrolling keeps the selection and moves its highlight",
+    { events = { TAB, key(DOWN) } },
+    sel_row(2, { "2:1-4" }, "-> R:a3.html") },
+  { "a selection off screen shows no highlight and the title",
+    { events = { TAB, key(PGDN) } }, sel_row(24, {}, "T") },
+  { "the highlight is back when the link scrolls back",
+    { events = { TAB, NOOP2, key(PGDN), NOOP2, key(PGUP) } },
+    sel_row(1, { "3:1-4" }, "-> R:a3.html") },
+  { "Tab and scroll keys in one burst add up",
+    { events = { TAB, TAB, TAB, key(DOWN), key(DOWN) } },
+    sel_row(9, { "22:1-4" }, "-> R:a30.html") },
+  { "depth 4 shows the same highlight",
+    { events = { TAB }, depth = 4 },
+    sel_row(1, { "3:1-4" }, "-> R:a3.html") },
+  { "depth 1 shows the highlight on white",
+    { events = { TAB }, depth = 1 },
+    sel_row(1, { "3:1-4" }, "-> R:a3.html") },
+}, function(input)
+  local out = link_run(input)
+  return { result = out.result, top = out.top, hl = out.hl,
+    title = out.title }
+end)
+
+-- Three queued Tab events give one redraw.
+function T.links_tab_burst_gives_one_redraw()
+  local _, ctl = run({ lines = make_lines(100), opts = { links = fixture() },
+    events = { TAB, TAB, TAB, Q, Y } })
+  t.eq(ctl.find("copy"), { { "copy", 1, 7, 80, 18, 0, -6 } })
+end
+
+-- The highlight colors. The result is the foreground and background of the
+-- cell before the link, its first cell, its last cell and the cell after.
+local STYLED = { "\1ab \4link text\1 end", "second line" }
+local STYLED_LINKS = { span = { span(1, 4, 1, 12) }, href = { "x.html" },
+  count = 1 }
+local LIGHT_ON_BLACK = { 0xFFFFFF, 0 }
+
+t.cases(T, "links_highlight_colors", {
+  { "depth 8", 8, { LIGHT_ON_BLACK, { 0, SELECT_BG }, { 0, SELECT_BG },
+    LIGHT_ON_BLACK } },
+  { "depth 4", 4, { LIGHT_ON_BLACK, { 0, SELECT_BG }, { 0, SELECT_BG },
+    LIGHT_ON_BLACK } },
+  { "depth 1", 1, { LIGHT_ON_BLACK, { 0, WHITE }, { 0, WHITE },
+    LIGHT_ON_BLACK } },
+}, function(depth)
+  local out
+  run({ lines = STYLED, opts = { links = STYLED_LINKS },
+    gpu = size(80, 25, depth), events = { TAB, function(ctl)
+      out = {}
+      for _, x in ipairs({ 3, 4, 12, 13 }) do
+        local _, fg, bg = ctl.cell(x, 1)
+        out[#out + 1] = { fg, bg }
+      end
+    end, Q, Y } })
+  return out
+end)
+
+function T.links_highlight_keeps_the_text()
+  local text
+  run({ lines = STYLED, opts = { links = STYLED_LINKS },
+    events = { TAB, function(ctl) text = ctl.row(1) end, Q, Y } })
+  t.eq(text, "ab link text end" .. string.rep(" ", 64))
+end
+
+-- A link over several lines, and wide characters. The result is the
+-- highlighted cells. A continuation line starts at its first non-blank cell.
+local SHAPE_LINES = { "x \4two\1", "\4words\1 more",
+  "\4\xE4\xB8\xAD\xE6\x96\x87\1 x", "  \4cont", "  \4more\1 tail" }
+
+t.cases(T, "links_highlight_shapes", {
+  { "a link over two lines", { span(1, 3, 2, 5) }, { "1:3-5", "2:1-5" } },
+  { "a link over three lines skips the leading spaces",
+    { span(3, 1, 5, 6) }, { "3:1-6", "4:3-6", "5:3-6" } },
+  { "a wide character is kept whole", { span(3, 1, 3, 4) }, { "3:1-4" } },
+  { "the end inside a wide character keeps it whole",
+    { span(3, 1, 3, 3) }, { "3:1-4" } },
+  { "the start inside a wide character keeps it whole",
+    { span(3, 2, 3, 4) }, { "3:1-4" } },
+  { "a link on one line", { span(1, 3, 1, 5) }, { "1:3-5" } },
+}, function(sp)
+  local out
+  run({ lines = SHAPE_LINES, opts = { links = { span = { sp[1] },
+    href = { "x" }, count = 1 } }, events = { TAB, function(ctl)
+      out = highlights(ctl, 80, 25, SELECT_BG)
+    end, Q, Y } })
+  return out
+end)
+
+-- The cut helper: the text of the cell columns a to b and the column of its
+-- first cell.
+t.cases(T, "links_cut", {
+  { "plain text", { "abcdef", 2, 4 }, { "bcd", 2 } },
+  { "style bytes do not count", { "\1ab\2cd\4ef", 2, 5 }, { "bcde", 2 } },
+  { "a wide character inside", { "\xE4\xB8\xAD\xE6\x96\x87x", 1, 4 },
+    { "\xE4\xB8\xAD\xE6\x96\x87", 1 } },
+  { "a wide character cut at its second cell",
+    { "a\xE4\xB8\xAD" .. "b", 3, 3 }, { "\xE4\xB8\xAD", 2 } },
+  { "a wide character cut at its first cell",
+    { "a\xE4\xB8\xAD" .. "b", 1, 2 }, { "a\xE4\xB8\xAD", 1 } },
+  { "past the end", { "abc", 5, 9 }, { "" } },
+  { "to the end", { "abc", 2, math.maxinteger }, { "bc", 2 } },
+  { "an empty line", { "", 1, 5 }, { "" } },
+}, function(input)
+  local text, col = viewer._cut(input[1], input[2], input[3])
+  return { text, col }
+end)
+
+-- The old and the new selection rows are drawn again, and the status row.
+function T.links_redraw_old_and_new_rows()
+  local drawn
+  run({ lines = make_lines(100), opts = { links = fixture() }, events = {
+    TAB, function(ctl) ctl.clear_log() end, TAB, function(ctl)
+      local seen = {}
+      for _, name in ipairs({ "set", "fill" }) do
+        for _, c in ipairs(ctl.find(name)) do
+          seen[c[3]] = true
+        end
+      end
+      drawn = {}
+      for y = 1, 25 do
+        if seen[y] then
+          drawn[#drawn + 1] = y
+        end
+      end
+    end, Q, Y } })
+  t.eq(drawn, { 3, 10, 25 })
+end
+
+-- Spans that start past the last line are ignored. The page has 10 lines.
+local PAST_LINKS = { span = { span(5, 1, 5, 4), span(11, 1, 11, 4),
+  span(40, 1, 40, 4) }, href = { "a5.html", "a11.html", "a40.html" },
+  count = 3 }
+local ONLY_PAST = { span = { span(11, 1, 11, 4) }, href = { "x" }, count = 1 }
+
+t.cases(T, "links_past_the_end", {
+  { "Tab skips them", { events = { TAB, TAB, TAB, ENTER } },
+    { kind = "link", href = "a5.html", text = "R:a5.html", top = 1,
+      sel = 1 } },
+  { "Shift+Tab skips them",
+    { events = { TAB, ENTER }, shift_down = shift_yes },
+    { kind = "link", href = "a5.html", text = "R:a5.html", top = 1,
+      sel = 1 } },
+  { "a page with only such spans has no selection",
+    { events = { TAB, ENTER, Q, Y }, links = ONLY_PAST }, "quit" },
+  { "a restored sel on such a span moves to the last valid link",
+    { events = { key(203, 0) }, opts = { sel = 3 } },
+    { kind = "back", top = 1, sel = 1 } },
+}, function(input)
+  return (run({ lines = make_lines(10), opts = { title = "T",
+    links = input.links or PAST_LINKS, resolve = resolve,
+    sel = (input.opts or {}).sel }, events = input.events,
+    shift_down = input.shift_down }))
+end)
+
+-- opts.top and opts.sel restore the position, clamped.
+t.cases(T, "links_restore", {
+  { "top", { top = 5 }, { top = 5, hl = {}, title = "T" } },
+  { "top clamped to the last top line", { top = 500 },
+    { top = 77, hl = {}, title = "T" } },
+  { "top below 1 clamped to 1", { top = 0 },
+    { top = 1, hl = {}, title = "T" } },
+  { "sel with its link on screen", { top = 7, sel = 3 },
+    { top = 7, hl = { "24:1-4" }, title = "-> R:a30.html" } },
+  { "sel off screen shows no highlight", { sel = 3 },
+    { top = 1, hl = {}, title = "T" } },
+  { "sel past the count is clamped to the last link",
+    { top = 77, sel = 99 },
+    { top = 77, hl = { "19:1-4" }, title = "-> R:a95.html" } },
+  { "sel 0 is clamped to the first link", { sel = 0 },
+    { top = 1, hl = { "3:1-4" }, title = "-> R:a3.html" } },
+  { "the restored position is in the action",
+    { top = 7, sel = 3, action = key(203, 0) },
+    { kind = "back", top = 7, sel = 3 } },
+  { "a clamped position is in the action",
+    { top = 500, sel = 99, action = key(203, 0) },
+    { kind = "back", top = 77, sel = 5 } },
+  { "sel with no links is dropped",
+    { sel = 2, nolinks = true, action = key(203, 0) },
+    { kind = "back", top = 1 } },
+}, function(input)
+  local links
+  if input.nolinks then
+    links = { span = {}, href = {}, count = 0 }
+  end
+  if input.action then
+    return (link_run({ events = { input.action }, links = links,
+      opts = { top = input.top, sel = input.sel } }).result)
+  end
+  local out = link_run({ events = {}, opts = { top = input.top,
+    sel = input.sel } })
+  return { top = out.top, hl = out.hl, title = out.title }
+end)
+
+-- The status row text: the title part, or the whole text of a notice.
+local function status_text(ctl)
+  local s = ctl.row(25)
+  return parse_status(s).title or (s:match("^ (.-)%s*$"))
+end
+
+-- Status line texts (spec/viewer.md "Status line").
+t.cases(T, "links_status", {
+  { "the target of the selected link", { events = { TAB } },
+    "-> R:a3.html" },
+  { "the HTTP prefix stays", { events = { TAB },
+    opts = { title = "[HTTP 404] Not Found" } }, "[HTTP 404] -> R:a3.html" },
+  { "the HTTP prefix without a phrase stays", { events = { TAB },
+    opts = { title = "[HTTP 500]" } }, "[HTTP 500] -> R:a3.html" },
+  { "a title that only looks like a prefix is replaced",
+    { events = { TAB }, opts = { title = "[x] page" } }, "-> R:a3.html" },
+  { "the HTTP prefix stays only with a selection",
+    { events = {}, opts = { title = "[HTTP 404] Not Found" } },
+    "[HTTP 404] Not Found" },
+  { "no resolve: the raw href", { events = { TAB },
+    opts = { resolve = false } }, "-> a3.html" },
+  { "the title returns when the link scrolls away",
+    { events = { TAB, NOOP2, key(PGDN) } }, "T" },
+  { "an href that is false", { events = { TAB },
+    links = { span = { span(3, 1, 3, 4) }, href = { false }, count = 1 } },
+    "-> (link too long)" },
+}, function(input)
+  return (link_run(input).title)
+end)
+
+-- A long target is cut inside the width, with the short hint on 50 columns.
+function T.links_status_stays_inside_the_width()
+  local href = "http://example.com/" .. string.rep("long/", 40)
+  local _, ctl = run({ lines = make_lines(100), opts = { title = "T",
+    links = { span = { span(3, 1, 3, 4) }, href = { href }, count = 1 },
+    resolve = resolve }, gpu = size(50, 16), events = { TAB, function(c)
+      local s = c.row(16)
+      t.eq(unicode.wlen(s), 50)
+      t.ok(s:find("^ %-> R:http://example%.com/"), s)
+      t.ok(s:find("q:quit $"), s)
+    end, Q, Y } })
+  t.ok(not ctl.overflow)
+end
+
+-- Enter (spec/viewer.md "Link keys"). The result is the viewer result.
+t.cases(T, "links_enter", {
+  { "Enter follows the visible selected link", { events = { TAB, ENTER } },
+    { kind = "link", href = "a3.html", text = "R:a3.html", top = 1,
+      sel = 1 } },
+  { "the action has the top and the selection",
+    { events = { TAB, TAB, TAB, ENTER } },
+    { kind = "link", href = "a30.html", text = "R:a30.html", top = 7,
+      sel = 3 } },
+  { "Enter with the key code only", { events = { TAB, key(28, 0) } },
+    { kind = "link", href = "a3.html", text = "R:a3.html", top = 1,
+      sel = 1 } },
+  { "Enter with no selection does nothing", { events = { ENTER, Q, Y } },
+    "quit" },
+  { "Enter with the selection off screen does nothing",
+    { events = { TAB, key(PGDN), ENTER, Q, Y } }, "quit" },
+  { "Enter works again when the link scrolls back",
+    { events = { TAB, key(PGDN), NOOP2, key(PGUP), NOOP2, ENTER } },
+    { kind = "link", href = "a3.html", text = "R:a3.html", top = 1,
+      sel = 1 } },
+  { "Enter without a resolve gives the raw href",
+    { events = { TAB, ENTER }, opts = { resolve = false } },
+    { kind = "link", href = "a3.html", top = 1, sel = 1 } },
+  { "Enter after a burst of Tab events", { events = { TAB, TAB, ENTER } },
+    { kind = "link", href = "a10.html", text = "R:a10.html", top = 1,
+      sel = 2 } },
+}, function(input)
+  return (link_run(input).result)
+end)
+
+-- Enter on a link that cannot be followed. The result is the status title
+-- after Enter and after the next key (Down).
+t.cases(T, "links_enter_notice", {
+  { "an href that is false", false,
+    { "link too long", "-> (link too long)" } },
+  { "an unsupported scheme", "mailto:a@b.c",
+    { "mailto: links are not supported", "-> mailto:a@b.c" } },
+}, function(href)
+  local out = {}
+  local result = run({ lines = make_lines(100), opts = { title = "T",
+    links = { span = { span(3, 1, 3, 4) }, href = { href }, count = 1 },
+    resolve = resolve }, events = { TAB, ENTER, function(ctl)
+      out[1] = status_text(ctl)
+    end, key(DOWN), function(ctl)
+      out[2] = parse_status(ctl.row(25)).title
+    end, Q, Y } })
+  t.eq(result, "quit")
+  return out
+end)
+
+-- The notice stays until a key_down. A key_up and a touch do not clear it.
+function T.links_notice_stays_until_the_next_key()
+  local seen = {}
+  local function probe()
+    return function(ctl)
+      seen[#seen + 1] = status_text(ctl)
+    end
+  end
+  run({ lines = make_lines(100), opts = { title = "T",
+    links = { span = { span(3, 1, 3, 4) }, href = { "mailto:x" },
+      count = 1 }, resolve = resolve },
+    events = { TAB, ENTER, key_up(28, 13), probe(), TOUCH, probe(),
+      key(30, 97), probe(), Q, Y } })
+  t.eq(seen, { "mailto: links are not supported",
+    "mailto: links are not supported", "-> mailto:x" })
+end
+
+-- A held Enter does not follow a link after a popup closed on Enter, until
+-- the key_up of code 28.
+local LINK_A3 = { kind = "link", href = "a3.html", text = "R:a3.html", top = 1,
+  sel = 1 }
+
+t.cases(T, "links_held_enter", {
+  { "after the error popup",
+    { events = { ENTER, TAB, ENTER, Q, Y }, opts = { error = ERROR_TEXT } },
+    "quit" },
+  { "after the error popup, with the key_up",
+    { events = { ENTER, TAB, ENTER, key_up(28, 13), ENTER },
+      opts = { error = ERROR_TEXT } }, LINK_A3 },
+  { "after the help popup", { events = { TAB, HELP, ENTER, ENTER, Q, Y } },
+    "quit" },
+  { "after the help popup, with the key_up",
+    { events = { TAB, HELP, ENTER, key_up(28, 13), ENTER } }, LINK_A3 },
+  { "an unrelated key_up does not clear it",
+    { events = { TAB, HELP, ENTER, key_up(30, 97), ENTER, Q, Y } }, "quit" },
+  { "after the go prompt closes on Enter in the same show",
+    { events = { TAB, KEY_G, ENTER, TAB, ENTER, Q, Y } }, "quit" },
+  { "no popup: Enter acts at once", { events = { TAB, ENTER } }, LINK_A3 },
+}, function(input)
+  return (link_run(input).result)
+end)
+
+-- The held Enter rule holds across the shows of one session: the go prompt
+-- closes on Enter in the first show.
+t.cases(T, "links_held_enter_after_the_prompt", {
+  { "no key_up", { TAB, ENTER, Q, Y }, "quit" },
+  { "with the key_up", { key_up(28, 13), TAB, ENTER }, LINK_A3 },
+}, function(events)
+  local list = { KEY_G, key(30, 120), ENTER }
+  for _, e in ipairs(events) do
+    list[#list + 1] = e
+  end
+  local s = open_session(list, { no_rescale = true }, size(80, 25))
+  t.eq(s.show(make_lines(100), { links = fixture(), resolve = resolve }),
+    { kind = "go", text = "x", top = 1 })
+  return s.show(make_lines(100), { links = fixture(), resolve = resolve })
+end)
+
+-- Back, Forward, reload and the other keys.
+t.cases(T, "navigation_keys", {
+  { "Left", { key(203, 0) }, { kind = "back", top = 1 } },
+  { "Left with a char", { key(203, 52) }, { kind = "back", top = 1 } },
+  { "NumPad 4 (code 75) with char 0", { key(75, 0) },
+    { kind = "back", top = 1 } },
+  { "NumPad 4 (code 75) with a digit char", { key(75, 52), Q, Y }, "quit" },
+  { "Right", { key(205, 0) }, { kind = "forward", top = 1 } },
+  { "NumPad 6 (code 77) with char 0", { key(77, 0) },
+    { kind = "forward", top = 1 } },
+  { "NumPad 6 (code 77) with a digit char", { key(77, 54), Q, Y }, "quit" },
+  { "Backspace", { key(14, 8) }, { kind = "back", top = 1 } },
+  { "Backspace with char 0", { key(14, 0) }, { kind = "back", top = 1 } },
+  { "r", { key(19, 114) }, { kind = "reload", top = 1 } },
+  { "R", { key(19, 82) }, { kind = "reload", top = 1 } },
+  { "F5 does nothing", { key(63, 0), Q, Y }, "quit" },
+  { "z does nothing in the page", { key(44, 122), Q, Y }, "quit" },
+  { "other keys do nothing", { key(30, 97), TOUCH, Q, Y }, "quit" },
+  { "the top is in the action", { key(DOWN), key(DOWN), key(203, 0) },
+    { kind = "back", top = 3 } },
+  { "the selection is in the action", { TAB, TAB, key(205, 0) },
+    { kind = "forward", top = 1, sel = 2 } },
+  { "a burst of Tab and Left: the Tab events apply first",
+    { TAB, TAB, key(203, 0) }, { kind = "back", top = 1, sel = 2 } },
+  { "a burst of Down and r: the scroll applies first",
+    { key(DOWN), key(DOWN), key(19, 114) }, { kind = "reload", top = 3 } },
+  { "Ctrl+C in a burst after Tab", { TAB, CTRL_C }, "interrupted" },
+  { "the quit prompt works with links", { TAB, Q, Y }, "quit" },
+  { "any other key cancels the quit prompt",
+    { Q, key(203, 0), Q, Y }, "quit" },
+}, function(events)
+  return (link_run({ events = events }).result)
+end)
+
+-- The go prompt (spec/navigation.md "Go prompt"). The result has the viewer
+-- result, whether the prompt shows, its text, the column of the input
+-- cursor (the first cell with a black background on the status row) and
+-- the top line.
+local function chars(text)
+  local list = {}
+  for i = 1, #text do
+    list[i] = key(30, text:byte(i))
+  end
+  return list
+end
+
+local function cat(...)
+  local list = {}
+  for _, part in ipairs({ ... }) do
+    for _, e in ipairs(part) do
+      list[#list + 1] = e
+    end
+  end
+  return list
+end
+
+local function go_run(events, after, opts)
+  local out = {}
+  local list = {}
+  for _, e in ipairs(events) do
+    list[#list + 1] = e
+  end
+  list[#list + 1] = function(ctl)
+    local row = (ctl.row(25):gsub("%s+$", ""))
+    out.prompt = row:find("^ Go to:") ~= nil
+    out.text = out.prompt and row:match("^ Go to: ?(.*)$") or nil
+    for x = 1, 80 do
+      local _, _, bg = ctl.cell(x, 25)
+      if bg == 0 then
+        out.cursor = out.cursor or x
+      end
+    end
+    out.top = line_at(ctl, 1)
+  end
+  for _, e in ipairs(after) do
+    list[#list + 1] = e
+  end
+  local o = { title = "T", links = fixture(), resolve = resolve }
+  for k, v in pairs(opts or {}) do
+    o[k] = v
+  end
+  out.result = run({ lines = make_lines(100), opts = o, events = list })
+  return out
+end
+
+local CANCEL_END = { ESC, Q, Y }
+local CLOSED = { result = "quit", prompt = false, top = 1 }
+
+local function open_row(text, cursor, top)
+  return { result = "quit", prompt = true, text = text, cursor = cursor,
+    top = top or 1 }
+end
+
+t.cases(T, "go_prompt", {
+  { "an empty prompt with the input cursor",
+    { events = cat({ KEY_G }), after = CANCEL_END }, open_row("", 9) },
+  { "typing shows the text",
+    { events = cat({ KEY_G }, chars("a/b.html")), after = CANCEL_END },
+    open_row("a/b.html", 17) },
+  { "Backspace deletes the last character",
+    { events = cat({ KEY_G }, chars("abc"), { BS }), after = CANCEL_END },
+    open_row("ab", 11) },
+  { "Backspace with the code only",
+    { events = cat({ KEY_G }, chars("abc"), { key(14, 0) }),
+      after = CANCEL_END }, open_row("ab", 11) },
+  { "Backspace on an empty prompt does nothing",
+    { events = cat({ KEY_G, BS, BS }, chars("a")), after = CANCEL_END },
+    open_row("a", 10) },
+  { "a space and control characters are not appended",
+    { events = cat({ KEY_G }, chars("a b"), { key(30, 127), key(30, 1) }),
+      after = CANCEL_END }, open_row("ab", 11) },
+  { "0x21 and 0x7E are appended",
+    { events = { KEY_G, key(2, 33), key(41, 126) }, after = CANCEL_END },
+    open_row("!~", 11) },
+  { "scroll keys do nothing in the prompt",
+    { events = cat({ KEY_G, key(DOWN), key(END) }, chars("a")),
+      after = CANCEL_END }, open_row("a", 10) },
+  { "q is text in the prompt, not quit",
+    { events = { KEY_G, Q }, after = CANCEL_END }, open_row("q", 10) },
+  { "g is text in the prompt", { events = { KEY_G, KEY_G },
+    after = CANCEL_END }, open_row("g", 10) },
+  { "a clipboard event appends",
+    { events = cat({ KEY_G }, chars("x"),
+      { { "clipboard", "kbd", "y.org/z\n", "player" } }),
+      after = CANCEL_END }, open_row("xy.org/z", 17) },
+  { "a clipboard event with other text and spaces",
+    { events = { KEY_G, { "clipboard", "kbd", "  a b \xE4\xB8\xAD\n c", "p" } },
+      after = CANCEL_END }, open_row("a b", 12) },
+  { "Esc cancels and the status comes back",
+    { events = cat({ KEY_G }, chars("abc"), { ESC }), after = { Q, Y } },
+    CLOSED },
+  { "Esc with char 0 cancels",
+    { events = cat({ KEY_G }, chars("abc"), { key(1, 0) }),
+      after = { Q, Y } }, CLOSED },
+  { "an empty Enter cancels", { events = { KEY_G, ENTER }, after = { Q, Y } },
+    CLOSED },
+  { "Enter submits the text",
+    { events = cat({ KEY_G }, chars("a/b.html"), { ENTER }), after = {} },
+    { result = { kind = "go", text = "a/b.html", top = 1 } } },
+  { "Enter with the code only submits",
+    { events = cat({ KEY_G }, chars("a"), { key(28, 0) }), after = {} },
+    { result = { kind = "go", text = "a", top = 1 } } },
+  { "the action has the top and the selection",
+    { events = { key(DOWN), TAB, KEY_G, key(30, 117), ENTER }, after = {} },
+    { result = { kind = "go", text = "u", top = 2, sel = 1 } } },
+  { "a clipboard text submits",
+    { events = { KEY_G, { "clipboard", "kbd", "http://x.org/", "p" }, ENTER },
+      after = {} }, { result = { kind = "go", text = "http://x.org/",
+      top = 1 } } },
+  { "Ctrl+C quits", { events = cat({ KEY_G }, chars("a"), { CTRL_C }),
+    after = {} }, { result = "interrupted" } },
+  { "the interrupted event quits",
+    { events = cat({ KEY_G }, chars("a"), { INTERRUPTED }), after = {} },
+    { result = "interrupted" } },
+}, function(input)
+  local out = go_run(input.events, input.after)
+  if #input.after == 0 then
+    return { result = out.result }
+  end
+  return out
+end)
+
+-- A text longer than the row shows its end, with the cursor inside.
+function T.go_prompt_long_text_stays_inside_the_row()
+  local text = string.rep("abcdefghij", 10)
+  local out, ctl_after
+  local _, ctl = run({ lines = make_lines(100), opts = { title = "T" },
+    events = cat({ KEY_G }, chars(text), { function(c)
+      out = (c.row(25):gsub("%s+$", ""))
+      ctl_after = c.cell(80, 25)
+    end, ESC, Q, Y }) })
+  t.ok(not ctl.overflow)
+  t.eq(#out, 79)
+  t.ok(out:find("^ Go to: ") and out:sub(-5) == "fghij", out)
+end
+
+-- The key list popup (spec/viewer.md "Navigation keys").
+local function help_state(ctl, h)
+  local joined = table.concat(ctl.screen(), "\n", 1, h - 1)
+  local shown = {}
+  for _, word in ipairs({ "Tab", "Shift+Tab", "Enter", "Left", "Backspace",
+      "Right", "r: reload", "g: go", "Up, Down, PgUp, PgDn, Home, End",
+      "q: quit", "?: this list", "[OK]" }) do
+    shown[#shown + 1] = joined:find(word, 1, true) ~= nil
+  end
+  return shown
+end
+
+local ALL_SHOWN = {}
+local NONE_SHOWN = {}
+for i = 1, 12 do
+  ALL_SHOWN[i] = true
+  NONE_SHOWN[i] = false
+end
+
+t.cases(T, "help_popup", {
+  { "? lists the keys", { HELP }, ALL_SHOWN },
+  { "Esc does not close it", { HELP, ESC }, ALL_SHOWN },
+  { "scroll keys, q and other keys are ignored",
+    { HELP, key(DOWN), key(END), Q, key(30, 97), Y, key(203, 0) },
+    ALL_SHOWN },
+  { "key_up of Enter does not close it", { HELP, key_up(28, 13) },
+    ALL_SHOWN },
+  { "touch does not close it", { HELP, TOUCH }, ALL_SHOWN },
+  { "Enter closes it", { HELP, ENTER }, NONE_SHOWN },
+  { "it can open again", { HELP, ENTER, key_up(28, 13), HELP }, ALL_SHOWN },
+}, function(events, size_h)
+  local out
+  local list = {}
+  for _, e in ipairs(events) do
+    list[#list + 1] = e
+  end
+  list[#list + 1] = function(ctl) out = help_state(ctl, 25) end
+  list[#list + 1] = ENTER
+  list[#list + 1] = Q
+  list[#list + 1] = Y
+  run({ lines = make_lines(100), opts = { title = "T" }, events = list })
+  return out
+end)
+
+function T.help_popup_fits_a_small_screen()
+  local out, ctl_out
+  local _, ctl = run({ lines = make_lines(100), opts = { title = "T" },
+    gpu = size(50, 16), events = { HELP, function(c)
+      out = help_state(c, 16)
+    end, ENTER, Q, Y } })
+  t.eq(out, ALL_SHOWN)
+  t.ok(not ctl.overflow)
+end
+
+function T.help_popup_ctrl_c_quits()
+  t.eq((run({ lines = make_lines(100), events = { HELP, CTRL_C } })),
+    "interrupted")
+end
+
+function T.help_popup_close_restores_the_page()
+  local lines = make_lines(100)
+  local closed = scrolled_screen(lines, { HELP, ENTER }, { title = "T" })
+  local plain = scrolled_screen(lines, {}, { title = "T" })
+  t.eq(closed, plain)
 end
 
 return T

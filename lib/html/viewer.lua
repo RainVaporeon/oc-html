@@ -46,24 +46,56 @@ local NUMPAD_KEYS = {
   [72] = "up", [80] = "down", [73] = "pgup", [81] = "pgdn",
   [71] = "home", [79] = "end",
 }
+-- Other standard codes. NumPad Left and Right need char 0 like the scroll
+-- keys.
+local CODE_LEFT, CODE_RIGHT, NUMPAD_LEFT, NUMPAD_RIGHT = 203, 205, 75, 77
+local CODE_TAB, CODE_BACKSPACE, CODE_ESC = 15, 14, 1
+local CODE_LSHIFT, CODE_RSHIFT = 42, 54
 local CHAR_CTRL_C = 3
+local CHAR_BACKSPACE, CHAR_TAB, CHAR_ESC = 8, 9, 27
 local CHAR_ENTER = 13
 local CODE_ENTER = 28
 local CHAR_Q, CHAR_UPPER_Q = 113, 81
 local CHAR_Y, CHAR_UPPER_Y = 121, 89
+local CHAR_Z, CHAR_UPPER_Z = 122, 90
+local CHAR_R, CHAR_UPPER_R, CHAR_G, CHAR_HELP = 114, 82, 103, 63
 
 -- event.pull with a timeout, so the program yields while it waits.
 local IDLE_TIMEOUT = 1
 
-local HINT = "Up Dn PgUp PgDn Home End q:quit"
+local HINT = "Tab:link Enter:open Bksp:back r:reload q:quit"
 local SHORT_HINT = "q:quit"
 -- The full hint is used only when the title keeps this many columns.
 local TITLE_MIN = 20
 local PROMPT = " Quit? (y/n)"
+local GO_PROMPT = " Go to: "
+local GO_MAX = 2048
 local POPUP_BUTTON = "[OK]"
+local HELP_TEXT = table.concat({
+  "Tab, Shift+Tab: next, previous link",
+  "Enter: open the selected link",
+  "Left, Backspace: back",
+  "Right: forward",
+  "r: reload",
+  "g: go to a URL or a file",
+  "Up, Down, PgUp, PgDn, Home, End: scroll",
+  "q: quit",
+  "?: this list",
+}, "\n")
 
--- Returns "interrupted", "quit", a navigation name, or nil for other events.
-local function classify(name, char, code)
+-- Reverse video of a selected link: black on the link color. Depth 1 has
+-- white.
+local SELECT_BG = 0x6699FF
+
+local SCROLL_KEYS = {
+  up = true, down = true, pgup = true, pgdn = true, home = true,
+  ["end"] = true,
+}
+
+-- Returns "interrupted", "quit", a scroll name ("up" ... "end"), "tab",
+-- "shift_tab", "enter", "back", "forward", "backspace", "reload", "go",
+-- "help", or nil for other events. shifted() tells whether Shift is down.
+local function classify(name, char, code, shifted)
   if name == "interrupted" then
     return "interrupted"
   end
@@ -80,18 +112,65 @@ local function classify(name, char, code)
   if nav then
     return nav
   end
+  if code == CODE_LEFT or (char == 0 and code == NUMPAD_LEFT) then
+    return "back"
+  end
+  if code == CODE_RIGHT or (char == 0 and code == NUMPAD_RIGHT) then
+    return "forward"
+  end
+  if code == CODE_TAB or char == CHAR_TAB then
+    return shifted and shifted() and "shift_tab" or "tab"
+  end
+  if code == CODE_BACKSPACE or char == CHAR_BACKSPACE then
+    return "backspace"
+  end
+  if code == CODE_ENTER or char == CHAR_ENTER then
+    return "enter"
+  end
   if char == CHAR_Q or char == CHAR_UPPER_Q then
     return "quit"
+  end
+  if char == CHAR_R or char == CHAR_UPPER_R then
+    return "reload"
+  end
+  if char == CHAR_G then
+    return "go"
+  end
+  if char == CHAR_HELP then
+    return "help"
   end
   return nil
 end
 
-local function is_nav(action)
-  return action ~= nil and action ~= "quit" and action ~= "interrupted"
-end
-
 local function is_enter(char, code)
   return char == CHAR_ENTER or code == CODE_ENTER
+end
+
+-- Cuts a line to the cell columns a to b. Style bytes do not count. A wide
+-- character is kept whole when one of its cells is inside. Returns the text
+-- and the column of its first cell, or "" and nil.
+local CHAR_PATTERN = "[\0\6-\x7F\xC2-\xFD][\x80-\xBF]*"
+local function cut(line, a, b)
+  local col, first = 1, nil
+  local parts = {}
+  for ch in line:gmatch(CHAR_PATTERN) do
+    local next_col = col + unicode.charWidth(ch)
+    if next_col - 1 >= a and col <= b then
+      first = first or col
+      parts[#parts + 1] = ch
+    end
+    col = next_col
+    if col > b then
+      break
+    end
+  end
+  return table.concat(parts), first
+end
+M._cut = cut
+
+-- Unpacks a link span (spec/layout.md "Links and anchors").
+local function unpack_span(s)
+  return s >> 32, (s >> 24) & 0xFF, (s >> 32) + ((s >> 8) & 0xFFFF), s & 0xFF
 end
 
 -- Truncates s to at most width columns.
@@ -217,6 +296,8 @@ end
 
 -- base: w, h, color and screen of the session (see M.open). start_prompt is
 -- true when the quit prompt is still on screen from the load.
+-- opts: title, file, error, links, resolve, top, sel (see M.run).
+-- Returns "quit", "interrupted" or an action table (see M.run).
 local function view(lines, opts, gpu, pull, base, start_prompt)
   local w, h = base.w, base.h
   local rows = h - 1
@@ -231,15 +312,113 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
 
   local title = opts.title or opts.file or ""
   title = title:gsub("%c", " ")
+  -- The status keeps an "[HTTP ...]" prefix before a link target.
+  local http_prefix = title:match("^(%[HTTP [^%]]*%])")
+
+  -- Links: the start and end of each span, and the list of the links that
+  -- start inside the page, in order. A span that starts past the last line
+  -- is ignored.
+  local links = opts.links
+  local from_line, from_col, to_line, to_col = {}, {}, {}, {}
+  local valid, pos = {}, {}
+  if links and links.span then
+    for i = 1, links.count or #links.span do
+      local span = links.span[i]
+      if span then
+        local fl, fc, tl, tc = unpack_span(span)
+        from_line[i], from_col[i], to_line[i], to_col[i] = fl, fc, tl, tc
+        if fl >= 1 and fl <= count then
+          valid[#valid + 1] = i
+          pos[i] = #valid
+        end
+      end
+    end
+  end
+
+  -- The selected link index, or nil.
+  local sel
+  local notice
+  local notice_dirty = false
+  -- A later input field sets this. Backspace then deletes, not Back.
+  local input_focus = false
+
+  local function clamp_top(n)
+    return math.max(1, math.min(max_top, n))
+  end
+
+  top = clamp_top(math.floor(tonumber(opts.top) or 1))
+  if opts.sel and #valid > 0 then
+    local n = math.max(1, math.min(links.count or #links.span,
+      math.floor(tonumber(opts.sel) or 1)))
+    while n >= 1 and not pos[n] do
+      n = n - 1
+    end
+    if n >= 1 then
+      sel = n
+    else
+      sel = valid[1]
+    end
+  end
+
+  local function visible(t, i)
+    return from_line[i] >= t and from_line[i] <= t + rows - 1
+  end
+
+  -- Draws the selected part of line n on row y, in reverse video.
+  local function draw_selection(n, y)
+    local line = lines[n]
+    if not line then
+      return
+    end
+    local a = n == from_line[sel] and from_col[sel] or 1
+    local b = n == to_line[sel] and to_col[sel] or math.maxinteger
+    local text, col = cut(line, a, b)
+    if not col then
+      return
+    end
+    if n ~= from_line[sel] then
+      local lead = #text:match("^ *")
+      text, col = text:sub(lead + 1), col + lead
+    end
+    if n ~= to_line[sel] then
+      text = text:gsub(" +$", "")
+    end
+    if text == "" or col > w then
+      return
+    end
+    screen.fg(BLACK)
+    screen.bg(base.select_bg)
+    gpu.set(col, y, fit(text, w - col + 1))
+  end
 
   local function draw_row(y)
-    draw_line(gpu, screen, color, w, lines[top + y - 1] or "", y)
+    local n = top + y - 1
+    draw_line(gpu, screen, color, w, lines[n] or "", y)
+    if sel and n >= from_line[sel] and n <= to_line[sel] then
+      draw_selection(n, y)
+    end
   end
 
   local function draw_rows(from, to)
     for y = from, to do
       draw_row(y)
     end
+  end
+
+  -- The label of the selected link: the resolved text, else the raw href.
+  local label_for, label
+  local function sel_label()
+    if label_for ~= sel then
+      label_for = sel
+      local href = links.href and links.href[sel]
+      if not href then
+        label = "(link too long)"
+      else
+        label = opts.resolve and opts.resolve(href) or href
+      end
+      label = tostring(label):gsub("%c", " ")
+    end
+    return label
   end
 
   local function draw_status()
@@ -251,8 +430,34 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
     if w - 1 - #right < TITLE_MIN then
       right = format(" %3d%%  %s ", pct, SHORT_HINT)
     end
-    local left = " " .. fit(title, w - 1 - #right)
+    if notice then
+      -- A notice takes the whole row, with no percent and no hint.
+      screen.status(" " .. notice)
+      return
+    end
+    local text = title
+    if sel and visible(top, sel) then
+      text = (http_prefix and http_prefix .. " " or "") .. "-> " .. sel_label()
+    end
+    local left = " " .. fit(text, w - 1 - #right)
     screen.status(left .. rep(" ", w - #right - wlen(left)) .. right)
+  end
+
+  local function set_notice(text)
+    notice = text
+    draw_status()
+  end
+
+  -- Takes the next event. A key clears a notice, and the loop redraws the
+  -- status once.
+  local function pull_ev(timeout)
+    local name, a, b, c = pull(timeout)
+    base.track(name, b, c)
+    if name == "key_down" and notice then
+      notice = nil
+      notice_dirty = true
+    end
+    return name, a, b, c
   end
 
   local function move(target, action)
@@ -269,7 +474,39 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
     else
       target = max_top
     end
-    return math.max(1, math.min(max_top, target))
+    return clamp_top(target)
+  end
+
+  -- One Tab (dir 1) or Shift+Tab (dir -1) from the state t (top), s (sel).
+  -- Returns the new top and selection.
+  local function step(t, s, dir)
+    local pick
+    if s and visible(t, s) then
+      pick = valid[pos[s] + dir]
+    elseif dir > 0 then
+      for _, i in ipairs(valid) do
+        if from_line[i] >= t then
+          pick = i
+          break
+        end
+      end
+    else
+      for k = #valid, 1, -1 do
+        if from_line[valid[k]] <= t + rows - 1 then
+          pick = valid[k]
+          break
+        end
+      end
+    end
+    if not pick then
+      return t, s
+    end
+    if from_line[pick] < t then
+      t = from_line[pick]
+    elseif from_line[pick] > t + rows - 1 then
+      t = from_line[pick] - rows + 1
+    end
+    return clamp_top(t), pick
   end
 
   -- A scroll of 1 to rows - 1 lines moves the rest with copy. copy leaves
@@ -289,14 +526,46 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
     else
       draw_rows(1, rows)
     end
-    draw_status()
+  end
+
+  -- Moves to a new top and selection. The rows of the old and of the new
+  -- selection are drawn again.
+  local function apply(target, new_sel)
+    local old_sel, old_top = sel, top
+    sel = new_sel
+    scroll_to(target)
+    if sel ~= old_sel then
+      local done = {}
+      for _, i in ipairs({ old_sel or 0, sel or 0 }) do
+        if from_line[i] then
+          local first = math.max(from_line[i], top)
+          local last = math.min(to_line[i], top + rows - 1)
+          for n = first, last do
+            if not done[n] then
+              done[n] = true
+              draw_row(n - top + 1)
+            end
+          end
+        end
+      end
+    end
+    if top ~= old_top or sel ~= old_sel then
+      draw_status()
+    end
+  end
+
+  -- The action table for the session loop.
+  local function act(kind, extra)
+    local a = extra or {}
+    a.kind, a.top, a.sel = kind, top, sel
+    return a
   end
 
   -- Returns "quit", "interrupted", or nil when the user cancels.
   local function confirm_quit()
     screen.status(PROMPT)
     while true do
-      local name, _, char, code = pull(IDLE_TIMEOUT)
+      local name, _, char, code = pull_ev(IDLE_TIMEOUT)
       if name == "interrupted" then
         return "interrupted"
       end
@@ -314,11 +583,12 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
   end
 
   -- Shows the popup until Enter. Other keys are ignored. Returns
-  -- "interrupted" on Ctrl+C, else nil.
+  -- "interrupted" on Ctrl+C, else nil. Enter closes it, so a held Enter must
+  -- not act until its key_up.
   local function show_popup(text)
     local first, last = screen.popup(text .. "\n\n" .. POPUP_BUTTON)
     while true do
-      local name, _, char, code = pull(IDLE_TIMEOUT)
+      local name, _, char, code = pull_ev(IDLE_TIMEOUT)
       if name == "interrupted" then
         return "interrupted"
       end
@@ -327,8 +597,62 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
           return "interrupted"
         end
         if is_enter(char, code) then
+          base.enter_held = true
           draw_rows(first, last)
           return nil
+        end
+      end
+    end
+  end
+
+  -- The go prompt on the status row. Returns "interrupted", the typed text,
+  -- or nil when the user cancels.
+  local function go_prompt()
+    local text = ""
+    local function draw()
+      local avail = math.max(0, w - #GO_PROMPT - 1)
+      local shown = text
+      if #shown > avail then
+        shown = avail > 0 and sub(shown, -avail) or ""
+      end
+      screen.status(GO_PROMPT .. shown)
+      local x = #GO_PROMPT + #shown + 1
+      if x <= w then
+        -- The input cursor is a reverse-video cell.
+        screen.fg(BAR_BG)
+        screen.bg(BAR_FG)
+        gpu.set(x, h, " ")
+      end
+    end
+    draw()
+    while true do
+      local name, _, b, c = pull_ev(IDLE_TIMEOUT)
+      if name == "interrupted" then
+        return "interrupted"
+      elseif name == "clipboard" and type(b) == "string" then
+        local clip = b:match("^%s*([^\r\n]*)"):gsub("[^\32-\126]", "")
+        text = sub(text .. clip:gsub("%s+$", ""), 1, GO_MAX)
+        draw()
+      elseif name == "key_down" then
+        local char, code = b, c
+        if char == CHAR_CTRL_C then
+          return "interrupted"
+        elseif is_enter(char, code) then
+          base.enter_held = true
+          draw_status()
+          if text == "" then
+            return nil
+          end
+          return text
+        elseif code == CODE_ESC or char == CHAR_ESC then
+          draw_status()
+          return nil
+        elseif char == CHAR_BACKSPACE or code == CODE_BACKSPACE then
+          text = sub(text, 1, -2)
+          draw()
+        elseif char >= 0x21 and char <= 0x7E and #text < GO_MAX then
+          text = text .. string.char(char)
+          draw()
         end
       end
     end
@@ -352,8 +676,16 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
     if pending then
       action, pending = pending, nil
     else
-      local name, _, char, code = pull(IDLE_TIMEOUT)
-      action = classify(name, char, code)
+      local name, _, char, code = pull_ev(IDLE_TIMEOUT)
+      action = classify(name, char, code, base.shifted)
+    end
+    if action == "backspace" then
+      if input_focus then
+        -- Input fields (later) delete a character here.
+        action = nil
+      else
+        action = "back"
+      end
     end
     if action == "interrupted" then
       return "interrupted"
@@ -362,23 +694,66 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
       if result then
         return result
       end
-    elseif action then
+    elseif SCROLL_KEYS[action] or action == "tab" or action == "shift_tab" then
       -- Takes all queued events, so a burst of key repeat gives one redraw.
-      local target = move(top, action)
+      -- Tab and Shift+Tab are moves too.
+      local target, target_sel = top, sel
+      local function take(a)
+        if SCROLL_KEYS[a] then
+          target = move(target, a)
+        else
+          target, target_sel = step(target, target_sel,
+            a == "tab" and 1 or -1)
+        end
+      end
+      take(action)
       while true do
-        local name, _, char, code = pull(0)
+        local name, _, char, code = pull_ev(0)
         if name == nil then
           break
         end
-        local next_action = classify(name, char, code)
-        if is_nav(next_action) then
-          target = move(target, next_action)
+        local next_action = classify(name, char, code, base.shifted)
+        if SCROLL_KEYS[next_action] or next_action == "tab"
+            or next_action == "shift_tab" then
+          take(next_action)
         elseif next_action then
           pending = next_action
           break
         end
       end
-      scroll_to(target)
+      apply(target, target_sel)
+    elseif action == "enter" then
+      if not base.enter_held and sel and visible(top, sel) then
+        local href = links.href and links.href[sel]
+        if not href then
+          set_notice("link too long")
+        elseif opts.resolve then
+          local text, why = opts.resolve(href)
+          if text then
+            return act("link", { href = href, text = text })
+          end
+          set_notice(why or "link not supported")
+        else
+          return act("link", { href = href })
+        end
+      end
+    elseif action == "back" or action == "forward" or action == "reload" then
+      return act(action)
+    elseif action == "go" then
+      local text = go_prompt()
+      if text == "interrupted" then
+        return "interrupted"
+      elseif text then
+        return act("go", { text = text })
+      end
+    elseif action == "help" then
+      if show_popup(HELP_TEXT) then
+        return "interrupted"
+      end
+    end
+    if notice_dirty then
+      notice_dirty = false
+      draw_status()
     end
   end
 end
@@ -392,9 +767,10 @@ end
 --                            still grow. It reads lines[1] to lines[rows]
 --   poll()                   takes the queued events without waiting. Returns
 --                            "interrupted", "quit" (the user confirmed the
---                            quit prompt) or nil. "q" shows the quit prompt
---                            and the status row keeps it until the user
---                            answers. Other keys are dropped
+--                            quit prompt), "abort" (the user pressed z) or
+--                            nil. "q" shows the quit prompt and the status
+--                            row keeps it until the user answers. Other keys
+--                            are dropped
 --   show(lines, opts)        the interactive loop (see M.run). A quit prompt
 --                            still on screen is answered first
 --   close()                  restores the screen. A second call does nothing
@@ -429,8 +805,39 @@ function M.open(deps, opts)
       end
     end
     local w, h = gpu.getResolution()
+    local depth = gpu.getDepth()
     base = { w = w, h = h, screen = new_screen(gpu, w, h),
-      color = gpu.getDepth() > 1 and COLORS or PLAIN }
+      color = depth > 1 and COLORS or PLAIN }
+    base.select_bg = depth > 1 and SELECT_BG or WHITE
+    -- Shift comes from deps.shift_down. Without it the viewer tracks the
+    -- Shift keys. enter_held is true from an Enter that closed a popup or a
+    -- prompt until the key_up of Enter.
+    base.shift_down = deps.shift_down
+    base.enter_held = false
+    local shift_l, shift_r = false, false
+    function base.track(name, _, code)
+      if name == "key_down" then
+        if code == CODE_LSHIFT then
+          shift_l = true
+        elseif code == CODE_RSHIFT then
+          shift_r = true
+        end
+      elseif name == "key_up" then
+        if code == CODE_LSHIFT then
+          shift_l = false
+        elseif code == CODE_RSHIFT then
+          shift_r = false
+        elseif code == CODE_ENTER then
+          base.enter_held = false
+        end
+      end
+    end
+    function base.shifted()
+      if base.shift_down then
+        return base.shift_down() and true or false
+      end
+      return shift_l or shift_r
+    end
     s = { rows = h - 1 }
 
     function s.status(t)
@@ -468,6 +875,7 @@ function M.open(deps, opts)
       if name == nil then
         return nil
       end
+      base.track(name, char, code)
       if name == "interrupted"
           or (name == "key_down" and char == CHAR_CTRL_C) then
         return "interrupted"
@@ -483,6 +891,9 @@ function M.open(deps, opts)
       elseif classify(name, char, code) == "quit" then
         prompt = true
         base.screen.status(PROMPT)
+      elseif name == "key_down"
+          and (char == CHAR_Z or char == CHAR_UPPER_Z) then
+        return "abort"
       end
     end
   end
@@ -501,10 +912,21 @@ function M.open(deps, opts)
   return s
 end
 
--- Shows lines until the user quits. Returns "quit" or "interrupted".
--- opts: title, file (shown when there is no title), no_rescale, error.
+-- Shows lines until the user quits or asks for a navigation. Returns "quit",
+-- "interrupted" or an action table:
+--   { kind = "link", href = <raw href>, text = <resolved text or nil> }
+--   { kind = "back" } { kind = "forward" } { kind = "reload" }
+--   { kind = "go", text = <typed text> }
+-- Every action table has top (the first shown line) and sel (the selected
+-- link index or nil), for the history.
+-- opts: title, file (shown when there is no title), no_rescale, error, and
+--   links   { span = {...}, href = {...}, count = n } from the layout
+--   resolve resolve(href) returns the text for the status line, or nil and
+--           a notice that the status line shows until the next key
+--   top, sel  the position to restore. Both are clamped
 -- opts.error is a text shown in a popup over the first screen. Only Enter
 -- closes it, then the user browses as usual.
+-- deps.shift_down (optional) tells whether Shift is down.
 -- An error inside restores the screen and is raised again.
 function M.run(lines, opts, deps)
   opts = opts or {}
@@ -525,7 +947,9 @@ function M.game_deps()
   local component = require("component")
   local event = require("event")
   local term = require("term")
-  return { gpu = component.gpu, pull = event.pull, term = term }
+  local ok, keyboard = pcall(require, "keyboard")
+  return { gpu = component.gpu, pull = event.pull, term = term,
+    shift_down = ok and keyboard.isShiftDown or nil }
 end
 
 return M
