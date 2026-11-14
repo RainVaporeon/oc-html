@@ -403,6 +403,343 @@ function T.parse_args_modes()
   t.eq(html.parse_args({ "--no-rescale", "a", n = 2 }).no_rescale, true)
 end
 
+-- URL arguments -------------------------------------------------------------
+
+local internet = require("internet")
+local computer = require("computer")
+
+local URL = "http://example.com/"
+
+-- Runs main with a fake card. card_opts go to internet.new. extra replaces
+-- deps. rec.ctl is the card controller.
+local function run_url(args, card_opts, extra)
+  local card, ctl = internet.new(card_opts)
+  extra = extra or {}
+  local deps = { internet = card, uptime = computer.uptime, sleep = os.sleep }
+  for k, v in pairs(extra) do
+    deps[k] = v
+  end
+  local code, rec = run(args, nil, deps)
+  rec.ctl = ctl
+  return code, rec
+end
+
+local function page_script(body, extra)
+  local s = { headers = { ["Content-Type"] = { "text/html" } },
+    body = internet.pieces(body or PAGE, 10, true) }
+  for k, v in pairs(extra or {}) do
+    s[k] = v
+  end
+  return s
+end
+
+local function url_clean(rec)
+  check_clean(rec)
+  for i, h in ipairs(rec.ctl.handles) do
+    t.eq(h.closed, 1, "handle " .. i .. " closed once")
+  end
+end
+
+-- The stats line that starts with prefix, or nil.
+local function stats_line(rec, prefix)
+  for _, line in ipairs(rec.err) do
+    if line:sub(1, #prefix) == prefix then
+      return line
+    end
+  end
+  return nil
+end
+
+function T.url_opens_the_viewer()
+  local code, rec = run_url({ URL }, { default = page_script() })
+  t.eq(code, 0)
+  t.eq(rec.err, {})
+  t.eq(#rec.views, 1)
+  t.eq(rec.views[1].opts.title, "My Page")
+  t.eq(rec.views[1].opts.file, URL)
+  t.eq(rec.ctl.requests, { URL })
+  url_clean(rec)
+end
+
+function T.url_without_title_shows_the_url()
+  local _, rec = run_url({ "https://x.org/a#f" },
+    { default = page_script("<p>x</p>") })
+  t.eq(rec.views[1].opts.title, nil)
+  t.eq(rec.views[1].opts.file, "https://x.org/a")
+end
+
+function T.url_title_shows_the_final_url_after_a_redirect()
+  local _, rec = run_url({ URL }, { routes = {
+    [URL] = { code = 301, headers = { Location = { "/new" } } },
+    ["http://example.com/new"] = page_script("<p>x</p>") } })
+  t.eq(rec.views[1].opts.file, "http://example.com/new")
+  url_clean(rec)
+end
+
+function T.url_with_print_width_and_stats()
+  local code, rec = run_url({ "--print", "--width", "30", "--stats", URL },
+    { default = page_script() })
+  t.eq(code, 0)
+  t.eq(#rec.views, 0)
+  t.ok(#rec.out > 0)
+  t.ok(max_width(rec.out) <= 30)
+  t.eq(rec.err[1], "stats: file=" .. #PAGE .. " bytes")
+  t.eq(rec.err[2], "stats: url=" .. URL)
+  t.ok(rec.err[3]:find("^stats: http=200 redirects=0 fetch=%d+%.%d%d s$"),
+    rec.err[3])
+  t.eq(rec.err[4], "stats: width=30")
+  url_clean(rec)
+end
+
+function T.url_with_stats_out_and_no_rescale()
+  local written
+  local code, rec = run_url({ "--no-rescale", "--stats-out", "s.txt", URL },
+    { default = page_script() }, {
+      write_file = function(_, text) written = text return true end,
+    })
+  t.eq(code, 0)
+  t.eq(rec.views[1].opts.no_rescale, true)
+  t.eq(written, table.concat(rec.err, "\n") .. "\n")
+  t.ok(written:find("stats: url=" .. URL, 1, true))
+end
+
+function T.url_usage_errors_exit_2()
+  local long = "http://example.com/" .. string.rep("a", 2048)
+  local cases = {
+    { "ftp://example.com", "html: unsupported URL scheme: ftp" },
+    { "http://exa mple.com", "html: invalid URL: http://exa mple.com" },
+    { "http://", "html: invalid URL: http://" },
+    { long, "html: invalid URL: too long" },
+  }
+  for _, c in ipairs(cases) do
+    local code, rec = run_url({ c[1] }, {})
+    t.eq(code, 2, c[1])
+    t.eq(rec.err, { c[2] }, c[1])
+    t.eq(#rec.ctl.requests, 0)
+  end
+end
+
+function T.url_without_a_card()
+  local code, rec = run_url({ URL }, {}, { internet = false })
+  t.eq(code, 1)
+  t.eq(rec.err, { "html: no internet card found (needed for " .. URL .. ")" })
+  t.eq(#rec.views, 0)
+  check_clean(rec)
+end
+
+function T.url_with_http_disabled()
+  local code, rec = run_url({ URL }, { http = false })
+  t.eq(code, 1)
+  t.eq(rec.err, { "html: HTTP requests are disabled on this server" })
+end
+
+function T.url_size_check_with_content_length()
+  local code, rec = run_url({ "--stats", URL }, { default = page_script(nil,
+    { headers = { ["Content-Length"] = { "4000000" } } }) })
+  t.eq(code, 1)
+  t.eq(rec.err[1], "html: page too large for available memory "
+    .. "(4000000 bytes, 1800000 free)")
+  t.eq(rec.ctl.handles[1].reads, 0)
+  t.eq(rec.err[#rec.err], "stats: stopped=" .. rec.err[1])
+  t.eq(stats_line(rec, "stats: file="), "stats: file=0 bytes")
+  url_clean(rec)
+end
+
+function T.url_fetch_error_with_stats()
+  local code, rec = run_url({ "--stats", URL },
+    { default = { connect_error = "unknown host" } })
+  t.eq(code, 1)
+  local msg = "html: cannot connect: " .. URL .. ": unknown host"
+  t.eq(rec.err[1], msg)
+  t.eq(stats_line(rec, "stats: url="), "stats: url=" .. URL)
+  t.ok(stats_line(rec, "stats: http="):find("^stats: http=n/a redirects=0 "
+    .. "fetch="), stats_line(rec, "stats: http="))
+  t.eq(rec.err[#rec.err], "stats: stopped=" .. msg)
+  url_clean(rec)
+end
+
+function T.url_read_error_exit_1()
+  local code, rec = run_url({ "--print", URL }, { default =
+    page_script(PAGE, { read_error = "reset" }) })
+  t.eq(code, 1)
+  t.eq(rec.err, { "html: read error: reset" })
+  url_clean(rec)
+end
+
+function T.url_content_type_error()
+  local code, rec = run_url({ URL }, { default = { headers =
+    { ["Content-Type"] = { "application/pdf" } } } })
+  t.eq(code, 1)
+  t.eq(rec.err, { "html: not an HTML page: application/pdf" })
+  url_clean(rec)
+end
+
+function T.url_ctrl_c_during_connect()
+  local code, rec = run_url({ URL }, { default = { connect_polls = 100 } }, {
+    on_interrupt = capture_listener,
+    sleep = function(s) current.interrupt() os.sleep(s) end,
+  })
+  t.eq(code, 130)
+  t.eq(rec.err, { "html: interrupted" })
+  t.eq(current.removes, 1)
+  url_clean(rec)
+end
+
+function T.url_ctrl_c_during_the_body()
+  local body = { "<p>a</p>" }
+  for _ = 1, 20 do
+    body[#body + 1] = ""
+  end
+  local code, rec = run_url({ "--stats", URL }, { default = { body = body,
+    endless = true } }, {
+    on_interrupt = capture_listener,
+    sleep = function(s) current.interrupt() os.sleep(s) end,
+  })
+  t.eq(code, 130)
+  t.eq(rec.err[1], "html: interrupted")
+  t.eq(rec.err[#rec.err], "stats: stopped=html: interrupted")
+  url_clean(rec)
+end
+
+function T.url_event_interrupt_error_closes_the_handle()
+  local code, rec = run_url({ URL }, { default = { connect_polls = 5 } }, {
+    sleep = function() error("interrupted", 0) end,
+  })
+  t.eq(code, 130)
+  t.eq(rec.err, { "html: interrupted" })
+  url_clean(rec)
+end
+
+-- Error status --------------------------------------------------------------
+
+function T.error_status_in_the_viewer()
+  local code, rec = run_url({ URL }, { default = page_script(
+    "<title>Oops</title><p>gone</p>", { code = 404, message = "Not Found" }) })
+  t.eq(code, 0)
+  t.eq(rec.err, {})
+  t.eq(rec.views[1].opts.title, "[HTTP 404] Oops")
+  url_clean(rec)
+  code, rec = run_url({ URL }, { default = page_script("<p>gone</p>",
+    { code = 500 }) })
+  t.eq(code, 0)
+  t.eq(rec.views[1].opts.title, "[HTTP 500] " .. URL)
+end
+
+function T.error_status_in_print_mode()
+  local code, rec = run_url({ "--print", "--stats", URL }, { default =
+    page_script("<p>gone</p>", { code = 404, message = "Not Found" }) })
+  t.eq(code, 0)
+  t.eq(rec.err[1], "html: HTTP 404 Not Found: " .. URL)
+  t.eq(rec.events[1], "err")
+  t.eq(rec.events[2], "out")
+  t.eq(rec.out, { "gone" })
+  t.ok(stats_line(rec, "stats: http=404 redirects=0 fetch="))
+  t.eq(stats_line(rec, "stats: stopped="), nil)
+end
+
+function T.error_status_short_page_in_print_mode()
+  local code, rec = run_url({ "--print", URL }, { default = { code = 503,
+    message = "Unavailable", body = {} } })
+  t.eq(code, 0)
+  t.eq(rec.err, { "html: HTTP 503 Unavailable: " .. URL })
+  t.eq(rec.out, { "HTTP 503 Unavailable", "", URL })
+end
+
+function T.error_status_read_error_after_the_text()
+  local code, rec = run_url({ "--print", URL }, { default = page_script(
+    "<p>part</p>", { code = 500, message = "Err", read_error = "reset" }) })
+  t.eq(code, 0)
+  t.eq(rec.err, { "html: HTTP 500 Err: " .. URL, "html: read error: reset" })
+  t.eq(rec.events[#rec.events], "err")
+  t.eq(rec.out, { "part" })
+  code, rec = run_url({ URL }, { default = page_script("<p>part</p>",
+    { code = 500, read_error = "reset" }) })
+  t.eq(code, 0)
+  t.eq(rec.events, { "view", "err" })
+  t.eq(rec.err, { "html: read error: reset" })
+end
+
+-- Arguments without a scheme ------------------------------------------------
+
+-- Runs one argument with a fake exists. Returns "local", "url <requested>",
+-- or the error line, and the exit code.
+local function classify(arg, exists)
+  local code, rec = run_url({ arg }, { default = page_script() }, {
+    exists = function() return exists end,
+  })
+  if #rec.ctl.requests > 0 then
+    return "url " .. rec.ctl.requests[1], code
+  end
+  if code == 0 and #rec.views == 1 then
+    return "local", code
+  end
+  return rec.err[1], code
+end
+
+function T.arguments_without_a_scheme()
+  local nf = "html: file not found: "
+  local cases = {
+    { "./x.html", true, "local" },
+    { "./x.html", false, nf .. "./x.html" },
+    { "x.html", true, "local" },
+    { "x.html", false, nf .. "x.html" },
+    { "dir/x.html", false, nf .. "dir/x.html" },
+    { "dir/example.com", false, nf .. "dir/example.com" },
+    { "example.com", true, "local" },
+    { "example.com", false, "url http://example.com" },
+    { "EXAMPLE.COM", false, "url http://EXAMPLE.COM" },
+    { "example.com/path", false, "url http://example.com/path" },
+    { "example.com/", false, "url http://example.com/" },
+    { "example.com:8080/a?b=1", false, "url http://example.com:8080/a?b=1" },
+    { "example.com#top", false, "url http://example.com" },
+    { "localhost", false, "url http://localhost" },
+    { "localhost:8080", false, "url http://localhost:8080" },
+    { "192.168.0.1", false, "url http://192.168.0.1" },
+    { "foo", false, nf .. "foo" },
+    { "foo:8080", false, nf .. "foo:8080" },
+    { "example..com", false, nf .. "example..com" },
+    { "a.-b.com", false, nf .. "a.-b.com" },
+    { "example.com:", false, nf .. "example.com:" },
+    { "example.com:0", false, nf .. "example.com:0" },
+    { "example.com:99999", false, nf .. "example.com:99999" },
+    { "exa mple.com", false, nf .. "exa mple.com" },
+    { "ex\195\164mple.com", false, nf .. "ex\195\164mple.com" },
+    { "~/example.com", false, nf .. "~/example.com" },
+  }
+  for _, c in ipairs(cases) do
+    local got, code = classify(c[1], c[2])
+    t.eq(got, c[3], c[1] .. " exists=" .. tostring(c[2]))
+    t.eq(code, got:sub(1, 6) == "html: " and 1 or 0, c[1])
+  end
+  local code, rec = run_url({ "ftp://example.com" }, {}, {
+    exists = function() error("not checked") end,
+  })
+  t.eq(code, 2)
+  t.eq(rec.err, { "html: unsupported URL scheme: ftp" })
+end
+
+function T.guessed_url_errors_name_the_argument()
+  local suffix = " (no local file named example.com)"
+  local code, rec = run_url({ "example.com" }, { default =
+    { connect_error = "refused" } }, { exists = function() return false end })
+  t.eq(code, 1)
+  t.eq(rec.err, { "html: cannot connect: http://example.com: refused"
+    .. suffix })
+  code, rec = run_url({ "--print", "example.com" }, { default =
+    page_script(PAGE, { read_error = "reset" }) },
+    { exists = function() return false end })
+  t.eq(rec.err, { "html: read error: reset" .. suffix })
+  code, rec = run_url({ "example.com" }, {}, { internet = false,
+    exists = function() return false end })
+  t.eq(rec.err, { "html: no internet card found (needed for "
+    .. "http://example.com)" .. suffix })
+end
+
+function T.usage_lists_the_url_forms()
+  t.ok(html.USAGE:find("http://", 1, true))
+  t.ok(html.USAGE:find("https://", 1, true))
+end
+
 -- A fake package.loaded with html modules and one other module.
 local function fake_loaded()
   return { ["html.guard"] = {}, ["html.viewer"] = {}, computer = {} }

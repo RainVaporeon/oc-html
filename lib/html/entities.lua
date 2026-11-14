@@ -71,6 +71,8 @@ local WIN1252 = {
   [0x98] = 0x02DC, [0x99] = 0x2122, [0x9A] = 0x0161, [0x9B] = 0x203A,
   [0x9C] = 0x0153, [0x9E] = 0x017E, [0x9F] = 0x0178,
 }
+-- fetch.lua uses the same table to convert Windows-1252 bodies.
+M.WIN1252 = WIN1252
 
 -- Applies the cleaning rules to one code point.
 local function code_point(cp)

@@ -1,6 +1,6 @@
 # Handoff: oc-html
 
-Date: 2026-11-14. Branch: `master` (the only branch). Last commit at handoff: `02397e0 Add release 0.1.1a`.
+Date: 2026-11-14. Branch: `master` (the only branch). Last release: 0.2.0a.
 
 ## Purpose
 
@@ -8,21 +8,25 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
 
 ## Current state
 
-- Release: 0.1.1a (`releases/0.1.1a/`, `releases/latest` points to it). The MVP is finished (decided by the user on 2026-11-14).
-- 0.1.0a is frozen and has a broken installer: OpenOS `file:close()` returns no values on success, and 0.1.0a read that as a failure. 0.1.1a fixes this in `tools/installer.lua` and `M.write_text` in `bin/html.lua`. The `lib/` files of 0.1.0a and 0.1.1a are identical.
-- Works: forgiving streaming tokenizer, entities and UTF-8 cleaning, layout with styles and word wrap, viewer with scrolling, colors by depth and a quit prompt, `--print`, `--width`, `--stats`, `--stats-out`, `--no-rescale`, memory guard (guard v2), Ctrl+C, error log, one-file installer.
-- Verified in the container: `pwsh tests/docker/test.ps1` gives 363 passed, 0 failed, 1 skipped. `fuzz 1000` (seed 1794647241) gives 0 failures.
-- Verified in game: the probes (`docs/probe/`), the tracer bullet and memory runs up to 0.0.4a (`docs/ingame/`, `tasks/archive/mvp-plan.md` "Measurements"). The user accepted the 0.1.0a viewer and exit-path checks (`docs/ingame/mvp.md` sections 3, 5, 7 and 8). No measured values are recorded for them.
-- Verified in game on 2026-11-14: `html --print` on the three pages in `tests/real/` gives readable text (follow-up F1, done).
-- Not verified in game: `docs/ingame/mvp.md` sections 4 and 6, a low-RAM machine, and the 0.1.1a installer itself.
-
+- Release: 0.2.0a (`releases/0.2.0a/`, `releases/latest` points to it). It adds remote fetching: `html http(s)://...` streams the response into the renderer. Remote fetching is implemented and not yet verified in game.
+- Older releases are frozen. 0.1.0a has a broken installer (OpenOS `file:close()` returns no values on success). 0.1.1a fixes it. 0.1.1a is the last local-only release.
+- Works: everything in 0.1.1a (tokenizer, entities, UTF-8 cleaning, layout, viewer, `--print`, `--width`, `--stats`, `--stats-out`, `--no-rescale`, guard v2, Ctrl+C, error log, one-file installer), plus `lib/html/fetch.lua` (internet card client, HTTP status handling, redirects, limits).
+- Verified in the container: `pwsh tests/docker/test.ps1` gives 437 passed, 0 failed, 1 skipped (`f5_restore_closure_outside_pcall`, expected). `fuzz 1000` with seed 1794649681 gives 0 failures. The tests use a fake internet card in `tests/shim/internet.lua`.
+- Verified in game: the probes (`docs/probe/`), the tracer bullet and memory runs up to 0.0.4a, the 0.1.0a viewer and exit paths, and `html --print` on the pages in `tests/real/` (2026-11-14).
+- Not verified in game: all remote fetching, `docs/ingame/mvp.md` sections 4 and 6, a low-RAM machine, and the 0.1.1a installer.
+- Risks in the fetch code. The fake card follows assumptions that no in-game measurement has confirmed yet.
+  - N1: the exact methods of the internet component, the request handle and the `headers` type are unknown.
+  - N3: it is unknown whether `response()` gives a value before the first `read`. The wait order in `fetch.open` depends on it.
+  - N10: it is unknown whether the card gives the body of a 404 or 500 response. Java raises on these statuses. The code covers both cases, but decision D2 needs the real answer.
+  - Full list: `SPEC.md` "Probe script plan" (N1 to N15).
+- `VERSION` in `lib/html/fetch.lua` is a constant. Update it by hand before each release. A release script run does not change it.
 ## Repository map
 
 - `AGENTS.md`: project description and feature goals, for any agent.
 - `SPEC.md`: the MVP specification (commands, design, limits, tests, releases, boundaries).
 - `bin/html.lua`: entry point (arguments, error boundary, stats, screen restore).
-- `lib/html/`: `guard.lua` (yields, memory), `tokenizer.lua`, `entities.lua`, `text.lua` (UTF-8 cleaning), `layout.lua` (styled lines), `viewer.lua` (screen, keys).
-- `tests/`: `run.lua` (sandboxed runner), `*_test.lua` (unit tests), `shim/` (OpenOS fakes), `cases/` (HTML with expected text), `real/` (saved real pages), `pages/large.html` (about 1 MB, generated), `fuzz.lua` and `fuzz-corpus/`, `docker/` (Dockerfile and `test.ps1`).
+- `lib/html/`: `fetch.lua` (internet card client), `guard.lua` (yields, memory), `tokenizer.lua`, `entities.lua`, `text.lua` (UTF-8 cleaning), `layout.lua` (styled lines), `viewer.lua` (screen, keys).
+- `tests/`: `run.lua` (sandboxed runner), `*_test.lua` (unit tests), `shim/` (OpenOS fakes, including a fake internet card), `cases/` (HTML with expected text), `real/` (saved real pages), `pages/large.html` (about 1 MB, generated), `fuzz.lua` and `fuzz-corpus/`, `docker/` (Dockerfile and `test.ps1`).
 - `tools/`: `release.ps1` (makes a release), `mkinstall.lua` and `installer.lua` (one-file installer), `genpage.lua` (makes `tests/pages/large.html`), `probe.lua`, `probe2.lua`, `memprobe.lua` (in-game measurement scripts, not released).
 - `releases/`: frozen release folders and the `latest` symlink.
 - `docs/intent/mvp.md`: the confirmed MVP intent. `docs/probe/`: probe outputs and `FACTS.md` (measured machine facts). `docs/ingame/`: in-game checklists and results.
@@ -35,7 +39,7 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
 - Build the test image once: `docker build -t oc-html-test tests/docker`.
 - All tests: `pwsh tests/docker/test.ps1`. The one skip (`f5_restore_closure_outside_pcall`) is known and expected.
 - Fuzz: `pwsh tests/docker/test.ps1 fuzz 1000 [SEED]`. Failures go to `tests/fuzz-failures/` (ignored). Turn each new failure into a unit test.
-- Release: commit `bin/`, `lib/` and the installer tools first, then `pwsh tools/release.ps1 <version>` (for example `0.1.2a`). It runs the tests, copies the files, writes `files.txt`, `release.tar.gz` and `html-install.lua`, and updates `releases/latest` in the index. Then commit the new folder and `releases/latest`.
+- Release: commit `bin/`, `lib/` and the installer tools first, then `pwsh tools/release.ps1 <version>` (for example `0.2.1a`). It runs the tests, copies the files, writes `files.txt`, `release.tar.gz` and `html-install.lua`, and updates `releases/latest` in the index. Then commit the new folder and `releases/latest`.
 - Test code runs only in the container (sandbox flags in `SPEC.md` "Sandbox"). Do not run it on the host.
 
 ## Pitfalls
@@ -59,11 +63,8 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
 
 ## Next step
 
-Start roadmap item 1, remote fetching (`tasks/todo.md`). First write its spec section in `SPEC.md` and list the in-game measurements it needs. Get the user's approval before code starts.
+Write `tools/netprobe.lua` (`SPEC.md` "Probe script plan") and collect N1 to N15 in game. Record the results in `docs/probe/FACTS.md`. Then fix the fetch code where the measurements differ from the assumptions, and run the in-game checks for remote pages.
 
 ## Open questions for the user
 
-1. F1: can you run `html --print` on the three pages in `tests/real/` in game and report whether the text is readable?
-User response: Yes.
-2. Remote fetching: stream a response into the renderer, or save it to a cache file first?
-User response: Streamed.
+None. The earlier questions are answered: F1 is done, and remote responses are streamed.

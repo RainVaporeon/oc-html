@@ -213,8 +213,9 @@ local function driver(argv)
   })
   debug.sethook()
   print(string.format("fuzz: seed=%d documents=%d bytes=%d controlled=%d"
-    .. " failures=%d time=%.1f s", seed, summary.documents, summary.bytes,
-    summary.controlled, summary.failures, os.clock() - clock0))
+    .. " card=%d card_controlled=%d failures=%d time=%.1f s", seed,
+    summary.documents, summary.bytes, summary.controlled, summary.card,
+    summary.card_controlled, summary.failures, os.clock() - clock0))
   local gens = {}
   for name, count in pairs(summary.by_generator) do
     gens[#gens + 1] = name .. "=" .. count
@@ -809,8 +810,9 @@ local function same_lines(a, b)
   return true
 end
 
--- Runs one input through both pipelines and the oracles. Returns nil, or
--- "controlled" for an allowed controlled error, or "fail" and a message.
+-- Runs one input through both pipelines and the oracles. Returns nil, nil
+-- and the lines, or "controlled" for an allowed controlled error, or "fail"
+-- and a message.
 function M.check(input, width, chunk, traceback)
   local ok1, r1 = render(input, width, chunk, traceback)
   local ok2, r2 = render(input, width, #input + 1, traceback)
@@ -835,6 +837,189 @@ function M.check(input, width, chunk, traceback)
   local bad = M.check_lines(r2, width)
   if bad then
     return "fail", bad
+  end
+  return nil, nil, r2
+end
+
+-- Card runs -------------------------------------------------------------------
+-- A share of the documents also goes through the fake internet card and
+-- fetch.lua, with random chunk sizes, "" gaps, headers and errors.
+
+local fetch = require("html.fetch")
+local internet = require("internet")
+local computer = require("computer")
+
+local CARD_SHARE = 0.3
+local CARD_URL = "http://fuzz.example/doc"
+
+local CARD_STATUS = { 200, 200, 200, 200, 201, 204, 404, 500, 503, 302 }
+local CARD_TYPES = { false, "text/html", "text/plain",
+  "application/xhtml+xml", "image/png", "application/json",
+  "text/html; charset=windows-1252", "text/html; charset=ISO-8859-1",
+  "text/html; charset=latin1", "text/html; charset=utf-8",
+  "text/html; charset=koi8-r", "text/html;charset=\"windows-1252\"" }
+
+-- The media type of a Content-Type value, in lower case.
+local function lower_media(ctype)
+  return (ctype:match("^[^;]*"):lower():match("^%s*(.-)%s*$"))
+end
+
+-- The card run of a document has its own generator, so the documents of a
+-- seed stay the same as before the card runs existed.
+function M.card_rng(seed, index)
+  return M.rng((seed * 1000003 + index) ~ 0x5DEECE66D)
+end
+
+-- Builds a card script for input. Returns the script, a short description
+-- and true when the body is served unchanged (the output must then equal
+-- the output of a plain run).
+function M.card_script(r, input)
+  local script = { headers = {}, code = r.pick(CARD_STATUS),
+    message = r.pick({ "OK", "", "Not Found", "<b>&" }) }
+  local ctype = r.pick(CARD_TYPES)
+  if ctype then
+    script.headers["Content-Type"] = { ctype }
+  end
+  local encoded = r.chance(0.05)
+  if encoded then
+    script.headers["Content-Encoding"] = { "gzip" }
+  end
+  local k = r.int(1, 5)
+  if k == 1 then
+    script.headers["Content-Length"] = { tostring(#input) }
+  elseif k == 2 then
+    script.headers["Content-Length"] = { tostring(r.int(0, 2 * #input)) }
+  elseif k == 3 then
+    script.headers["content-length"] = r.pick({ "x", "-1", " 12 ", "" })
+  end
+  if script.code == 302 and r.chance(0.5) then
+    script.headers.Location = { r.pick({ "/doc", "//x", "ftp://x",
+      "http://fuzz.example/doc", "x y" }) }
+  end
+  local size = r.pick({ 1, 2, 3, 7, 16, 100, 4096, 5000, 65536,
+    r.int(1, 9000) })
+  local gaps = r.float() * 0.5
+  local body = {}
+  for i = 1, #input, size do
+    body[#body + 1] = sub(input, i, i + size - 1)
+    while r.chance(gaps) do
+      body[#body + 1] = ""
+    end
+  end
+  local cut = r.int(1, 12)
+  if cut == 1 then
+    -- A mid-stream error after a random part of the body.
+    script.read_error = "reset"
+    for i = r.int(1, #body + 1), #body do
+      body[i] = nil
+    end
+  elseif cut == 2 then
+    script.read_raise = "broken pipe"
+  elseif cut == 3 then
+    script.endless = true
+  end
+  script.body = body
+  script.connect_polls = r.int(0, 3)
+  script.response_polls = r.int(0, 3)
+  if r.chance(0.03) then
+    script.connect_error = "unknown host"
+  end
+  local media = ctype and lower_media(ctype) or ""
+  local same = cut > 3 and not encoded and script.code >= 200
+    and script.code <= 299 and (media == "" or media == "text/html"
+    or media == "text/plain" or media == "application/xhtml+xml")
+    and not (ctype and find(ctype:lower(), "1252", 1, true))
+    and not (ctype and find(ctype:lower(), "latin1", 1, true))
+    and not (ctype and find(ctype:lower(), "8859", 1, true))
+    and not script.connect_error
+  local desc = string.format("code=%d type=%s size=%d gaps=%.2f cut=%d"
+    .. " encoded=%s", script.code, tostring(ctype), size, gaps, cut,
+    tostring(encoded))
+  return script, desc, same
+end
+
+-- Runs input through the fake card and the pipeline. Returns nil, or
+-- "controlled", or "fail" and a message. plain is the result of the plain
+-- run (the lines) when it ended without an error.
+function M.check_card(input, width, r, plain, traceback)
+  local script, desc, same = M.card_script(r, input)
+  local card, ctl = internet.new({ default = script })
+  local interrupt_after = r.chance(0.05) and r.int(0, 3) or nil
+  local waits = 0
+  local links = {
+    internet = card,
+    clock = computer.uptime,
+    sleep = os.sleep,
+    interrupted = function()
+      waits = waits + 1
+      return interrupt_after ~= nil and waits > interrupt_after
+    end,
+  }
+  local resp
+  local ok, result = xpcall(function()
+    local why
+    resp, why = fetch.open(CARD_URL, links, {})
+    if not resp then
+      error(why, 0)
+    end
+    local read = function()
+      local s, err = resp.read()
+      if s == nil and err then
+        error(err, 0)
+      end
+      return s
+    end
+    guard.reset()
+    local lay = layout.new(width)
+    local next_token = tokenizer.new(read, lay.count)
+    local limit = 20 * #input + 1000
+    local tokens = 0
+    while true do
+      local kind, value, attrs, self_closing = next_token()
+      if not kind then
+        break
+      end
+      tokens = tokens + 1
+      if tokens > limit then
+        error("fuzz: token limit " .. limit .. " exceeded", 0)
+      end
+      lay.push(kind, value, attrs, self_closing)
+    end
+    return lay.finish()
+  end, function(e)
+    if type(e) == "string" and sub(e, 1, 6) == "html: " then
+      return e
+    end
+    return traceback and traceback(tostring(e), 2) or tostring(e)
+  end)
+  if resp then
+    resp.close()
+  end
+  local prefix = "card run (" .. desc .. "): "
+  for i, h in ipairs(ctl.handles) do
+    if h.closed ~= 1 then
+      return "fail", prefix .. "handle " .. i .. " closed " .. h.closed
+        .. " times"
+    end
+  end
+  if ctl.open ~= 0 then
+    return "fail", prefix .. ctl.open .. " connections left open"
+  end
+  if not ok then
+    if is_controlled(result) then
+      return "controlled"
+    end
+    return "fail", prefix .. tostring(result)
+  end
+  local bad = M.check_lines(result, width)
+  if bad then
+    return "fail", prefix .. bad
+  end
+  if same and plain and interrupt_after == nil then
+    local equal, why = same_lines(result, plain)
+    if not equal then
+      return "fail", prefix .. "card and plain output differ: " .. why
+    end
   end
   return nil
 end
@@ -899,7 +1084,7 @@ function M.run(opts)
     sources.large = read_file(opts.large)
   end
   local summary = { documents = 0, bytes = 0, controlled = 0, failures = 0,
-    by_generator = {} }
+    by_generator = {}, card = 0, card_controlled = 0 }
   for index = opts.only or 1, opts.only or opts.n do
     if opts.on_document then
       opts.on_document(index)
@@ -909,8 +1094,21 @@ function M.run(opts)
     summary.bytes = summary.bytes + #input
     summary.by_generator[info.generator] =
       (summary.by_generator[info.generator] or 0) + 1
-    local result, message = M.check(input, info.width, info.chunk,
+    local result, message, plain = M.check(input, info.width, info.chunk,
       opts.traceback)
+    if result ~= "fail" then
+      local r = M.card_rng(opts.seed, index)
+      if r.chance(CARD_SHARE) then
+        summary.card = summary.card + 1
+        local card_result, card_message = M.check_card(input, info.width, r,
+          plain, opts.traceback)
+        if card_result == "fail" then
+          result, message = card_result, card_message
+        elseif card_result == "controlled" then
+          summary.card_controlled = summary.card_controlled + 1
+        end
+      end
+    end
     if result == "controlled" then
       summary.controlled = summary.controlled + 1
     elseif result == "fail" then

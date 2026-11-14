@@ -66,8 +66,13 @@ local INTERRUPTED = "html: interrupted"
 local MAX_WIDTH = 1024
 
 M.USAGE = [[
-Usage: html [options] <file>
-Shows a local HTML file in a full-screen viewer.
+Usage: html [options] <file | url>
+Shows a local HTML file or a web page in a full-screen viewer.
+  html page.html          a local file
+  html http://host/path   a web page (https:// also works, needs an
+                          internet card)
+  html host/path          http://host/path, when no local file has
+                          that name
 Options:
   --print             write the page as plain text to stdout
   --width <n>         wrap lines at n columns (sets --print,
@@ -205,6 +210,21 @@ local function load_modules()
   return true
 end
 
+-- Loads html.fetch, only for a URL or a missing local file. Returns true,
+-- or nil and a controlled message.
+local fetch
+local function load_fetch()
+  if fetch then
+    return true
+  end
+  local ok, mod = pcall(require, "html.fetch")
+  if not ok then
+    return nil, "html: cannot load html.fetch: " .. reason(mod)
+  end
+  fetch = mod
+  return true
+end
+
 -- Removes the style bytes.
 local function plain(line)
   if find(line, "[\1-\5]") then
@@ -248,30 +268,28 @@ local function int_text(v)
   return tostring(math.tointeger(math.floor(v)) or v)
 end
 
--- Checks the file size, renders the file, and prints the lines or opens
--- the viewer. Fills st with the stats values as it goes, so a render that
--- stops still has the values up to that point. done() is called when the
--- render ends. Returns the viewer result, or nil in print mode.
-local function run(f, opts, deps, st, done)
+-- Checks the input size, renders the input, and prints the lines or opens
+-- the viewer. source: read() (a chunk, or nil at the end; it raises on an
+-- error), size (bytes known before reading, or nil), kind ("file" or
+-- "page", for the size message), name (shown without a title) and prefix
+-- (put before the title, or nil).
+-- Fills st with the stats values as it goes, so a render that stops still
+-- has the values up to that point. done() is called when the render ends.
+-- Returns the viewer result, or nil in print mode.
+local function run(source, opts, deps, st, done)
   local free = guard.settled_free()
   if opts.stats then
     st.free_before = free
   end
-  if is_num(st.size) and st.size * SIZE_COST_MIN > free then
-    error("html: file too large for available memory (" .. int_text(st.size)
-      .. " bytes, " .. int_text(free) .. " free)", 0)
+  local size = source.size
+  if is_num(size) and size * SIZE_COST_MIN > free then
+    error("html: " .. source.kind .. " too large for available memory ("
+      .. int_text(size) .. " bytes, " .. int_text(free) .. " free)", 0)
   end
   -- The lowest free reading starts here, after the settled reading.
   guard.reset()
   local clock0, wall0 = deps.clock(), deps.uptime and deps.uptime()
-  local lines, title = M.render(function()
-    local chunk, why = f:read(CHUNK)
-    -- A plain nil is the end of the input. A nil with a message is an error.
-    if chunk == nil and why then
-      error("html: read error: " .. reason(why), 0)
-    end
-    return chunk
-  end, st.width)
+  local lines, title = M.render(source.read, st.width)
   st.cpu = deps.clock() - clock0
   if wall0 then
     st.wall = deps.uptime() - wall0
@@ -285,7 +303,10 @@ local function run(f, opts, deps, st, done)
     if title == "" then
       title = nil
     end
-    return deps.view(lines, { title = title, file = opts.file,
+    if source.prefix then
+      title = source.prefix .. (title or source.name)
+    end
+    return deps.view(lines, { title = title, file = source.name,
       no_rescale = opts.no_rescale })
   end
   local out = deps.out
@@ -327,6 +348,11 @@ function M.stats_lines(st, lowest, trace, counts)
     s[#s + 1] = "stats: " .. line
   end
   add("file=" .. bytes_text(st.size))
+  if st.url ~= nil then
+    add("url=" .. tostring(st.url))
+    add("http=" .. int_text(st.http) .. " redirects="
+      .. int_text(st.redirects) .. " fetch=" .. seconds_text("%.2f", st.fetch))
+  end
   add("width=" .. int_text(st.width))
   local lines = is_num(st.lines) and st.lines or nil
   if st.lines ~= nil then
@@ -497,6 +523,8 @@ end
 --                          Returns "quit" or "interrupted"
 --   on_interrupt(fn)       optional, calls fn on Ctrl+C. Returns a function
 --                          that removes the listener
+--   internet               optional, the internet card proxy (for a URL)
+--   sleep(seconds)         optional, os.sleep. The fetch waits with it
 -- Returns the exit code.
 function M.main(argv, deps)
   local opts, msg = M.parse_args(argv)
@@ -508,13 +536,21 @@ function M.main(argv, deps)
     deps.out(M.USAGE)
     return 0
   end
-  local path = M.expand_home(opts.file, deps.home)
-  path = deps.resolve and deps.resolve(path) or path
+  local arg = opts.file
+  -- An argument with a scheme is a URL. Any other argument is a local path
+  -- first (see SPEC.md "Arguments without a scheme").
+  local url, path, guessed
+  if find(arg, "^%a[%w+.-]*://") then
+    url = arg
+  else
+    path = M.expand_home(arg, deps.home)
+    path = deps.resolve and deps.resolve(path) or path
+  end
   if opts.stats_out then
     local out_path = M.expand_home(opts.stats_out, deps.home)
     out_path = deps.resolve and deps.resolve(out_path) or out_path
     opts.stats_path = out_path
-    if out_path == path then
+    if path and out_path == path then
       deps.err("html: --stats-out must not be the input file: "
         .. opts.stats_out)
       return EXIT_USAGE
@@ -534,12 +570,32 @@ function M.main(argv, deps)
     deps.err(load_why)
     return EXIT_ERROR
   end
-  if deps.exists and not deps.exists(path) then
-    deps.err("html: file not found: " .. opts.file)
-    return EXIT_ERROR
+  if path and deps.exists and not deps.exists(path) then
+    local fetch_loaded, fetch_why = load_fetch()
+    if not fetch_loaded then
+      deps.err(fetch_why)
+      return EXIT_ERROR
+    end
+    if not fetch.looks_like_host(arg) then
+      deps.err("html: file not found: " .. arg)
+      return EXIT_ERROR
+    end
+    url, path, guessed = "http://" .. arg, nil, true
   end
-  if deps.is_dir and deps.is_dir(path) then
-    deps.err("html: not a file: " .. opts.file)
+  if url then
+    local fetch_loaded, fetch_why = load_fetch()
+    if not fetch_loaded then
+      deps.err(fetch_why)
+      return EXIT_ERROR
+    end
+    local u, why = fetch.parse_url(url)
+    if not u then
+      deps.err(why)
+      return EXIT_USAGE
+    end
+    url = u.url
+  elseif deps.is_dir and deps.is_dir(path) then
+    deps.err("html: not a file: " .. arg)
     return EXIT_ERROR
   end
   local width = opts.width or deps.width or DEFAULT_WIDTH
@@ -552,10 +608,13 @@ function M.main(argv, deps)
       opts.print = true
     end
   end
-  local f = deps.open(path, "rb")
-  if not f then
-    deps.err("html: cannot open file: " .. opts.file)
-    return EXIT_ERROR
+  local f
+  if path then
+    f = deps.open(path, "rb")
+    if not f then
+      deps.err("html: cannot open file: " .. arg)
+      return EXIT_ERROR
+    end
   end
 
   -- Ctrl+C during the render: the listener sets the flag during a yield,
@@ -593,9 +652,68 @@ function M.main(argv, deps)
     return traceback(tostring(e), 2)
   end
   local st = { width = width }
+  -- For a URL: the fetch progress (fetch.open fills it), the response and
+  -- the clock of the fetch.
+  local info, resp = {}, nil
+  local fetch_clock = deps.uptime or deps.clock
+  -- A fetch error for a guessed URL names the argument, so a mistyped file
+  -- name is clear.
+  local suffix = guessed and (" (no local file named " .. arg .. ")") or ""
+  local function fetch_error(why)
+    if why ~= INTERRUPTED then
+      why = why .. suffix
+    end
+    error(why, 0)
+  end
+
+  -- Returns the source for run: the file, or the response of url.
+  local function open_source()
+    if not url then
+      st.size = file_size(f, path, deps)
+      return {
+        read = function()
+          local chunk, why = f:read(CHUNK)
+          -- A plain nil is the end of the input. A nil with a message is an
+          -- error.
+          if chunk == nil and why then
+            error("html: read error: " .. reason(why), 0)
+          end
+          return chunk
+        end,
+        size = st.size, kind = "file", name = arg,
+      }
+    end
+    st.url = url
+    local why
+    resp, why = fetch.open(url, { internet = deps.internet,
+      clock = fetch_clock, sleep = deps.sleep or os.sleep,
+      interrupted = function() return interrupted end }, info)
+    if not resp then
+      fetch_error(why)
+    end
+    open_file = resp
+    local status = "HTTP " .. int_text(resp.status)
+    if resp.is_error and opts.print then
+      -- A notice, not an error: the body renders (decision D2).
+      deps.err("html: " .. status .. (resp.message ~= "" and (" "
+        .. resp.message) or "") .. ": " .. resp.final_url)
+    end
+    return {
+      read = function()
+        local chunk, err = resp.read()
+        if chunk == nil and err then
+          fetch_error(err)
+        end
+        return chunk
+      end,
+      size = resp.length, kind = "page", name = resp.final_url,
+      prefix = resp.is_error and ("[" .. status .. "] ") or nil,
+    }
+  end
+
   local ok, result = xpcall(function()
-    st.size = file_size(f, path, deps)
-    return run(f, opts, deps, st, function()
+    local source = open_source()
+    local viewed = run(source, opts, deps, st, function()
       close_file()
       if interrupted then
         error(INTERRUPTED, 0)
@@ -606,10 +724,29 @@ function M.main(argv, deps)
         stop_listening()
       end
     end)
+    -- An error status ends its body at a read error. The received part
+    -- rendered, so the error follows the page text or the viewer.
+    if resp and resp.read_error then
+      deps.err(resp.read_error .. suffix)
+    end
+    return viewed
   end, handler)
   -- Each step runs alone, so a failure in one does not skip the other.
   pcall(stop_listening)
   pcall(close_file)
+  if url then
+    st.url = info.url or url
+    st.size = resp and resp.bytes or 0
+    st.http = info.status
+    st.redirects = info.redirects
+    if is_num(info.started) then
+      local ended = info.ended
+      if not is_num(ended) then
+        ended = fetch_clock()
+      end
+      st.fetch = ended - info.started
+    end
+  end
 
   local code = 0
   if not ok and result == "interrupted" then
@@ -660,6 +797,10 @@ function M.game_deps()
   if component.isAvailable("gpu") then
     gpu = component.gpu
   end
+  local internet
+  if component.isAvailable("internet") then
+    internet = component.internet
+  end
   return {
     out = function(line) io.write(line, "\n") end,
     err = function(line) io.stderr:write(line, "\n") end,
@@ -683,6 +824,8 @@ function M.game_deps()
       return M.write_text(io.open, path, text)
     end,
     gpu = gpu,
+    internet = internet,
+    sleep = os.sleep,
     view = function(lines, opts)
       local viewer = need("html.viewer")
       return viewer.run(lines, opts, { gpu = gpu, pull = event.pull,

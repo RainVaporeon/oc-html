@@ -58,7 +58,25 @@ function T.short_run_has_no_failures()
     end,
   })
   t.eq(summary.documents, 30)
+  t.ok(summary.card > 0, "some documents go through the card")
   t.eq(failures, {})
+end
+
+function T.card_runs_pass_on_a_valid_page()
+  local doc = "<title>T</title><h1>Head</h1><p>caf\195\169 &amp; more "
+    .. "text</p><pre>a\tb</pre>"
+  local plain = select(3, fuzz.check(doc, 40, 3))
+  t.ok(plain, "plain run")
+  for i = 1, 200 do
+    local result, message = fuzz.check_card(doc, 40, fuzz.card_rng(9, i),
+      plain)
+    t.ok(result ~= "fail", "script " .. i .. ": " .. tostring(message))
+  end
+end
+
+function T.card_rng_does_not_change_the_documents()
+  t.ok(fuzz.card_rng(7, 1).int(1, 1000000) ~= fuzz.doc_rng(7, 1).int(1,
+    1000000), "separate generators")
 end
 
 return T
