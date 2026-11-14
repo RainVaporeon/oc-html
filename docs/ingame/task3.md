@@ -7,7 +7,10 @@ numbers in `docs/probe/FACTS.md`.
 
 Fetch each file from the remote source to the path in the right column.
 `<BASE>` is the raw URL of the repository source.
-`releases/latest/` points to the newest build, if the host follows symlinks.
+`releases/latest` is a symlink, and the host may not follow it. Use the version
+path `releases/0.0.1a/`.
+`releases/0.0.1a/release.tar.gz` holds the same files, for transfer outside the
+game.
 
 | Source file (`bin/` and `lib/` are under `releases/0.0.1a/`) | Path in game |
 |---|---|

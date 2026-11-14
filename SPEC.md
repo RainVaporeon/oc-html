@@ -68,7 +68,9 @@ A release is a fixed copy of the in-game files.
 - Path: `releases/<version>[suffix]/<output>`.
 - Version: `major.minor.patch`. Suffix `a` is alpha, `b` is beta, no suffix is a real release.
 - Plan: the tracer bullet is `0.0.1a`. Test builds before the MVP are `0.0.x` with `a`. The MVP is `0.1.0a`.
-- `releases/latest` is a symlink to the newest release folder.
+- `releases/latest` is a symlink to the newest release folder. It does not resolve on the user's host (it shows as a plain file that holds the version text). It stays for local use. Fetch by version path, for example `releases/0.0.1a/bin/html.lua`.
+- Each release folder has `release.tar.gz` with the bin and lib files: the same files as `files.txt`, with the same relative paths.
+- Unpacking a `.tar.gz` in game needs gzip inflate and a tar program. The test machine has no data card, and OpenOS has no tar by default. So in game, fetch the single files. The tarball is for transfer outside the game.
 
 Release command (from the project root, Docker Desktop running):
 ```
@@ -81,14 +83,23 @@ The script stops when:
 - `bin/` or `lib/` has uncommitted changes (a release always matches a commit),
 - `pwsh tests/docker/test.ps1` fails.
 
-Then it copies the files, writes `files.txt` and updates `releases/latest`. If a real symlink cannot be created, it records the link in the git index only.
+Then it copies the files, writes `files.txt`, creates `release.tar.gz` (ustar format, sorted names, owner and group 0, made with the Windows `tar.exe`) and updates `releases/latest`. If a real symlink cannot be created, it records the link in the git index only.
 
 Layout (mirrors the in-game paths under `/home`):
 ```
 releases/<version>/bin/html.lua         goes to /home/bin/html.lua
 releases/<version>/lib/html/*.lua       goes to /home/lib/html/
 releases/<version>/files.txt            one relative path per line, sorted, LF endings
+releases/<version>/release.tar.gz     the files above except files.txt, same relative paths (gzip, ustar)
 ```
+
+The script checks the tarball: the list equals `files.txt`, and each extracted file is byte-identical to the release copy. It stops with an error if a check fails.
+
+Add only the tarball to an existing release that has none:
+```
+pwsh tools/release.ps1 -TarballOnly 0.0.1a
+```
+`-TarballOnly <version>` runs the same tar command and checks, and changes no other file. It stops if `release.tar.gz` already exists.
 
 `files.txt` lists the files of the release, not itself. A later installer reads it.
 
@@ -306,7 +317,7 @@ Lua environment (`tests/run.lua` and `tests/fuzz.lua`):
   - Show a raw traceback on the screen.
   - Run test code on the host outside the container.
   - Remove a sandbox flag or widen the Lua environment without asking.
-  - Change or delete a published release folder.
+  - Change or delete a published release folder. (One exception: release.tar.gz was added to 0.0.1a after publishing, at the user's request.)
 
 ## Success Criteria
 

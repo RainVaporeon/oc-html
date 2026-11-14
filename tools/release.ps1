@@ -1,6 +1,12 @@
 # Publishes a release under releases/<version> and points releases/latest at it.
 # Usage: pwsh tools/release.ps1 <version>     for example: pwsh tools/release.ps1 0.0.1a
 # Version: major.minor.patch, with suffix a (alpha), b (beta) or none (release).
+# Usage: pwsh tools/release.ps1 -TarballOnly <version>
+#   Only adds release.tar.gz to an existing release folder that has none.
+param(
+  [Parameter(Position = 0)][string]$Version,
+  [string]$TarballOnly
+)
 $ErrorActionPreference = 'Stop'
 
 function Fail($message) {
@@ -8,20 +14,75 @@ function Fail($message) {
   exit 1
 }
 
-if ($args.Count -ne 1) {
-  Write-Host 'usage: pwsh tools/release.ps1 <version>   (for example 0.0.1a)'
-  exit 2
-}
-$version = "$($args[0])"
-if ($version -notmatch '^\d+\.\d+\.\d+[ab]?$') {
-  Fail "bad version '$version'. Use major.minor.patch with an optional suffix a or b, for example 0.0.1a."
+# Creates releases/<version>/release.tar.gz from the files in files.txt, then checks it:
+# the archive list equals files.txt and every extracted file equals the release copy.
+function New-ReleaseTarball($target) {
+  $tar = Join-Path $env:SystemRoot 'System32' 'tar.exe'
+  if (-not (Test-Path -LiteralPath $tar)) { Fail "$tar not found (bsdtar is needed)." }
+  $listFile = Join-Path $target 'files.txt'
+  $archive = Join-Path $target 'release.tar.gz'
+  if (-not (Test-Path -LiteralPath $listFile)) { Fail "$listFile not found." }
+  if (Test-Path -LiteralPath $archive) { Fail 'release.tar.gz already exists. It is never overwritten.' }
+  $expected = @(Get-Content -LiteralPath $listFile | Where-Object { $_ -ne '' })
+
+  # Names come from files.txt in sorted order. ustar format, owner and group 0, no names.
+  & $tar --format ustar --uid 0 --gid 0 --uname '' --gname '' -czf $archive -C $target -T $listFile
+  if ($LASTEXITCODE -ne 0) { Fail 'tar failed to create release.tar.gz.' }
+
+  $listed = @(& $tar -tzf $archive)
+  if ($LASTEXITCODE -ne 0) { Fail 'tar failed to list release.tar.gz.' }
+  if (($listed -join "`n") -cne ($expected -join "`n")) {
+    Fail "release.tar.gz list differs from files.txt.`nlisted:`n$($listed -join "`n")"
+  }
+
+  $tmp = Join-Path ([IO.Path]::GetTempPath()) ("oc-html-tar-" + [guid]::NewGuid().ToString('N'))
+  New-Item -ItemType Directory $tmp | Out-Null
+  try {
+    & $tar -xzf $archive -C $tmp
+    if ($LASTEXITCODE -ne 0) { Fail 'tar failed to extract release.tar.gz.' }
+    foreach ($name in $expected) {
+      $a = Join-Path $target $name
+      $b = Join-Path $tmp $name
+      if (-not (Test-Path -LiteralPath $b)) { Fail "extracted file missing: $name" }
+      $x = [IO.File]::ReadAllBytes($a)
+      $y = [IO.File]::ReadAllBytes($b)
+      if ($x.Length -ne $y.Length -or [System.Linq.Enumerable]::SequenceEqual([byte[]]$x, [byte[]]$y) -eq $false) {
+        Fail "extracted file differs from the release copy: $name"
+      }
+    }
+  } finally {
+    Remove-Item -LiteralPath $tmp -Recurse -Force
+  }
+  Write-Host 'release.tar.gz:'
+  $listed | ForEach-Object { Write-Host "  $_" }
+  Write-Host "release.tar.gz size: $((Get-Item -LiteralPath $archive).Length) bytes"
 }
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $root
 
+if ($TarballOnly -and $Version) {
+  Write-Host 'usage: pwsh tools/release.ps1 <version>   or   pwsh tools/release.ps1 -TarballOnly <version>'
+  exit 2
+}
+if (-not $TarballOnly -and -not $Version) {
+  Write-Host 'usage: pwsh tools/release.ps1 <version>   (for example 0.0.1a)'
+  exit 2
+}
+$version = if ($TarballOnly) { $TarballOnly } else { $Version }
+if ($version -notmatch '^\d+\.\d+\.\d+[ab]?$') {
+  Fail "bad version '$version'. Use major.minor.patch with an optional suffix a or b, for example 0.0.1a."
+}
+
 $releases = Join-Path $root 'releases'
 $target = Join-Path $releases $version
+
+if ($TarballOnly) {
+  if (-not (Test-Path -LiteralPath $target)) { Fail "releases/$version does not exist." }
+  New-ReleaseTarball $target
+  exit 0
+}
+
 if (Test-Path -LiteralPath $target) {
   Fail "releases/$version already exists. A release is never overwritten."
 }
@@ -49,6 +110,8 @@ $files = Get-ChildItem -Recurse -File $target |
   Sort-Object { $_ } -CaseSensitive
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 [IO.File]::WriteAllText((Join-Path $target 'files.txt'), (($files -join "`n") + "`n"), $utf8)
+
+New-ReleaseTarball $target
 
 $link = Join-Path $releases 'latest'
 if (Test-Path -LiteralPath $link) { Remove-Item -LiteralPath $link -Recurse -Force }
