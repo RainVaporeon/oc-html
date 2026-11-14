@@ -1,6 +1,16 @@
 # Handoff: oc-html
 
-Date: 2026-11-15. Branch: `master` (the only branch). Last release: 0.3.0a.
+Date: 2026-11-15. Branch: `master` (the only branch). Last release: 0.3.0a. Unreleased changes since 0.3.0a: the HTTP error status mapping and the "errors keep the session" rule (see "Status update 2026-11-15").
+
+## Status update 2026-11-15 (netprobe v1)
+
+The user ran netprobe v1 in game (`datacollection/netprobe.txt`, ignored by git). The results are in `docs/probe/FACTS.md` "Internet card (netprobe v1)" and `docs/rationale.md` "Remote fetching: measurements (netprobe v1)".
+
+- Code changes (not released): `lib/html/fetch.lua` maps a `finishConnect` failure to an HTTP status (404 by the URL as the reason, other codes by the Java message, `pcall(h.response)` first) and returns a response with the short page, `popup` and `notice`. `bin/html.lua` shows every fetch error after the frame, and a guard memory stop, as a popup in the viewer and keeps the session (exit 0 on quit). Print mode, the no-screen path and errors before the frame are unchanged.
+- The fake card (`tests/shim/internet.lua`) copies the measured facts: callable-table methods, a limit of 4, `response()` nil until connect. `tools/netprobe.lua` has three fixes (callable tables, the `n3.before_connect` value, `response()` after a connect error).
+- The N1, N3 and N10 risks below are answered. N9 is partly answered (same-scheme redirects are followed by the card, so the final URL is unknown). N4 to N7, N8, N12 (default config), N13 `--leak` and an https to https redirect are open: a second netprobe run after the push.
+- Unproven: that `response()` gives a status after a failed `finishConnect()`. The text match is the main path.
+- Tests: see "Current state" for the commands. The suite and fuzz pass.
 
 ## Purpose
 
@@ -12,10 +22,10 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
 - Changes since 0.2.0a: the TUI opens at once with the loading status and a byte count (Ctrl+C exits, `q` asks while loading goes on); an error popup with `[OK]` for an error page whose body breaks off; misnested inline tags keep their styles, the exact list of tags that close `p`, `option` is a block break, a `<` with no `>` shows as text, `pre` drops its first newline, a leading `br` gives no blank line, the widest line is width minus 1; `--width` is limited to 2 up to the GPU maximum (160 with no screen); `--stats` and `--stats-out` are removed; `html: file not found` for a missing file; the installer prints `; old files kept` only after writing starts; an invalid URL is a usage error before the TUI opens; new tool `tools/netprobe.lua`.
 - Older releases are frozen. 0.1.0a has a broken installer (OpenOS `file:close()` returns no values on success). 0.1.1a fixes it. 0.1.1a is the last local-only release.
 - Works: everything in 0.1.1a (tokenizer, entities, UTF-8 cleaning, layout, viewer, `--print`, `--width`, `--no-rescale`, guard v2, Ctrl+C, error log, one-file installer), plus `lib/html/fetch.lua` (internet card client, HTTP status handling, redirects, limits).
-- Verified in the container: `pwsh tests/docker/test.ps1` gives 182 passed, 0 failed, 0 skipped. `fuzz 1000` gives 0 failures. A static check with `luac5.3 -p` and `luac5.3 -l` on `bin/`, `lib/` and `tools/` found no syntax error and no global outside the standard Lua names. The tests use a fake internet card in `tests/shim/internet.lua`.
+- Verified in the container: `pwsh tests/docker/test.ps1` gives 190 passed, 0 failed, 0 skipped. `fuzz 1000` gives 0 failures. A static check with `luac5.3 -p` and `luac5.3 -l` on `bin/`, `lib/` and `tools/` found no syntax error and no global outside the standard Lua names. The tests use a fake internet card in `tests/shim/internet.lua`.
 - Verified in game: the probes (`docs/probe/`), the tracer bullet and memory runs up to 0.0.4a, the 0.1.0a viewer and exit paths, and `html --print` on the pages in `tests/real/` (2026-11-14).
 - Not verified in game: all remote fetching, the loading screen, the 0.3.0a installer and upgrade, `docs/ingame/mvp.md` sections 4 and 6, and a low-RAM machine. The 0.3.0a checklist is `docs/ingame/0.3.0a.md`.
-- Risks in the fetch code. The fake card follows assumptions that no in-game measurement has confirmed yet.
+- Risks in the fetch code (written before netprobe v1; the three marked N1, N3 and N10 are now measured, see "Status update 2026-11-15"). The fake card follows assumptions that no in-game measurement has confirmed yet.
   - N1: the exact methods of the internet component, the request handle and the `headers` type are unknown.
   - N3: it is unknown whether `response()` gives a value before the first `read`. The wait order in `fetch.open` depends on it.
   - N10: it is unknown whether the card gives the body of a 404 or 500 response. Java raises on these statuses. The code covers both cases, but decision D2 needs the real answer.

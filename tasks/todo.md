@@ -52,8 +52,9 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 - [x] Write `tools/netprobe.lua` (`docs/netprobe-plan.md` "Probe script plan"; tests in `tests/netprobe_test.lua`, in-game steps in `docs/ingame/netprobe.md`) (2026-11-15, done).
 - [x] The loading screen: the TUI opens at once, with phases and a byte count, and an invalid URL fails before it (`spec/loading.md`, 2026-11-15, released in 0.3.0a).
 - [ ] Next: run the in-game checklist `docs/ingame/0.3.0a.md`.
-- [ ] Run `tools/netprobe.lua` in game and copy the report to `datacollection/netprobe.txt`. Record N1 to N15 in `docs/probe/FACTS.md`.
-- [ ] Update the spec with the measured values (timeouts, chunk size, redirect and error behavior).
+- [x] Run `tools/netprobe.lua` in game and copy the report to `datacollection/netprobe.txt`. Record N1 to N15 in `docs/probe/FACTS.md` (2026-11-15, netprobe v1: the measured values are in `docs/probe/FACTS.md` "Internet card (netprobe v1)").
+- [x] Update the spec with the measured values (redirects, error statuses, limit, API shape). The error status is mapped from the connect failure, and errors after the frame keep the session (`spec/fetch.md`, `spec/loading.md`).
+- [ ] A second netprobe run after the push: N4 to N7 (large reads, memory, 1 MB page), N8, N12 under the default address config, N13 with `--leak`, and an https to https redirect. The probe now records `response()` after a connect error and the value of `n3.before_connect`.
 - [x] Implement `fetch.lua`, the fake card and the tests (2026-11-14, committed in 010a24e, released in 0.2.0a). `spec/fetch.md` "Implementation notes" lists the choices. The measured values can still change the timeouts, the chunk size and the wait order.
 - [ ] In game: fetch the three real pages and a 1 MB page.
 
@@ -72,6 +73,7 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 - Keys for link selection, and how the selected link shows on depth 1.
 - Relative URL resolution, fragments (`#id`) and links to non-HTML files.
 - History size and what one history entry holds.
+- After a redirect that the card follows, the final URL is unknown (the card gives none). Relative links may then resolve against the requested URL, which is wrong when the redirect changed the directory. Consider `<base href>`.
 
 **Size:** L
 
@@ -102,6 +104,8 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 **Open design questions:**
 - Memory: does each tab keep its lines, or only its URL and position, and render again on switch?
 - Keys and the status line for tabs.
+- The internet card allows 4 open connections (measured, netprobe v1). Tabs must not hold a handle open while they are idle. Close a handle before the next request, or the 5th request fails with `too many open connections`.
+- A tab that fails to load keeps the session: errors after the frame show a popup and do not end the program (`spec/loading.md` "Errors after the frame").
 
 **Size:** M
 

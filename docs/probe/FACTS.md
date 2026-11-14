@@ -21,6 +21,12 @@ Every run reports `probe.errors=2`. Both errors are probe bugs. The probe stays 
 1. `lua.collectgarbage_count=ERR ... (global 'collectgarbage')`: the probe calls `collectgarbage` without a check. OpenComputers removes it on purpose.
 2. `text.char.110000=ERR Not a valid Unicode code point`: the probe calls `unicode.char(0x110000)` to test the throw, and counts it as an error.
 
+netprobe v1 (`tools/netprobe.lua`) had three bugs. They are fixed in the tool; the run in `datacollection/netprobe.txt` shows them:
+
+3. `net.api.card.isHttpEnabled=missing` and `isTcpEnabled=missing`: the check used `type == "function"`, and the card methods are callable tables. The card does answer.
+4. `n3.before_connect` recorded only `value` or `nil`, not the value. The fixed probe records the value.
+5. After a `finishConnect` error the probe did not call `response()`. The fixed probe records it in `connect.error_response` and `connect.error_response_message`.
+
 ## Error behavior (t3 vs t3b)
 
 | Key | t1, t2, t3b | t3 |
@@ -290,6 +296,38 @@ Source keys: `probe2: render.wiki.*`, `render.large.*`.
 - large.html rendered all 11302 lines. The 0.0.3a stop at 1803 lines was a false stop on garbage.
 - Live cost: about 66.5 scaled units per line (`probe2: render.large.delta=751914 bytes (66.5 per line)`), 46 to 76 between settle points that saw a GC.
 - `lowest_free` 0 is real. The heap hit the limit when the lines table grew from 8192 to 16384 slots (trace sample `8187:78737`, then 0). An emergency GC saved the render. Guard change: the reserve covers the next table doubling (`spec/guard.md` "Memory reserve").
+
+## Internet card (netprobe v1)
+
+Measured in game with `tools/netprobe.lua` v1: one run, a GT:NH server, user agent `opencomputers/1.12.68-GTNH`. The `fail.blocked_*` rows show a permissive server address config (localhost and loopback connected, a private address timed out, one gave a 403), so they say nothing about a default config. Raw data: `datacollection/netprobe.txt`.
+
+| Fact | Value | Source key |
+|---|---|---|
+| Card and handle methods | callable tables, not functions | `netprobe: api.card.fields=...isHttpEnabled:table,...request:table`, `api.get.handle.has.read=table` |
+| `isHttpEnabled()` | answers (the `missing` is a probe bug) | `netprobe: api.card.component_methods=...isHttpEnabled:true` |
+| `response()` before connect | nil | `netprobe: api.get.n3.before_connect=nil` |
+| `response()` after `finishConnect()` true | a value at once, no read needed | `netprobe: api.get.n3.before_read=true`, `api.get.n3.polls_before_read=0` |
+| Header names | keep the server case, one entry per name, values are lists of strings | `netprobe: api.get.headers.case_duplicates=0`, `api.get.headers.content_type.type=table` |
+| 404 | `request()` gives a handle, `finishConnect()` gives nil and the requested URL as the reason | `netprobe: status.echo404.connect.error=https://httpbingo.org/status/404` |
+| 500 | reason `Server returned HTTP response code: 500 for URL: <url>` | `netprobe: status.echo500.connect.error=Server returned HTTP response code: 500 for URL: https://httpbingo.org/status/500` |
+| 403 | the same text with 403 | `netprobe: fail.blocked_private_10.connect.error=Server returned HTTP response code: 403 for URL: http://10.0.0.1/` |
+| Error body | not reachable: `response()` and `read()` are never reached | `netprobe: status.echo404.connect.result=error` |
+| Same-scheme redirects | the card follows them, no final URL | `netprobe: redirect.chain3.hops=0`, `redirect.http_to_http.hops=0` |
+| Scheme change | 302 with an absolute `Location`, empty body | `netprobe: redirect.http_to_https.status.code=302`, `redirect.http_to_https.hops=1` |
+| Connection limit | 4 open connections; the 5th gives nil and `too many open connections` | `netprobe: limit.opened=4`, `limit.opened_stop=nil: too many open connections` |
+| `close()` | frees a slot; a double close is safe | `netprobe: limit.reopen_after_close=true`, `limit.double_close=ok` |
+| `finishConnect()` timing | false until the response headers arrive: 10.3 s on a 10 s server delay | `netprobe: fail.delay10.connect.ms=10300.000` |
+| Card connect timeout | none: a silent host was pending after 20 s | `netprobe: fail.silent.connect.result=timeout`, `fail.silent.connect.ms=20050.000` |
+| Cost of a call | `request()` and each `read()` cost one tick (50 ms) | `netprobe: api.get.request.ms=50.000`, `read.call_max_wall_ms=50.000` |
+| `read()` | data needs no yield; `""` comes at most once in a row | `netprobe: redirect.http_to_http.read.max_empty_run=1` |
+| First read size | 2048 bytes on two hosts | `netprobe: headers.real_wikipedia.read.first_sizes=2048`, `headers.real_manual.read.first_sizes=2048` |
+| Unknown host | `unknown host: <host>: Name or service not known` | `netprobe: fail.unknown_host.connect.error=unknown host: netprobe-no-such-host.invalid: Name or service not known` |
+| Reset | `Connection reset` | `netprobe: fail.refused.connect.error=Connection reset` |
+| TLS failure | `(certificate_expired) PKIX path validation failed: ...` | `netprobe: fail.tls.connect.error=(certificate_expired) PKIX path validation failed: ...` |
+| Default request headers | `Accept: */*`, `Host`, `User-Agent: opencomputers/1.12.68-GTNH`, no `Accept-Encoding` | `netprobe: redirect.http_to_http.body.sample.1`, `.sample.2` |
+| `Content-Encoding` | none in any response | `netprobe: headers.*` (no key) |
+
+Not measured yet: large reads (N4 to N6), the 1 MB page (N7), N8, N12 under the default address config, N13 with `--leak`, and an https to https redirect.
 
 ## Components (t3)
 
