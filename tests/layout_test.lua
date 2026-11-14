@@ -1,495 +1,37 @@
--- Tests for lib/html/layout.lua: element table, open-element stack,
--- whitespace, pre and wrap.
+-- Tests for lib/html/layout.lua against spec/layout.md and the line format
+-- in spec/pipeline.md. Each row is an HTML string that goes through the
+-- tokenizer and the layout, at several chunk sizes. A row comment names
+-- the spec rule when the table header does not.
 
 local t = require("test")
 local layout = require("html.layout")
+local tokenizer = require("html.tokenizer")
 local unicode = require("unicode")
 
 local T = {}
 
--- Runs a list of tokens. A string item is text. A table item is a tag:
--- { "start", name, attrs, self_closing } or { "end", name }.
-local function new_run(width, items)
-  local lay = layout.new(width)
-  for _, item in ipairs(items) do
-    if type(item) == "string" then
-      lay.push("text", item)
-    else
-      lay.push(item[1], item[2], item[3], item[4])
+local WHOLE = 1 << 30
+local SIZES = { 1, 7, WHOLE }
+
+-- Style bytes (spec/pipeline.md "Line format").
+local N, H, E, L, P = "\1", "\2", "\3", "\4", "\5"
+
+local WIDTH = 40
+local HR = N .. string.rep("\xE2\x94\x80", WIDTH)
+local WIDE1, WIDE2, WIDE3 = "\xE4\xB8\xAD", "\xE6\x96\x87", "\xE5\xAD\x97"
+local NBSP = "\xC2\xA0"
+
+local function reader(s, size)
+  local i = 1
+  return function()
+    if i > #s then
+      return nil
     end
-  end
-  return lay.finish(), lay
-end
-
-local function run(width, items)
-  return (new_run(width, items))
-end
-
--- Lines without style bytes.
-local function plain(lines)
-  local out = {}
-  for i, line in ipairs(lines) do
-    out[i] = line:gsub("[\1-\5]", "")
-  end
-  return out
-end
-
-local function S(name, attrs) return { "start", name, attrs } end
-local function E(name) return { "end", name } end
-
-function T.lines_start_with_a_style_byte()
-  t.eq(run(40, { S("p"), "a", E("p") }), { "\1a" })
-end
-
-function T.block_tags_end_the_line()
-  t.eq(plain(run(40, { "x", S("p"), "a", E("p"), S("div"), "b", E("div"),
-    "c" })), { "x", "a", "b", "c" })
-end
-
-function T.br_breaks_and_repeats()
-  t.eq(plain(run(40, { "a", S("br"), S("br"), "b" })), { "a", "", "b" })
-end
-
-function T.heading_has_blank_lines_and_style()
-  t.eq(run(40, { "a", S("h1"), "T", E("h1"), "b" }),
-    { "\1a", "", "\2T", "", "\1b" })
-end
-
-function T.no_blank_line_at_start_or_end()
-  t.eq(plain(run(40, { S("h2"), "T", E("h2") })), { "T" })
-end
-
-function T.li_prefix()
-  t.eq(plain(run(40, { S("ul"), S("li"), "a", E("li"), S("li"), " b ",
-    E("ul") })), { "- a", "- b" })
-end
-
-function T.hr_fills_the_width()
-  t.eq(plain(run(5, { "a", S("hr"), "b" })), { "a", "─────", "b" })
-end
-
-function T.whitespace_collapses()
-  t.eq(plain(run(40, { "  a \n\t b  ", "  c", "\n" })), { "a b c" })
-end
-
-function T.word_spans_tokens_and_inline_tags()
-  t.eq(plain(run(40, { "hel", "lo ", S("b"), "wo", E("b"), "rld" })),
-    { "hello world" })
-end
-
-function T.script_and_style_dropped()
-  t.eq(plain(run(40, { "a ", S("script"), "x", E("script"), S("style"),
-    "y", E("style"), "b" })), { "a b" })
-end
-
-function T.unclosed_head_ends_at_body()
-  t.eq(plain(run(40, { S("head"), S("title"), "T", S("body"), "x" })),
-    { "x" })
-end
-
-function T.stray_end_of_dropped_tag_ignored()
-  t.eq(plain(run(40, { E("script"), "a", { "start", "svg", nil, true }, "b" })), { "ab" })
-end
-
-function T.wraps_at_word_boundaries()
-  t.eq(plain(run(10, { "aaa bbb ccc ddd eeeeeeeeee f" })),
-    { "aaa bbb", "ccc ddd", "eeeeeeeeee", "f" })
-end
-
-function T.long_word_is_split()
-  t.eq(plain(run(4, { "abcdefghij" })), { "abcd", "efgh", "ij" })
-end
-
-function T.wide_characters_count_two()
-  local lines = plain(run(6, { "ab \xE4\xB8\xAD\xE6\x96\x87 x" }))
-  t.eq(lines, { "ab", "\xE4\xB8\xAD\xE6\x96\x87 x" })
-  for _, line in ipairs(lines) do
-    t.ok(unicode.wlen(line) <= 6, line)
+    local chunk = s:sub(i, i + size - 1)
+    i = i + size
+    return chunk
   end
 end
-
-function T.long_wide_word_never_exceeds_width()
-  local lines = plain(run(3, { "\xE4\xB8\xAD\xE6\x96\x87\xE5\xAD\x97" }))
-  t.eq(lines, { "\xE4\xB8\xAD", "\xE6\x96\x87", "\xE5\xAD\x97" })
-end
-
-function T.no_line_exceeds_width()
-  local words = {}
-  for k = 1, 200 do
-    words[k] = string.rep("w", k % 13 + 1)
-  end
-  for width = 1, 20 do
-    for _, line in ipairs(plain(run(width, { table.concat(words, " ") }))) do
-      t.ok(unicode.wlen(line) <= width, "width " .. width .. ": " .. line)
-    end
-  end
-end
-
--- Element table rows.
-
-function T.every_dropped_element_hides_its_content()
-  for _, name in ipairs({ "script", "style", "template", "svg", "math",
-      "iframe", "object", "noscript", "head", "title" }) do
-    t.eq(plain(run(40, { "a ", S(name), "x", S("p"), "y", E("p"), E(name),
-      "b" })), { "a b" }, name)
-  end
-end
-
-function T.dropped_element_ends_at_parent_end()
-  t.eq(plain(run(40, { S("div"), S("svg"), "x", E("div"), "b" })), { "b" })
-end
-
-function T.nested_same_dropped_element()
-  t.eq(plain(run(40, { S("svg"), S("svg"), "x", E("svg"), "y", E("svg"),
-    "b" })), { "b" })
-end
-
-function T.title_in_head_is_stored_not_shown()
-  local lines, lay = new_run(40, { S("head"), S("title"), "  My \n page ",
-    E("title"), E("head"), S("body"), "x" })
-  t.eq(plain(lines), { "x" })
-  t.eq(lay.title(), "My page")
-end
-
-function T.title_without_head_and_first_title_wins()
-  local _, lay = new_run(40, { S("title"), "One", E("title"), S("title"),
-    "Two", E("title"), "x" })
-  t.eq(lay.title(), "One")
-end
-
-function T.title_is_nil_when_missing_or_empty()
-  local _, lay = new_run(40, { "x" })
-  t.eq(lay.title(), nil)
-  _, lay = new_run(40, { S("title"), "  ", E("title") })
-  t.eq(lay.title(), nil)
-end
-
-function T.svg_title_is_not_the_document_title()
-  local _, lay = new_run(40, { S("svg"), S("title"), "icon", E("title"),
-    E("svg") })
-  t.eq(lay.title(), nil)
-end
-
-function T.long_title_is_cut_at_a_character_boundary()
-  local _, lay = new_run(40, { S("title"), string.rep("\xE4\xB8\xAD", 200),
-    E("title") })
-  local title = lay.title()
-  t.ok(#title <= 256, #title)
-  t.eq(#title % 3, 0)
-end
-
-function T.long_leading_whitespace_in_title_keeps_the_text()
-  local html = t.load_bin("html")({})
-  local input = "<title>" .. string.rep(" ", 5000) .. "Real</title>"
-  for _, size in ipairs({ 1, 7, 4096 }) do
-    local pos = 1
-    local _, title = html.render(function()
-      if pos > #input then
-        return nil
-      end
-      local c = input:sub(pos, pos + size - 1)
-      pos = pos + size
-      return c
-    end, 40)
-    t.eq(title, "Real", "read size " .. size)
-  end
-end
-
-function T.unclosed_title_in_head_ends_at_body()
-  local lines, lay = new_run(40, { S("head"), S("title"), "T", S("body"),
-    "x" })
-  t.eq(plain(lines), { "x" })
-  t.eq(lay.title(), "T")
-end
-
-function T.every_heading_level()
-  for k = 1, 6 do
-    t.eq(run(40, { "a", S("h" .. k), "T", E("h" .. k), "b" }),
-      { "\1a", "", "\2T", "", "\1b" }, "h" .. k)
-  end
-end
-
-function T.every_block_element_breaks()
-  for _, name in ipairs({ "p", "div", "section", "article", "main",
-      "header", "footer", "nav", "aside", "blockquote", "table", "tr", "td",
-      "th", "ul", "ol", "dl", "form", "button", "select", "textarea" }) do
-    t.eq(plain(run(40, { "a", S(name), "b", E(name), "c" })),
-      { "a", "b", "c" }, name)
-  end
-end
-
-function T.input_breaks_and_has_no_content()
-  t.eq(plain(run(40, { "a", S("input"), "b" })), { "a", "b" })
-end
-
-function T.br_inside_pre()
-  t.eq(plain(run(40, { S("pre"), "a", S("br"), "b", E("pre") })),
-    { "a", "b" })
-end
-
-function T.hr_is_normal_style_and_breaks()
-  t.eq(run(3, { S("b"), "a", S("hr"), "b", E("b") }),
-    { "\3a", "\1───", "\3b" })
-end
-
-function T.every_emphasis_element()
-  for _, name in ipairs({ "b", "strong", "i", "em", "u", "mark" }) do
-    t.eq(run(40, { "a ", S(name), "b", E(name), " c" }), { "\1a \3b \1c" },
-      name)
-  end
-end
-
-function T.link_with_href()
-  t.eq(run(40, { "a ", S("a", { href = "/x" }), "b", E("a"), " c" }),
-    { "\1a \4b \1c" })
-end
-
-function T.link_without_href_is_plain()
-  t.eq(run(40, { "a ", S("a", { name = "x" }), "b", E("a"), " c" }),
-    { "\1a b c" })
-end
-
-function T.pre_keeps_whitespace_with_pre_style()
-  t.eq(run(40, { "a", S("pre"), "\n  x  y\n\n z", E("pre"), "b" }),
-    { "\1a", "\5  x  y", "", "\5 z", "\1b" })
-end
-
-function T.code_is_inline()
-  t.eq(run(40, { "a ", S("code"), "f()", E("code"), " b" }),
-    { "\1a f() b" })
-end
-
-function T.img_alt_text()
-  t.eq(plain(run(40, { "a ", S("img", { alt = " a\n cat " }), " b" })),
-    { "a [img: a cat] b" })
-  t.eq(plain(run(40, { "a ", S("img"), S("img", { alt = "" }),
-    S("img", { src = "x" }) })), { "a [img][img][img]" })
-end
-
-function T.img_alt_wraps_like_text()
-  t.eq(plain(run(10, { S("img", { alt = "one two three" }) })),
-    { "[img: one", "two three]" })
-end
-
-function T.unknown_tags_are_inline()
-  t.eq(run(40, { "a", S("foo"), "b", E("foo"), S("span"), "c", E("span"),
-    "d" }), { "\1abcd" })
-end
-
--- Lists.
-
-function T.nested_lists_have_no_indent()
-  t.eq(plain(run(40, { S("ul"), S("li"), "a", S("ol"), S("li"), "b",
-    E("li"), E("ol"), E("li"), S("li"), "c", E("li"), E("ul") })),
-    { "- a", "- b", "- c" })
-end
-
-function T.unclosed_li_closes_at_next_li()
-  t.eq(run(40, { S("ul"), S("li"), S("b"), "a", S("li"), "b", E("ul") }),
-    { "\1- \3a", "\1- b" })
-end
-
-function T.li_continuation_has_no_prefix()
-  t.eq(plain(run(8, { S("li"), "aaa bbb ccc" })), { "- aaa", "bbb ccc" })
-end
-
--- The open-element stack.
-
-function T.unclosed_inline_closes_at_parent_end()
-  t.eq(run(40, { S("p"), "a ", S("b"), "b", E("p"), "c" }),
-    { "\1a \3b", "\1c" })
-end
-
-function T.unclosed_heading_closes_at_document_end()
-  t.eq(run(40, { "a", S("h1"), "T" }), { "\1a", "", "\2T" })
-end
-
-function T.stray_end_tags_are_ignored()
-  t.eq(run(40, { E("b"), E("p"), "a", E("div"), " ", E("a"), "b" }),
-    { "\1a b" })
-end
-
-function T.stray_end_does_not_close_an_outer_style()
-  t.eq(run(40, { S("b"), "a", E("i"), "b", E("b"), "c" }), { "\3ab\1c" })
-end
-
-function T.misnested_tags_close_inner_ones()
-  t.eq(run(40, { S("i"), S("b"), "a", E("i"), "b", E("b"), "c" }),
-    { "\3a\1bc" })
-end
-
-function T.innermost_style_wins_and_outer_returns()
-  t.eq(run(40, { S("a", { href = "x" }), "a", S("b"), "b", E("b"), "c",
-    E("a"), "d" }), { "\4a\3b\4c\1d" })
-  t.eq(run(40, { S("h2"), "a", S("em"), "b", E("em"), "c", E("h2") }),
-    { "\2a\3b\2c" })
-end
-
-function T.emphasis_inside_pre_keeps_whitespace()
-  t.eq(run(40, { S("pre"), "a  ", S("b"), "b  b", E("b"), "  c", E("pre") }),
-    { "\5a  \3b  b\5  c" })
-end
-
-function T.p_closes_an_open_p()
-  t.eq(run(40, { S("p"), S("b"), "a", S("p"), "b" }), { "\3a", "\1b" })
-end
-
-function T.depth_is_bounded()
-  local items = {}
-  for _ = 1, 1000 do
-    items[#items + 1] = S("span")
-  end
-  items[#items + 1] = S("b")
-  items[#items + 1] = "a"
-  items[#items + 1] = E("b")
-  items[#items + 1] = "b"
-  for _ = 1, 1000 do
-    items[#items + 1] = E("span")
-  end
-  items[#items + 1] = "c"
-  -- b is past the bound, so its style does not apply.
-  t.eq(run(40, items), { "\1abc" })
-end
-
-function T.dropped_element_at_depth_bound_still_hides()
-  local items = {}
-  for _ = 1, layout.MAX_DEPTH do
-    items[#items + 1] = S("div")
-  end
-  items[#items + 1] = "a"
-  items[#items + 1] = S("script")
-  items[#items + 1] = "x"
-  items[#items + 1] = E("script")
-  items[#items + 1] = "b"
-  t.eq(plain(run(40, items)), { "a", "b" })
-end
-
-function T.deep_nesting_inside_dropped_element()
-  local items = {}
-  items[1] = S("svg")
-  for _ = 1, 1000 do
-    items[#items + 1] = S("g")
-  end
-  items[#items + 1] = "x"
-  items[#items + 1] = E("svg")
-  items[#items + 1] = "b"
-  t.eq(plain(run(40, items)), { "b" })
-end
-
--- Whitespace, pre and wrap.
-
-function T.no_leading_or_trailing_space()
-  t.eq(run(40, { S("p"), "  a  ", E("p"), S("p"), " ", S("b"), " b ",
-    E("b"), " ", E("p") }), { "\1a", "\3b" })
-end
-
-function T.space_at_a_style_change_is_kept_once()
-  t.eq(run(40, { "a ", S("b"), " b ", E("b"), " c" }), { "\1a \3b \1c" })
-end
-
-function T.pre_skips_one_leading_newline()
-  t.eq(plain(run(40, { S("pre"), "\n\nx", E("pre") })), { "", "x" })
-end
-
-function T.pre_expands_tabs_to_8_column_stops()
-  t.eq(plain(run(40, { S("pre"), "\tx\nab\tc\n1234567\t8\n12345678\t9",
-    E("pre") })), {
-      "        x",
-      "ab      c",
-      "1234567 8",
-      "12345678        9",
-    })
-end
-
-function T.pre_tab_never_passes_the_width()
-  local lines = plain(run(10, { S("pre"), "abcdefghi\tx", E("pre") }))
-  t.eq(lines, { "abcdefghi ", "x" })
-end
-
-function T.pre_wraps_hard_at_the_width()
-  t.eq(run(4, { S("pre"), "ab cdef gh\nxy", E("pre") }),
-    { "\5ab c", "\5def ", "\5gh", "\5xy" })
-end
-
-function T.pre_wraps_wide_characters()
-  local lines = plain(run(5, { S("pre"),
-    "a\xE4\xB8\xAD\xE6\x96\x87\xE5\xAD\x97", E("pre") }))
-  t.eq(lines, { "a\xE4\xB8\xAD\xE6\x96\x87", "\xE5\xAD\x97" })
-end
-
-function T.tabs_never_reach_a_line()
-  local lines = run(30, { "a\tb", S("pre"), "\tc\td", E("pre"), "e\t" })
-  for _, line in ipairs(lines) do
-    t.ok(not line:find("\t"), line)
-  end
-end
-
-function T.wide_character_never_straddles_the_width()
-  local lines = plain(run(5, { "abcd\xE4\xB8\xAD" }))
-  t.eq(lines, { "abcd", "\xE4\xB8\xAD" })
-end
-
-function T.style_continues_after_a_wrap()
-  t.eq(run(7, { "a ", S("b"), "bbb ccc ddd", E("b"), " e" }),
-    { "\1a \3bbb", "\3ccc ddd", "\1e" })
-end
-
-function T.style_continues_in_a_split_word()
-  t.eq(run(4, { S("a", { href = "x" }), "abcdefghij", E("a") }),
-    { "\4abcd", "\4efgh", "\4ij" })
-end
-
-function T.word_with_style_change_wraps_as_one_word()
-  t.eq(run(6, { "abc ", "de", S("b"), "fg", E("b") }),
-    { "\1abc", "\1de\3fg" })
-end
-
-function T.style_bytes_do_not_count_toward_width()
-  t.eq(run(5, { "a", S("b"), "b", E("b"), "c", S("i"), "d", E("i"), "e" }),
-    { "\1a\3b\1c\3d\1e" })
-end
-
--- A style byte is never followed by another style byte or the line end.
-local function no_empty_runs(lines)
-  for _, line in ipairs(lines) do
-    t.ok(not line:find("[\1-\5][\1-\5]") and not line:find("[\1-\5]$"),
-      line)
-    if line ~= "" then
-      t.ok(line:find("^[\1-\5]"), line)
-    end
-  end
-end
-
-function T.no_empty_style_runs()
-  no_empty_runs(run(6, { S("b"), S("i"), E("i"), " ", E("b"), "a ",
-    S("a", { href = "x" }), " ", E("a"), S("em"), "", "bcdefghijk", E("em"),
-    S("u"), " ", E("u"), S("li"), S("b"), "x", S("h1"), S("b"), E("b"), "y",
-    S("pre"), S("b"), "\n", E("b"), "\t", S("i"), "zz", E("pre") }))
-end
-
-function T.styles_and_width_hold_for_many_widths()
-  local items = {}
-  local tags = { "b", "a", "i", "code", "span" }
-  for k = 1, 120 do
-    local tag = tags[k % #tags + 1]
-    items[#items + 1] = S(tag, tag == "a" and { href = "x" } or nil)
-    items[#items + 1] = string.rep("w", k % 11 + 1) .. " \xE4\xB8\xAD"
-    items[#items + 1] = E(tag)
-    items[#items + 1] = k % 7 == 0 and " " or ""
-  end
-  for width = 2, 25 do
-    local lines = run(width, items)
-    no_empty_runs(lines)
-    for _, line in ipairs(plain(lines)) do
-      t.ok(unicode.wlen(line) <= width, "width " .. width .. ": " .. line)
-    end
-  end
-end
-
--- Expected-output cases in tests/cases. The comparison removes "\r",
--- trailing spaces and tabs, and blank lines at the end (tasks/archive/mvp-plan.md).
-
-local tokenizer = require("html.tokenizer")
 
 local function read_file(path)
   local f = assert(io.open(path, "rb"))
@@ -498,18 +40,11 @@ local function read_file(path)
   return s
 end
 
--- Renders a file at width 40. Returns the lines and the layout.
-local function render(path)
-  local doc = read_file(path)
-  local lay = layout.new(40)
-  local done = false
-  local next_token = tokenizer.new(function()
-    if done then
-      return nil
-    end
-    done = true
-    return doc
-  end, lay.count)
+-- Renders html at width in chunks of size bytes. Returns the lines and the
+-- layout.
+local function render(html, width, size)
+  local lay = layout.new(width)
+  local next_token = tokenizer.new(reader(html, size or WHOLE), lay.count)
   while true do
     local kind, value, attrs, self_closing = next_token()
     if not kind then
@@ -519,6 +54,375 @@ local function render(path)
   end
   return lay.finish(), lay
 end
+
+-- A row input is an HTML string, or { html, width = n }.
+local function input_of(input)
+  if type(input) == "table" then
+    return input[1], input.width
+  end
+  return input, WIDTH
+end
+
+local function styled(input, size)
+  local html, width = input_of(input)
+  return (render(html, width, size))
+end
+
+local function plain_lines(lines)
+  local out = {}
+  for i, line in ipairs(lines) do
+    out[i] = line:gsub("[\1-\5]", "")
+  end
+  return out
+end
+
+local function plain(input, size)
+  return plain_lines(styled(input, size))
+end
+
+local function set(list)
+  local s = {}
+  for _, k in ipairs(list) do
+    s[k] = true
+  end
+  return s
+end
+
+-- "Element handling": plain lines.
+local LAYOUT_BLOCKS = {
+  { "br gives one line break", "a<br>b", { "a", "b" } },
+  { "two br give one empty line", "a<br><br>b", { "a", "", "b" } },
+  { "hr fills the width", { "a<hr>b", width = 5 },
+    { "a", string.rep("\xE2\x94\x80", 5), "b" } },
+  { "hr inside emphasis", { "<b>a<hr>b</b>", width = 3 },
+    { "a", string.rep("\xE2\x94\x80", 3), "b" } },
+  { "input breaks and has no content", "a<input>b", { "a", "b" } },
+  { "no blank line at start or end", "<h2>T</h2>", { "T" } },
+  { "img with alt", "a <img alt=x> b", { "a [img: x] b" } },
+  { "img alt collapses and trims white space", "a <img alt=' a\n cat '> b",
+    { "a [img: a cat] b" } },
+  { "img without alt", "a <img>", { "a [img]" } },
+  { "img with empty alt", "a <img alt=''>", { "a [img]" } },
+  { "img with other attributes", "a <img src=x>", { "a [img]" } },
+  -- "Lists"
+  { "li prefix", "<ul><li>a</li><li> b </ul>", { "- a", "- b" } },
+  { "nested lists have no indent",
+    "<ul><li>a<ol><li>b</li></ol></li><li>c</li></ul>",
+    { "- a", "- b", "- c" } },
+}
+for _, name in ipairs({ "p", "div", "section", "article", "main", "header",
+    "footer", "nav", "aside", "blockquote", "dt", "dd", "table", "tr", "td",
+    "th", "ul", "ol", "dl", "form", "button", "select", "option",
+    "textarea" }) do
+  LAYOUT_BLOCKS[#LAYOUT_BLOCKS + 1] = { "block break: " .. name,
+    "a<" .. name .. ">b</" .. name .. ">c", { "a", "b", "c" } }
+end
+for k = 1, 6 do
+  local h = "h" .. k
+  LAYOUT_BLOCKS[#LAYOUT_BLOCKS + 1] = { "heading block: " .. h,
+    "a<" .. h .. ">T</" .. h .. ">b", { "a", "", "T", "", "b" } }
+end
+t.cases(T, "layout_blocks", LAYOUT_BLOCKS, plain, { sizes = SIZES })
+
+-- "Element handling" styles, "Styles nest", line format.
+local LAYOUT_STYLE = {
+  { "lines start with a style byte", "<p>a</p>", { N .. "a" } },
+  { "heading style", "a<h1>T</h1>b", { N .. "a", "", H .. "T", "", N .. "b" } },
+  { "link with href", "a <a href=/x>b</a> c", { N .. "a " .. L .. "b " .. N .. "c" } },
+  { "link without href is plain", "a <a name=x>b</a> c", { N .. "a b c" } },
+  { "code is inline text", "a <code>f()</code> b", { N .. "a f() b" } },
+  { "unknown tags are inline", "a<foo>b</foo><span>c</span>d", { N .. "abcd" } },
+  { "innermost style wins, outer returns",
+    "<a href=x>a<b>b</b>c</a>d", { L .. "a" .. E .. "b" .. L .. "c" .. N .. "d" } },
+  { "emphasis inside a heading", "<h2>a<em>b</em>c</h2>",
+    { H .. "a" .. E .. "b" .. H .. "c" } },
+  -- "Wrapping": a style continues on the next line.
+  { "style continues after a wrap", { "a <b>bbb ccc ddd</b> e", width = 7 },
+    { N .. "a " .. E .. "bbb", E .. "ccc ddd", N .. "e" } },
+  { "style continues in a split word",
+    { "<a href=x>abcdefghij</a>", width = 4 },
+    { L .. "abcd", L .. "efgh", L .. "ij" } },
+  -- "Width": style bytes never count.
+  { "style bytes do not count toward width",
+    { "a<b>b</b>c<i>d</i>e", width = 5 },
+    { N .. "a" .. E .. "b" .. N .. "c" .. E .. "d" .. N .. "e" } },
+  { "case file styles.html", read_file("tests/cases/styles.html"),
+    { H .. "Top " .. E .. "mid " .. H .. "end", "",
+      N .. "plain " .. E .. "bold " .. L .. "link " .. E .. "back " .. N
+        .. "plain",
+      P .. "a " .. E .. "b", P .. "c" } },
+}
+for _, name in ipairs({ "b", "strong", "i", "em", "u", "mark" }) do
+  LAYOUT_STYLE[#LAYOUT_STYLE + 1] = { "emphasis: " .. name,
+    "a <" .. name .. ">b</" .. name .. "> c",
+    { N .. "a " .. E .. "b " .. N .. "c" } }
+end
+t.cases(T, "layout_style", LAYOUT_STYLE, styled, { sizes = SIZES })
+
+-- "Width" and "Wrapping": plain lines.
+local LAYOUT_WRAP = {
+  { "wraps at word boundaries",
+    { "aaa bbb ccc ddd eeeeeeeeee f", width = 10 },
+    { "aaa bbb", "ccc ddd", "eeeeeeeeee", "f" } },
+  { "word wider than the width is split", { "abcdefghij", width = 4 },
+    { "abcd", "efgh", "ij" } },
+  { "wide characters count two",
+    { "ab " .. WIDE1 .. WIDE2 .. " x", width = 6 },
+    { "ab", WIDE1 .. WIDE2 .. " x" } },
+  { "wide word is split at the width",
+    { WIDE1 .. WIDE2 .. WIDE3, width = 3 }, { WIDE1, WIDE2, WIDE3 } },
+  { "wide character never straddles the width",
+    { "abcd" .. WIDE1, width = 5 }, { "abcd", WIDE1 } },
+  { "word with a style change wraps as one word",
+    { "abc de<b>fg</b>", width = 6 }, { "abc", "defg" } },
+  { "word over inline tags wraps as one word",
+    { "abc d<span>e</span>f<b>g</b>", width = 6 }, { "abc", "defg" } },
+  -- "Images"
+  { "img alt wraps like text", { "<img alt='one two three'>", width = 10 },
+    { "[img: one", "two three]" } },
+  -- "Lists"
+  { "wrapped li line has no prefix", { "<li>aaa bbb ccc", width = 8 },
+    { "- aaa", "bbb ccc" } },
+  -- "White space": U+00A0 is not a wrap point.
+  { "nbsp is not a wrap point", { "ab&nbsp;cd", width = 4 },
+    { "ab" .. NBSP .. "c", "d" } },
+}
+t.cases(T, "layout_wrap", LAYOUT_WRAP, plain, { sizes = SIZES })
+
+-- "Preformatted text": lines with style bytes.
+local LAYOUT_PRE = {
+  { "pre keeps white space", "a<pre>\n  x  y\n\n z</pre>b",
+    { N .. "a", P .. "  x  y", "", P .. " z", N .. "b" } },
+  { "pre drops one newline after the start tag", "a<pre>\n\nx</pre>",
+    { N .. "a", "", P .. "x" } },
+  { "pre keeps a first newline after another tag", "a<pre><b></b>\nx</pre>",
+    { N .. "a", "", P .. "x" } },
+  { "pre tabs go to 8-column stops",
+    "<pre>\tx\nab\tc\n1234567\t8\n12345678\t9</pre>",
+    { P .. "        x", P .. "ab      c", P .. "1234567 8",
+      P .. "12345678        9" } },
+  { "pre tab stops at the line end", { "<pre>abcdefghi\tx</pre>", width = 10 },
+    { P .. "abcdefghi ", P .. "x" } },
+  { "no tab reaches a line", { "a\tb<pre>\tc\td</pre>e\t", width = 30 },
+    { N .. "a b", P .. "        c       d", N .. "e" } },
+  { "pre wraps hard at the width", { "<pre>ab cdef gh\nxy</pre>", width = 4 },
+    { P .. "ab c", P .. "def ", P .. "gh", P .. "xy" } },
+  { "pre wraps wide characters",
+    { "<pre>a" .. WIDE1 .. WIDE2 .. WIDE3 .. "</pre>", width = 5 },
+    { P .. "a" .. WIDE1 .. WIDE2, P .. WIDE3 } },
+  { "br inside pre", "<pre>a<br>b</pre>", { P .. "a", P .. "b" } },
+  { "emphasis inside pre keeps white space",
+    "<pre>a  <b>b  b</b>  c</pre>", { P .. "a  " .. E .. "b  b" .. P .. "  c" } },
+}
+t.cases(T, "layout_pre", LAYOUT_PRE, styled, { sizes = SIZES })
+
+-- "White space": lines with style bytes.
+local LAYOUT_WS = {
+  { "white space collapses", "  a \n\t b    c\n", { N .. "a b c" } },
+  { "a word spans text tokens and inline tags", "hel<b>lo</b> wo<i>r</i>ld",
+    { N .. "hel" .. E .. "lo " .. N .. "wo" .. E .. "r" .. N .. "ld" } },
+  { "a block has no leading or trailing space",
+    "<p>  a  </p><p> <b> b </b> </p>", { N .. "a", E .. "b" } },
+  { "a space at a style change is kept once", "a <b> b </b> c",
+    { N .. "a " .. E .. "b " .. N .. "c" } },
+  { "nbsp does not collapse", "a&nbsp;&nbsp; b",
+    { N .. "a" .. NBSP .. NBSP .. " b" } },
+  { "nbsp at a block start is kept", "<p>&nbsp;a&nbsp;</p>",
+    { N .. NBSP .. "a" .. NBSP } },
+}
+t.cases(T, "layout_ws", LAYOUT_WS, styled, { sizes = SIZES })
+
+-- "The open-element stack": lines with style bytes.
+local LAYOUT_STACK = {
+  { "unclosed heading closes at the document end", "a<h1>T",
+    { N .. "a", "", H .. "T" } },
+  { "stray end tags are ignored", "</b></p>a</div> </a>b", { N .. "a b" } },
+  { "stray end tag does not close an outer style", "<b>a</i>b</b>c",
+    { E .. "ab" .. N .. "c" } },
+  -- "Inline styles continue after a misnested inline end tag."
+  { "misnested end tag keeps the inner style", "<i><b>a</i>b</b>c",
+    { E .. "ab" .. N .. "c" } },
+  { "misnested end tag keeps an inner link", "<b><a href=x>a</b>b</a>c",
+    { L .. "ab" .. N .. "c" } },
+  { "after a misnested end tag the inner element takes the outer style",
+    "<a href=x><span>a</a>b</span>c", { L .. "a" .. N .. "bc" } },
+  { "misnested end tag around a block", "<b>a<p>b</b>c</p>d",
+    { E .. "a", E .. "b" .. N .. "c", N .. "d" } },
+  -- "When a block or heading element closes, the inline elements still open
+  -- inside it close with it."
+  { "block end closes open inline elements", "<p>a <b>b</p>c",
+    { N .. "a " .. E .. "b", N .. "c" } },
+  { "heading end closes open inline elements", "<h1><b>a</h1>b",
+    { E .. "a", "", N .. "b" } },
+  -- Implied ends.
+  { "li closes li", "<ul><li><b>a<li>b</ul>",
+    { N .. "- " .. E .. "a", N .. "- b" } },
+  { "li search stops at ul", "<li><b>a<ul><li>b",
+    { N .. "- " .. E .. "a", E .. "- b" } },
+  { "li search stops at ol", "<li><b>a<ol><li>b",
+    { N .. "- " .. E .. "a", E .. "- b" } },
+  { "li search stops at menu", "<li><b>a<menu><li>b",
+    { N .. "- " .. E .. "a", E .. "- b" } },
+  { "dd closes dt", "<dl><dt><b>a<dd>b</dl>", { E .. "a", N .. "b" } },
+  { "dt closes dd", "<dl><dd><b>a<dt>b</dl>", { E .. "a", N .. "b" } },
+  { "dd search stops at dl", "<dd><b>a<dl><dd>b", { E .. "a", E .. "b" } },
+  { "tr closes td", "<table><tr><td><b>a<tr>b</table>", { E .. "a", N .. "b" } },
+  { "tr closes tr", "<table><tr><b>a<tr>b</table>", { E .. "a", N .. "b" } },
+  { "tr search stops at table", "<tr><b>a<table><tr>b", { E .. "a", E .. "b" } },
+  { "td closes td", "<tr><td><b>a<td>b", { E .. "a", N .. "b" } },
+  { "th closes td", "<tr><td><b>a<th>b", { E .. "a", N .. "b" } },
+  { "td closes th", "<tr><th><b>a<td>b", { E .. "a", N .. "b" } },
+  { "td search stops at table", "<td><b>a<table><td>b", { E .. "a", E .. "b" } },
+  { "option closes option", "<select><option><b>a<option>b</select>",
+    { E .. "a", N .. "b" } },
+  { "option search stops at select", "<option><b>a<select><option>b",
+    { E .. "a", E .. "b" } },
+  { "body closes head", "<head>x<body>y", { N .. "y" } },
+}
+-- "The start tag of one of these elements closes an open p". A closed p
+-- closes the b inside it, so "b" is normal.
+for _, name in ipairs({ "address", "article", "aside", "blockquote",
+    "center", "details", "dialog", "dir", "div", "dl", "dd", "dt", "fieldset",
+    "figcaption", "figure", "footer", "form", "header", "hgroup", "hr", "li",
+    "listing", "main", "menu", "nav", "ol", "p", "plaintext", "pre", "search",
+    "section", "summary", "table", "ul", "xmp", "h1", "h2", "h3", "h4", "h5",
+    "h6" }) do
+  local expected = { E .. "a", N .. "b" }
+  if name:match("^h%d$") then
+    expected = { E .. "a", "", H .. "b" }
+  elseif name == "li" then
+    expected = { E .. "a", N .. "- b" }
+  elseif name == "pre" then
+    expected = { E .. "a", P .. "b" }
+  elseif name == "hr" then
+    expected = { E .. "a", HR, N .. "b" }
+  end
+  LAYOUT_STACK[#LAYOUT_STACK + 1] = { name .. " closes p",
+    "<p><b>a<" .. name .. ">b", expected }
+end
+-- "No other start tag closes a p": the b stays open, so "b" is emphasis.
+local INLINE = set({ "a", "span" })
+for _, name in ipairs({ "tr", "td", "th", "input", "button", "select",
+    "textarea", "option", "a", "span", "br" }) do
+  local expected = INLINE[name] and { E .. "ab" } or { E .. "a", E .. "b" }
+  LAYOUT_STACK[#LAYOUT_STACK + 1] = { name .. " does not close p",
+    "<p><b>a<" .. name .. ">b", expected }
+end
+t.cases(T, "layout_stack", LAYOUT_STACK, styled, { sizes = SIZES })
+
+-- Dropped elements ("Element handling"): plain lines.
+local LAYOUT_DROP = {
+  { "title text is not shown", "a <title>x</title>b", { "a b" } },
+  { "dropped element ends when its parent closes", "<div><svg>x</div>b",
+    { "b" } },
+  { "dropped element ends when an inline parent closes", "<b><svg>x</b>y",
+    { "y" } },
+  { "nested same dropped element needs its own end tag",
+    "<svg><svg>x</svg>y</svg>b", { "b" } },
+  { "stray end tag of a dropped element is ignored", "</script>a<svg/>b",
+    { "ab" } },
+}
+for _, name in ipairs({ "script", "style", "template", "svg", "math",
+    "iframe", "object", "noscript", "head" }) do
+  LAYOUT_DROP[#LAYOUT_DROP + 1] = { "dropped: " .. name,
+    "a <" .. name .. ">x<p>y</p></" .. name .. ">b", { "a b" } }
+end
+t.cases(T, "layout_drop", LAYOUT_DROP, plain, { sizes = SIZES })
+
+-- "Depth bound": the stack holds at most 256 open elements.
+local rep = string.rep
+local LAYOUT_DEPTH = {
+  { "style at depth 256 applies", rep("<span>", 255) .. "<b>a</b>b",
+    { E .. "a" .. N .. "b" } },
+  { "style past depth 256 is lost",
+    rep("<span>", 1000) .. "<b>a</b>b" .. rep("</span>", 1000) .. "c",
+    { N .. "abc" } },
+  { "dropped element past the bound still hides its content",
+    rep("<div>", 256) .. "a<script>x</script>b", { N .. "a", N .. "b" } },
+  { "deep nesting inside a dropped element is hidden",
+    "<svg>" .. rep("<g>", 1000) .. "x</svg>b", { N .. "b" } },
+}
+t.cases(T, "layout_depth", LAYOUT_DEPTH, styled, { sizes = SIZES })
+
+-- "Title".
+local function title(input, size)
+  local _, lay = render(input, WIDTH, size)
+  return lay.title()
+end
+
+local TITLE = {
+  { "title in head", "<head><title>  My \n page </title></head><body>x",
+    "My page" },
+  { "title in body", "<body><title>T</title>x", "T" },
+  { "first title wins", "<title>One</title><title>Two</title>x", "One" },
+  { "no title", "x", nil },
+  { "empty title is no title", "<title>  </title>", nil },
+  { "the first title is the title even when empty",
+    "<title> </title><title>B</title>", nil },
+  { "unclosed title ends at the end of input", "<title>T", "T" },
+  { "svg title is not the document title", "<svg><title>icon</title></svg>",
+    nil },
+  { "title in another dropped element is not the document title",
+    "<object><title>x</title></object>", nil },
+  { "title keeps 256 bytes", "<title>" .. rep("a", 300) .. "</title>",
+    rep("a", 256) },
+  { "long title is cut at a character boundary",
+    "<title>" .. rep(WIDE1, 200) .. "</title>", rep(WIDE1, 85) },
+  { "title text past 1024 raw bytes is not read",
+    "<title>a" .. rep(" ", 2000) .. "b</title>", "a" },
+  { "leading white space does not count toward the raw limit",
+    "<title>" .. rep(" ", 5000) .. "Real</title>", "Real",
+    sizes = { 1, 7, 4096, WHOLE } },
+  { "title from many small chunks", "<title>" .. rep("abcdefghij", 20)
+    .. "</title>", rep("abcdefghij", 20) },
+  { "case file elements.html", read_file("tests/cases/elements.html"),
+    "Element table" },
+  { "case file broken.html", read_file("tests/cases/broken.html"), "Broken" },
+  { "case file title.html", read_file("tests/cases/title.html"),
+    "Tom & Jerry" },
+}
+t.cases(T, "title", TITLE, title, { sizes = SIZES })
+
+-- Line format (spec/pipeline.md) and width, over many widths: no line is
+-- wider than the width, every non-empty line starts with a style byte, and
+-- a style byte is never followed by another style byte or the line end.
+function T.line_format_and_width_hold_for_many_widths()
+  local words = {}
+  for k = 1, 200 do
+    words[k] = rep("w", k % 13 + 1)
+  end
+  local mix = {}
+  local tags = { "b", "a", "i", "code", "span" }
+  for k = 1, 120 do
+    local tag = tags[k % #tags + 1]
+    mix[#mix + 1] = "<" .. tag .. (tag == "a" and " href=x>" or ">")
+      .. rep("w", k % 11 + 1) .. " " .. WIDE1 .. "</" .. tag .. ">"
+      .. (k % 7 == 0 and " " or "")
+  end
+  -- { doc, smallest width }. A wide character needs 2 columns.
+  local docs = {
+    { table.concat(words, " "), 1 },
+    { table.concat(mix), 2 },
+    { "<b><i></i> </b>a <a href=x> </a><em>bcdefghijk</em><u> </u><li><b>x"
+      .. "<h1><b></b>y<pre><b>\n</b>\t<i>zz</pre>", 1 },
+  }
+  for d, item in ipairs(docs) do
+    local doc = item[1]
+    for width = item[2], 25 do
+      local where = "doc " .. d .. " width " .. width
+      for _, line in ipairs(render(doc, width)) do
+        local text = line:gsub("[\1-\5]", "")
+        t.ok(unicode.wlen(text) <= width, where .. ": " .. line)
+        t.ok(not line:find("[\1-\5][\1-\5]") and not line:find("[\1-\5]$"),
+          where .. ": " .. line)
+        t.ok(line == "" or line:find("^[\1-\5]"), where .. ": " .. line)
+      end
+    end
+  end
+end
+
+-- Expected-output cases in tests/cases. The comparison removes "\r",
+-- trailing spaces and tabs, and blank lines at the end.
 
 local function normalize(s)
   local out = {}
@@ -563,16 +467,6 @@ local function line_diff(expected, actual)
   end
 end
 
-function T.diff_names_the_first_differing_line()
-  t.eq(line_diff("a\nb", "a\nb"), nil)
-  t.eq(line_diff("a\nb\nc", "a\nx\nc"),
-    "first difference at line 2\n  expected: b\n  actual:   x")
-  t.eq(line_diff("a", "a\nb"),
-    "first difference at line 2\n  expected: (no line)\n  actual:   b")
-  t.eq(line_diff("a\tb\1", "a b"),
-    "first difference at line 1\n  expected: a\\x09b\\x01\n  actual:   a b")
-end
-
 function T.cases_match_expected_text()
   local failures = {}
   -- A case needs tests/cases/<name>.html and tests/cases/<name>.txt.
@@ -584,36 +478,16 @@ function T.cases_match_expected_text()
     else
       local expected = f:read("a")
       f:close()
-      local lines = render("tests/cases/" .. name .. ".html")
+      local lines = render(read_file("tests/cases/" .. name .. ".html"),
+        WIDTH)
       local diff = line_diff(normalize(expected),
-        normalize(table.concat(plain(lines), "\n")))
+        normalize(table.concat(plain_lines(lines), "\n")))
       if diff then
         failures[#failures + 1] = "case " .. name .. ": " .. diff
       end
     end
   end
   t.ok(#failures == 0, "\n" .. table.concat(failures, "\n"))
-end
-
-function T.case_titles()
-  local _, lay = render("tests/cases/elements.html")
-  t.eq(lay.title(), "Element table")
-  _, lay = render("tests/cases/broken.html")
-  t.eq(lay.title(), "Broken")
-  _, lay = render("tests/cases/title.html")
-  t.eq(lay.title(), "Tom & Jerry")
-end
-
-function T.case_style_bytes()
-  local lines, lay = render("tests/cases/styles.html")
-  t.eq(lay.title(), "Styles")
-  t.eq(lines, {
-    "\2Top \3mid \2end",
-    "",
-    "\1plain \3bold \4link \3back \1plain",
-    "\5a \3b",
-    "\5c",
-  })
 end
 
 return T

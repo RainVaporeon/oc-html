@@ -42,8 +42,8 @@ local DROP = set("script", "style", "template", "svg", "math", "iframe",
 
 local BLOCK = set("p", "div", "section", "article", "main", "header",
   "footer", "nav", "aside", "blockquote", "table", "tr", "td", "th", "ul",
-  "ol", "dl", "dt", "dd", "form", "input", "button", "select", "textarea",
-  "pre", "li")
+  "ol", "dl", "dt", "dd", "form", "input", "button", "select", "option",
+  "textarea", "pre", "li")
 
 local HEADING = set("h1", "h2", "h3", "h4", "h5", "h6")
 
@@ -53,10 +53,13 @@ local EMPHASIS = set("b", "strong", "i", "em", "u", "mark")
 local VOID = set("area", "base", "br", "col", "embed", "hr", "img", "input",
   "keygen", "link", "meta", "param", "source", "track", "wbr")
 
--- A start tag of one of these closes an open p, as in HTML.
-local CLOSES_P = set("p", "div", "section", "article", "main", "header",
-  "footer", "nav", "aside", "blockquote", "table", "ul", "ol", "dl", "form",
-  "pre", "li", "hr", "h1", "h2", "h3", "h4", "h5", "h6")
+-- A start tag of one of these closes an open p (the HTML standard list).
+local CLOSES_P = set("address", "article", "aside", "blockquote", "center",
+  "details", "dialog", "dir", "div", "dl", "dd", "dt", "fieldset",
+  "figcaption", "figure", "footer", "form", "header", "hgroup", "hr", "li",
+  "listing", "main", "menu", "nav", "ol", "p", "plaintext", "pre", "search",
+  "section", "summary", "table", "ul", "xmp", "h1", "h2", "h3", "h4", "h5",
+  "h6")
 
 -- Implied ends: a start tag closes an open element of the listed names. The
 -- search stops at an element in stops.
@@ -108,8 +111,9 @@ function M.new(width)
   -- True when the current line has a word. A prefix such as "- " is not a
   -- word, so white space after it is not kept.
   local has_word = false
-  -- The open elements: name, style inside and pre flag inside.
-  local sname, sstyle, spre, sd = {}, {}, {}, 0
+  -- The open elements: name, style inside, pre flag inside, and the style
+  -- the element sets itself (false when it takes the style of its parent).
+  local sname, sstyle, spre, sown, sd = {}, {}, {}, {}, 0
   local style, in_pre = M.NORMAL, false
   -- Stack index of the outermost dropped element, or 0.
   local drop_at = 0
@@ -319,8 +323,16 @@ function M.new(width)
   -- piece that crosses the limit at a character boundary. Leading white
   -- space is dropped and does not count toward the limit.
   local function add_title(value)
-    if title_at == 0 or title_len >= 64 or title_bytes >= TITLE_BUF then
+    if title_at == 0 or title_bytes >= TITLE_BUF then
       return
+    end
+    -- Small chunks give many small pieces. Join them to keep the list short.
+    if title_len >= 64 then
+      title_buf[1] = concat(title_buf, "", 1, title_len)
+      for k = 2, title_len do
+        title_buf[k] = nil
+      end
+      title_len = 1
     end
     if title_bytes == 0 then
       value = gsub(value, "^[ \t\n\r\f]+", "")
@@ -370,7 +382,7 @@ function M.new(width)
   -- Closes the innermost open element and applies its end rule.
   local function close_top()
     local name = sname[sd]
-    sname[sd] = nil
+    sname[sd], sstyle[sd], spre[sd], sown[sd] = nil, nil, nil, nil
     sd = sd - 1
     if sd > 0 then
       style, in_pre = sstyle[sd], spre[sd]
@@ -420,7 +432,7 @@ function M.new(width)
   -- its start rule still applies, but its style, pre and drop rules do not.
   -- A dropped element is the exception outside a dropped part: it closes
   -- the innermost element to make room, so its content stays hidden.
-  local function push_open(name, st, pre)
+  local function push_open(name, st, pre, own)
     if sd >= M.MAX_DEPTH then
       if drop_at > 0 or not DROP[name] then
         return false
@@ -428,9 +440,29 @@ function M.new(width)
       close_top()
     end
     sd = sd + 1
-    sname[sd], sstyle[sd], spre[sd] = name, st, pre
+    sname[sd], sstyle[sd], spre[sd], sown[sd] = name, st, pre, own or false
     style, in_pre = st, pre
     return true
+  end
+
+  -- Removes the inline element at index i (below the top) from the stack.
+  -- The elements above it stay open and take their styles again from their
+  -- new parents, as browsers do for a misnested inline end tag.
+  local function remove_at(i)
+    for k = i, sd - 1 do
+      sname[k], sown[k] = sname[k + 1], sown[k + 1]
+    end
+    sname[sd], sstyle[sd], spre[sd], sown[sd] = nil, nil, nil, nil
+    sd = sd - 1
+    for k = i, sd do
+      local pst, ppre = M.NORMAL, false
+      if k > 1 then
+        pst, ppre = sstyle[k - 1], spre[k - 1]
+      end
+      sstyle[k] = sown[k] or pst
+      spre[k] = ppre or sname[k] == "pre"
+    end
+    style, in_pre = sstyle[sd], spre[sd]
   end
 
   local function start_tag(name, attrs, self_closing)
@@ -469,16 +501,16 @@ function M.new(width)
       end
       return
     end
-    local st, pre = style, in_pre
+    local own, pre = false, in_pre
     if HEADING[name] then
       block()
       blank()
-      st = M.HEADING
+      own = M.HEADING
     elseif EMPHASIS[name] then
-      st = M.EMPHASIS
+      own = M.EMPHASIS
     elseif name == "a" then
       if attrs and attrs.href then
-        st = M.LINK
+        own = M.LINK
       end
     elseif name == "br" then
       commit()
@@ -506,23 +538,32 @@ function M.new(width)
       end
     elseif name == "pre" then
       block()
-      st, pre = M.PRE, true
+      own, pre = M.PRE, true
     elseif BLOCK[name] then
       block()
     end
     if not void then
-      push_open(name, st, pre)
+      push_open(name, own or style, pre, own)
       if name == "pre" then
         pre_first = true
       end
     end
   end
 
+  -- An end tag closes the innermost open element of its name. An inline
+  -- element closes alone, so the elements open inside it stay open. A block,
+  -- heading or dropped element, and any element around a dropped part,
+  -- closes the elements inside it too.
   local function end_tag(name)
     pre_first = false
     for i = sd, 1, -1 do
       if sname[i] == name then
-        close_to(i)
+        if i < sd and drop_at == 0 and not (BLOCK[name] or HEADING[name]
+            or DROP[name]) then
+          remove_at(i)
+        else
+          close_to(i)
+        end
         return
       end
     end
