@@ -1,0 +1,16 @@
+Before
+fn main() {
+        let x = 1;
+        if x    { go(); }
+}
+
+end   with  spaces
+Long:
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+aaaaaaaaaa
+Wide
+中文字中文字中文字中文字中文字中文字中文
+字 text and a
+verylongwordthatcannotfitonasinglelineat
+widthforty end.
+lots of white space

@@ -1,22 +1,30 @@
--- Turns tokens into wrapped lines. There is no DOM tree.
+-- Turns tokens into wrapped lines. There is no DOM tree, only a bounded
+-- stack of open elements.
 -- A line is one string. A non-empty line starts with a style byte (see
--- M.NORMAL and the others). A style lasts until the next style byte.
--- An empty line is "".
+-- M.NORMAL and the others). A style lasts until the next style byte. Style
+-- bytes never count toward the width. An empty line is "".
 
 local guard = require("html.guard")
 local unicode = require("unicode")
 
 local M = {}
 
-local byte, find, sub, rep = string.byte, string.find, string.sub,
-  string.rep
+local byte, find, sub, rep, gsub = string.byte, string.find, string.sub,
+  string.rep, string.gsub
 local concat = table.concat
+local tick = guard.tick
 
 M.NORMAL = "\1"
 M.HEADING = "\2"
 M.EMPHASIS = "\3"
 M.LINK = "\4"
 M.PRE = "\5"
+
+-- Open elements above this depth are not kept (see push_open).
+M.MAX_DEPTH = 256
+
+-- The first title text is kept up to this many bytes.
+local TITLE_MAX = 256
 
 local function set(...)
   local s = {}
@@ -26,52 +34,95 @@ local function set(...)
   return s
 end
 
--- Dropped with all content. head is here until title goes to the status
--- line.
+-- Dropped with all content. The text of title goes to title().
 local DROP = set("script", "style", "template", "svg", "math", "iframe",
-  "object", "noscript", "head")
+  "object", "noscript", "head", "title")
 
 local BLOCK = set("p", "div", "section", "article", "main", "header",
-  "footer", "nav", "aside", "blockquote", "pre", "li", "table", "tr", "td",
-  "th", "ul", "ol", "dl", "form", "input", "button", "select", "textarea")
+  "footer", "nav", "aside", "blockquote", "table", "tr", "td", "th", "ul",
+  "ol", "dl", "dt", "dd", "form", "input", "button", "select", "textarea",
+  "pre", "li")
 
 local HEADING = set("h1", "h2", "h3", "h4", "h5", "h6")
 
+local EMPHASIS = set("b", "strong", "i", "em", "u", "mark")
+
+-- Elements without content. They never go on the stack.
+local VOID = set("area", "base", "br", "col", "embed", "hr", "img", "input",
+  "keygen", "link", "meta", "param", "source", "track", "wbr")
+
+-- A start tag of one of these closes an open p, as in HTML.
+local CLOSES_P = set("p", "div", "section", "article", "main", "header",
+  "footer", "nav", "aside", "blockquote", "table", "ul", "ol", "dl", "form",
+  "pre", "li", "hr", "h1", "h2", "h3", "h4", "h5", "h6")
+
+-- Implied ends: a start tag closes an open element of the listed names. The
+-- search stops at an element in stops.
+local P_SET = set("p")
+local P_STOPS = {}
+for k in pairs(BLOCK) do
+  P_STOPS[k] = true
+end
+for k in pairs(HEADING) do
+  P_STOPS[k] = true
+end
+local IMPLIED = {
+  li = { set("li"), set("ul", "ol", "menu") },
+  dt = { set("dt", "dd"), set("dl") },
+  dd = { set("dt", "dd"), set("dl") },
+  tr = { set("tr", "td", "th"), set("table") },
+  td = { set("td", "th"), set("tr", "table") },
+  th = { set("td", "th"), set("tr", "table") },
+  option = { set("option"), set("select") },
+}
+
 local SPACE = "[ \t\n]"
 local NOT_SPACE = "[^ \t\n]"
+local NON_ASCII = "[\128-\255]"
+local PRE_BREAK = "[\t\n]"
 
 -- Returns a layout object for lines of at most width columns:
 --   push(kind, value, attrs, self_closing)   one token from the tokenizer
 --   count()                                  number of finished lines
 --   finish()                                 ends the input, returns lines
+--   title()                                  the document title, or nil
 -- lines holds the finished lines while push runs.
 function M.new(width)
   if width < 1 then
     width = 1
   end
   local lines, n = {}, 0
-  -- Pieces of the current line.
+  -- Pieces of the current line, its width and the style of its last piece.
   local parts, np, cur_w = {}, 0, 0
-  local line_style = M.NORMAL
-  -- Pieces of a word that is not placed yet. A word can span text tokens.
-  local word, nw = {}, 0
+  local lstyle = M.NORMAL
+  -- Pieces of a word that is not placed yet, with their styles and widths.
+  -- A word can span text tokens and inline tags.
+  local word, wst, wwd, nw, ww = {}, {}, {}, 0, 0
   -- True when white space came after the last placed word.
   local space = false
   -- True when the current line has a word. A prefix such as "- " is not a
   -- word, so white space after it is not kept.
   local has_word = false
-  local drop, dropping = {}, 0
-  local style = M.NORMAL
+  -- The open elements: name, style inside and pre flag inside.
+  local sname, sstyle, spre, sd = {}, {}, {}, 0
+  local style, in_pre = M.NORMAL, false
+  -- Stack index of the outermost dropped element, or 0.
+  local drop_at = 0
+  -- Stack index of the open title element, or 0, and its text.
+  local title_at, title_buf, title_len, title_text = 0, {}, 0, nil
+  -- True right after a pre start tag: one newline there is skipped.
+  local pre_first = false
+  local hr_line
 
   local function emit(line)
     n = n + 1
     lines[n] = line
-    guard.tick(n)
+    tick(n)
   end
 
   local function end_line()
     if np > 0 then
-      emit(line_style .. concat(parts, "", 1, np))
+      emit(concat(parts, "", 1, np))
     else
       emit("")
     end
@@ -79,26 +130,54 @@ function M.new(width)
     has_word = false
   end
 
-  local function place(s, w)
+  -- Adds s (not empty) of w columns in style st to the current line.
+  local function place(s, st, w)
     if np == 0 then
-      line_style = style
+      parts[1], parts[2] = st, s
+      np, lstyle = 2, st
+    else
+      if st ~= lstyle then
+        np = np + 1
+        parts[np] = st
+        lstyle = st
+      end
+      np = np + 1
+      parts[np] = s
     end
-    np = np + 1
-    parts[np] = s
     cur_w = cur_w + w
   end
 
-  -- Places a word wider than the line, split at characters.
-  local function place_long(s)
-    local i, len, from, w = 1, #s, 1, 0
+  -- Places s (not empty) at character boundaries. It fills the current line
+  -- and goes on in new lines. A wide character never straddles the width.
+  local function split(s, st)
+    local len = #s
+    if not find(s, NON_ASCII) then
+      local i = 1
+      while i <= len do
+        local room = width - cur_w
+        if room <= 0 then
+          end_line()
+          room = width
+        end
+        local j = i + room - 1
+        if j > len then
+          j = len
+        end
+        place(sub(s, i, j), st, j - i + 1)
+        i = j + 1
+      end
+      return
+    end
+    local wlen = unicode.wlen
+    local i, from, w = 1, 1, 0
     while i <= len do
-      guard.tick(n)
       local b = byte(s, i)
-      local size = b < 0x80 and 1 or b >= 0xF0 and 4 or b >= 0xE0 and 3 or 2
-      local cw = unicode.wlen(sub(s, i, i + size - 1))
+      local size = b < 0x80 and 1 or b >= 0xF0 and 4 or b >= 0xE0 and 3
+        or 2
+      local cw = b < 0x80 and 1 or wlen(sub(s, i, i + size - 1))
       if cur_w + w + cw > width and cur_w + w > 0 then
         if i > from then
-          place(sub(s, from, i - 1), w)
+          place(sub(s, from, i - 1), st, w)
         end
         end_line()
         from, w = i, 0
@@ -107,50 +186,61 @@ function M.new(width)
       i = i + size
     end
     if from <= len then
-      place(sub(s, from), w)
+      place(sub(s, from), st, w)
     end
   end
 
+  -- Places the pending word, with one space before it when white space
+  -- came before it.
   local function commit()
     if nw == 0 then
       return
     end
-    local s = nw == 1 and word[1] or concat(word, "", 1, nw)
-    nw = 0
-    local w = unicode.wlen(s)
     local gap = (space and has_word) and 1 or 0
     space = false
-    if cur_w + gap + w <= width then
+    if cur_w + gap + ww > width and has_word then
+      end_line()
+      gap = 0
+    end
+    if cur_w + gap + ww <= width then
       if gap == 1 then
-        place(" ", 1)
+        place(" ", lstyle, 1)
       end
-      place(s, w)
+      for i = 1, nw do
+        place(word[i], wst[i], wwd[i])
+      end
     else
-      if np > 0 then
-        end_line()
-      end
-      if w <= width then
-        place(s, w)
-      else
-        place_long(s)
+      for i = 1, nw do
+        if cur_w + wwd[i] <= width then
+          place(word[i], wst[i], wwd[i])
+        else
+          split(word[i], wst[i])
+        end
       end
     end
+    nw, ww = 0, 0
     has_word = true
   end
 
+  local function add_piece(s, ascii)
+    local w = ascii and #s or unicode.wlen(s)
+    nw = nw + 1
+    word[nw], wst[nw], wwd[nw] = s, style, w
+    ww = ww + w
+  end
+
+  -- Text outside pre: white space collapses, words wrap.
   local function add_text(s)
+    local ascii = not find(s, NON_ASCII)
     local i, len = 1, #s
     while i <= len do
-      guard.tick(n)
       local ws = find(s, SPACE, i)
       if not ws then
-        nw = nw + 1
-        word[nw] = i == 1 and s or sub(s, i)
+        add_piece(i == 1 and s or sub(s, i), ascii)
         return
       end
       if ws > i then
-        nw = nw + 1
-        word[nw] = sub(s, i, ws - 1)
+        add_piece(sub(s, i, ws - 1), ascii)
       end
       commit()
       space = has_word
@@ -159,6 +249,41 @@ function M.new(width)
         return
       end
       i = nxt
+    end
+  end
+
+  -- Text inside pre: spaces and newlines stay, a tab goes to the next
+  -- 8-column stop, long lines wrap hard at the width.
+  local function pre_text(s)
+    if pre_first then
+      pre_first = false
+      if byte(s, 1) == 10 then
+        s = sub(s, 2)
+      end
+    end
+    local i, len = 1, #s
+    while i <= len do
+      local j = find(s, PRE_BREAK, i)
+      local stop = j and j - 1 or len
+      if stop >= i then
+        split(sub(s, i, stop), style)
+      end
+      if not j then
+        return
+      end
+      if byte(s, j) == 10 then
+        end_line()
+      else
+        if cur_w >= width then
+          end_line()
+        end
+        local sp = 8 - cur_w % 8
+        if cur_w + sp > width then
+          sp = width - cur_w
+        end
+        place(rep(" ", sp), style, sp)
+      end
+      i = j + 1
     end
   end
 
@@ -178,64 +303,209 @@ function M.new(width)
     end
   end
 
-  local function start_tag(name, self_closing)
-    if DROP[name] then
-      if not self_closing then
-        drop[name] = (drop[name] or 0) + 1
-        dropping = dropping + 1
+  local function end_title()
+    local s = concat(title_buf, "", 1, title_len)
+    s = gsub(gsub(s, "[ \t\n]+", " "), "^ ", "")
+    s = gsub(s, " $", "")
+    if #s > TITLE_MAX then
+      local cut = TITLE_MAX
+      -- Cut at a character boundary.
+      while cut > 0 do
+        local b = byte(s, cut + 1)
+        if b < 0x80 or b >= 0xC0 then
+          break
+        end
+        cut = cut - 1
       end
-    elseif name == "body" then
-      -- An unclosed head ends at body.
-      dropping = dropping - (drop.head or 0)
-      drop.head = 0
-    elseif dropping > 0 then
+      s = sub(s, 1, cut)
+    end
+    if s ~= "" then
+      title_text = s
+    end
+    title_buf, title_len = nil, 0
+  end
+
+  -- Closes the innermost open element and applies its end rule.
+  local function close_top()
+    local name = sname[sd]
+    sname[sd] = nil
+    sd = sd - 1
+    if sd > 0 then
+      style, in_pre = sstyle[sd], spre[sd]
+    else
+      style, in_pre = M.NORMAL, false
+    end
+    if title_at > sd then
+      title_at = 0
+      end_title()
+    end
+    if drop_at > 0 then
+      if drop_at > sd then
+        drop_at = 0
+      end
       return
-    elseif HEADING[name] then
+    end
+    if HEADING[name] then
       block()
       blank()
-      style = M.HEADING
+    elseif BLOCK[name] then
+      block()
+    end
+  end
+
+  -- Closes open elements down to and including index i.
+  local function close_to(i)
+    while sd >= i do
+      close_top()
+    end
+  end
+
+  -- Closes the innermost open element named in names, unless an element
+  -- in stops comes first.
+  local function close_open(names, stops)
+    for i = sd, 1, -1 do
+      local name = sname[i]
+      if names[name] then
+        close_to(i)
+        return
+      elseif stops[name] then
+        return
+      end
+    end
+  end
+
+  -- Opens an element. At the depth bound, the new element is not kept:
+  -- its start rule still applies, but its style, pre and drop rules do not.
+  -- A dropped element is the exception outside a dropped part: it closes
+  -- the innermost element to make room, so its content stays hidden.
+  local function push_open(name, st, pre)
+    if sd >= M.MAX_DEPTH then
+      if drop_at > 0 or not DROP[name] then
+        return false
+      end
+      close_top()
+    end
+    sd = sd + 1
+    sname[sd], sstyle[sd], spre[sd] = name, st, pre
+    style, in_pre = st, pre
+    return true
+  end
+
+  local function start_tag(name, attrs, self_closing)
+    pre_first = false
+    local void = VOID[name] or self_closing
+    if name == "body" then
+      -- An unclosed head ends at body.
+      for i = sd, 1, -1 do
+        if sname[i] == "head" then
+          close_to(i)
+          break
+        end
+      end
+    end
+    if drop_at > 0 then
+      -- A title in head is the document title. A title in svg is not.
+      if not void and push_open(name, style, in_pre) and name == "title"
+          and sname[drop_at] == "head" and title_buf and title_at == 0 then
+        title_at = sd
+      end
+      return
+    end
+    if CLOSES_P[name] then
+      close_open(P_SET, P_STOPS)
+    end
+    local imp = IMPLIED[name]
+    if imp then
+      close_open(imp[1], imp[2])
+    end
+    if DROP[name] then
+      if not void and push_open(name, style, in_pre) then
+        drop_at = sd
+        if name == "title" and title_buf then
+          title_at = sd
+        end
+      end
+      return
+    end
+    local st, pre = style, in_pre
+    if HEADING[name] then
+      block()
+      blank()
+      st = M.HEADING
+    elseif EMPHASIS[name] then
+      st = M.EMPHASIS
+    elseif name == "a" then
+      if attrs and attrs.href then
+        st = M.LINK
+      end
     elseif name == "br" then
       commit()
       space = false
       end_line()
     elseif name == "hr" then
       block()
-      emit(M.NORMAL .. rep("─", width))
+      hr_line = hr_line or M.NORMAL .. rep("─", width)
+      emit(hr_line)
+    elseif name == "img" then
+      local alt = attrs and attrs.alt
+      if alt then
+        alt = gsub(gsub(gsub(alt, "[ \t\n]+", " "), "^ ", ""), " $", "")
+      end
+      local s = (alt and alt ~= "") and "[img: " .. alt .. "]" or "[img]"
+      if in_pre then
+        pre_text(s)
+      else
+        add_text(s)
+      end
     elseif name == "li" then
       block()
-      place("- ", 2)
+      if width > 2 then
+        place("- ", style, 2)
+      end
+    elseif name == "pre" then
+      block()
+      st, pre = M.PRE, true
     elseif BLOCK[name] then
       block()
+    end
+    if not void then
+      push_open(name, st, pre)
+      if name == "pre" then
+        pre_first = true
+      end
     end
   end
 
   local function end_tag(name)
-    if DROP[name] then
-      local open = drop[name] or 0
-      if open > 0 then
-        drop[name] = open - 1
-        dropping = dropping - 1
+    pre_first = false
+    for i = sd, 1, -1 do
+      if sname[i] == name then
+        close_to(i)
+        return
       end
-    elseif dropping > 0 then
-      return
-    elseif HEADING[name] then
-      block()
-      style = M.NORMAL
-      blank()
-    elseif BLOCK[name] then
-      block()
     end
   end
 
   local self = { lines = lines }
 
-  function self.push(kind, value, _, self_closing)
+  function self.push(kind, value, attrs, self_closing)
     if kind == "text" then
-      if dropping == 0 then
+      if value == "" then
+        return
+      end
+      if drop_at > 0 then
+        if title_at > 0 and title_len < 64 then
+          title_len = title_len + 1
+          title_buf[title_len] = value
+        end
+      elseif in_pre then
+        pre_text(value)
+      else
         add_text(value)
       end
+      tick(n)
     elseif kind == "start" then
-      start_tag(value, self_closing)
+      start_tag(value, attrs, self_closing)
     elseif kind == "end" then
       end_tag(value)
     end
@@ -245,7 +515,12 @@ function M.new(width)
     return n
   end
 
+  function self.title()
+    return title_text
+  end
+
   function self.finish()
+    close_to(1)
     block()
     while n > 0 and lines[n] == "" do
       lines[n] = nil
