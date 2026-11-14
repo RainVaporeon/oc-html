@@ -46,10 +46,32 @@ Decided by the user (2026-11-14). `spec/fetch.md` and `spec/url.md` state each r
 - The response is streamed into the renderer. It is not saved to a cache file first.
 - D1: The program uses the card component directly, not the OpenOS `internet` library (see `spec/fetch.md` "Internet card API").
 - D2: The body of a 4xx or 5xx response renders. The program does not stop. The status code shows in the viewer, and on stderr in `--print` mode (see `spec/fetch.md` "HTTP status and content type").
+  - Measured (netprobe v1, 2026-11-15): the card gives no body for a 4xx or 5xx status. `finishConnect()` fails with a reason that holds the status, so no body is readable. The program maps the reason back to a code, shows the short page, and reports `[HTTP <code>] <phrase>` in a popup (`spec/fetch.md` "HTTP error statuses"). The rule "the body renders" stays for a card that gives a body; its tests are marked "not seen in game".
 - D3: Latin-1 and Windows-1252 convert to UTF-8. All other charsets pass through as UTF-8 (see `spec/fetch.md` "Charset").
 - D4: An argument without a scheme is a local file when that file exists. Otherwise, when it looks like a host, it is `http://<arg>` (see `spec/url.md` "Arguments without a scheme").
 - D5 (Q5): An argument whose last label is `html`, `htm`, `xhtml`, `txt` or `lua` stays a local file. A missing `x.html` gives `html: file not found: x.html` (see `spec/url.md` "Arguments without a scheme").
 - D6 (Q6): The exit code is 0 when an error status (4xx, 5xx) renders, in the viewer and in `--print` mode (see `spec/fetch.md` "HTTP status and content type").
+
+## Errors keep the session
+
+Decided by the user (2026-11-15). Rules: `spec/loading.md` "Errors after the frame".
+
+- The program will support tabs. A tab that fails to load must not end the whole program, so an error after the frame opened shows in a popup and the user stays in the viewer.
+- The rule covers every fetch error after the frame: cannot connect, timeout, read error, too many open connections, not text/html, too large. A memory stop shows the lines received so far.
+- Print mode, the no-screen path and the errors before the frame keep the stderr line and the exit codes. Without a screen there is no session to keep, and a shell script needs the exit code.
+- Ctrl+C still exits at once with code 130. It is the user's explicit request to leave.
+
+## Remote fetching: measurements (netprobe v1)
+
+One run in game (GT:NH server, user agent `opencomputers/1.12.68-GTNH`, a permissive address config). Raw data: `datacollection/netprobe.txt` (not tracked). The facts with their source keys: `docs/probe/FACTS.md` "Internet card (netprobe v1)".
+
+- The card and the handle give their methods as callable tables. The probe tested `type == "function"` and reported `isHttpEnabled` as missing (a probe bug, now fixed). The fetch code only calls the methods, so it was not affected.
+- A 4xx or 5xx status fails in `finishConnect()`. The 404 reason is the URL, and the others are the Java message `Server returned HTTP response code: <N> for URL: <url>`. This broke the assumption behind decision D2 (a readable error body). The program now maps the reason back to a status (`spec/fetch.md` "HTTP error statuses").
+- `response()` is nil while the request is pending and gives a value at once after `finishConnect()` returned true, with no read. The wait order in `fetch.open` (connect, then response) was right. The fake card now copies this.
+- The card follows same-scheme redirects by itself and gives no final URL. A scheme change comes back as a 302 with an absolute `Location`. So the final URL of a page can be unknown, which matters for relative links (`tasks/todo.md` item 2).
+- The limit is 4 connections. Tabs must keep at most 4 handles open, or close a handle before they open another.
+- `finishConnect()` stays false until the response headers arrive. The card has no connect timeout of its own (a silent host was pending after 20 s). `CONNECT_TIMEOUT` therefore bounds the time to the first header.
+- Each `request()` and `read()` costs one tick (50 ms). The first reads gave 2048 bytes on two hosts. Large reads, memory and a 1 MB page are not measured yet.
 
 ## Remote fetching: Internet card API
 

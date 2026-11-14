@@ -8,6 +8,10 @@ Source: `bin/html.lua`. Index: `SPEC.md`. Exit codes: `SPEC.md` "Global rules".
 - Any other error value is unexpected: `bin/html.lua` prints one line and writes the full traceback to `/tmp/html-error.log`. A raw traceback never shows on the screen.
 - `bin/html.lua` takes the traceback function as a parameter, because the test sandbox removes `debug`. In game it gets `debug.traceback`.
 
+## Errors that keep the session
+
+In the viewer, a fetch error after the frame opened and a guard memory stop do not end the program. `bin/html.lua` shows the message in a popup over the page, and the exit code is 0 when the user quits. Ctrl+C still gives 130. Print mode, the no-screen path, and every error before the frame print the line and keep the exit code 1 (`spec/loading.md` "Errors after the frame"). A read error of a local file, an unexpected error and a module load error still end the program with code 1.
+
 ## Error log
 
 - `/tmp` is only 64 KB. `/tmp/html-error.log` is capped at 8 KB. When the log would grow past the cap, the oldest content is dropped and the newest is kept.

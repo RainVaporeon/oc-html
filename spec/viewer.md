@@ -31,6 +31,8 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 - The popup shows the error text and an `[OK]` button under it. Only Enter closes the popup. Esc does not. The viewer ignores all other keys while the popup shows (Ctrl+C still quits at once). The user then keeps browsing the partial page.
 - When the user quits normally, the exit code is 0.
 - Print mode and the no-screen path have no popup. See `spec/fetch.md` "HTTP status and content type".
+- A popup also reports an error after the frame opened (`spec/loading.md` "Errors after the frame"). The page behind it is empty, or holds the lines received before a memory stop. The status line shows `[error]` and the URL. After OK the user can scroll and quit as usual.
+- A status that the card reports as a connect failure (404, 500, ...) shows the short page behind a popup `[HTTP <code>] <phrase>` (for example `[HTTP 404] Not Found`). A code with no known phrase shows `[HTTP <code>]`. The status line shows `[HTTP <code>]` before the title. See `spec/fetch.md` "HTTP error statuses".
 
 ## Resolution
 

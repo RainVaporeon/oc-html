@@ -46,6 +46,46 @@ local function why_text(v)
   return (tostring(v):match("^[^\n]*"))
 end
 
+-- The reason phrases of the common error codes. The card gives no phrase for
+-- an error status, so the program adds its own. A code that is not here has
+-- no phrase.
+M.PHRASES = {
+  [400] = "Bad Request", [401] = "Unauthorized", [403] = "Forbidden",
+  [404] = "Not Found", [405] = "Method Not Allowed",
+  [408] = "Request Timeout", [410] = "Gone", [429] = "Too Many Requests",
+  [500] = "Internal Server Error", [501] = "Not Implemented",
+  [502] = "Bad Gateway", [503] = "Service Unavailable",
+  [504] = "Gateway Timeout",
+}
+
+local STATUS_REASON = "^Server returned HTTP response code: (%d+) for URL: "
+
+-- Maps a finishConnect failure back to an HTTP error status (measured in
+-- game, see spec/fetch.md "HTTP error statuses"). The card gives no status
+-- for 4xx and 5xx: finishConnect returns nil and a reason. h.response is
+-- tried first, because the card may give a code after a failure. The reason
+-- text is the main path: the exact URL means 404, and the Java message of
+-- the other codes holds the number. Returns the code, or nil when the
+-- failure is a connection error.
+local function status_of(h, reason, url)
+  local ok, code = pcall(h.response)
+  if ok and type(code) == "number" then
+    code = math.tointeger(code)
+    if code and code >= 400 and code <= 599 then
+      return code
+    end
+  end
+  reason = tostring(reason)
+  if reason == url then
+    return 404
+  end
+  code = math.tointeger(tonumber(reason:match(STATUS_REASON) or ""))
+  if code and code >= 400 and code <= 599 then
+    return code
+  end
+  return nil
+end
+
 local function trim(s)
   return (s:match("^%s*(.-)%s*$"))
 end
@@ -102,7 +142,8 @@ local function short_page(code, message, url)
 end
 
 -- Waits for the connection and the status line. Returns true, code, message
--- and headers, or false and a controlled message.
+-- and headers, or false and a controlled message. When the failure maps to an
+-- HTTP error status, the status code is the third value.
 local function wait_response(h, url, links)
   local clock, interrupted = links.clock, links.interrupted
   local t0 = clock()
@@ -122,8 +163,9 @@ local function wait_response(h, url, links)
   while true do
     local ok, done, why = pcall(h.finishConnect)
     if not ok or done == nil then
+      local reason = ok and why or done
       return false, "html: cannot connect: " .. url .. ": "
-        .. why_text(ok and why or done)
+        .. why_text(reason), status_of(h, reason, url)
     end
     if done then
       break
@@ -174,7 +216,10 @@ end
 
 -- Builds the response object for an open handle. Returns it, or nil and a
 -- controlled message (the handle is then closed).
-local function make_response(h, u, code, message, headers, links, info)
+-- bodyless is true for a status that came from a connect failure: there is
+-- no body to read, so the short page shows.
+local function make_response(h, u, code, message, headers, links, info,
+                             bodyless)
   local clock = links.clock
   local closed = false
   local function close()
@@ -275,7 +320,7 @@ local function make_response(h, u, code, message, headers, links, info)
   local function use_short()
     short = short_page(code, resp.message, u.url)
   end
-  if not ACCEPTED[media] or not plain then
+  if bodyless or not ACCEPTED[media] or not plain then
     close()
     finish()
     resp.length = nil
@@ -317,7 +362,9 @@ end
 -- ended (clock values).
 -- Returns a response (status, message, is_error, length, content_type,
 -- final_url, redirects, bytes, read_error, read(), close(), fetch_time()),
--- or nil and a controlled message.
+-- or nil and a controlled message. A 4xx or 5xx status that the card reports
+-- as a connect failure returns a response too: its body is the short page,
+-- and it has notice (the print mode line) and popup (the viewer text).
 function M.open(url, links, info)
   info.redirects = 0
   info.started = links.clock()
@@ -354,6 +401,19 @@ function M.open(url, links, info)
       error(got, 0)
     end
     if not got then
+      -- On a failure, code is the message and message is the status of the
+      -- failure, or nil for a connection error.
+      local status = message
+      if status then
+        info.status = status
+        local phrase = M.PHRASES[status] or ""
+        local tail = phrase ~= "" and (" " .. phrase) or ""
+        local resp = make_response(h, u, status, phrase, {}, links, info,
+          true)
+        resp.popup = "[HTTP " .. status .. "]" .. tail
+        resp.notice = "html: HTTP " .. status .. tail .. ": " .. u.url
+        return resp
+      end
       pcall(h.close)
       return nil, code
     end

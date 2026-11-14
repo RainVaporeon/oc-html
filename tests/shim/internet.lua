@@ -1,14 +1,35 @@
 -- Test replacement for the internet card component (not the OpenOS internet
 -- library). M.new(opts) returns a fake card proxy and its controller.
+-- It copies the measured card behavior (docs/probe/FACTS.md "Internet card
+-- (netprobe v1)", spec/testing.md):
+--   - card and handle methods are callable tables, not functions
+--   - the limit is 4 open connections; the 5th request() returns nil and
+--     "too many open connections"; close() frees a slot, a double close is
+--     safe
+--   - response() gives nil until finishConnect() has returned true, then a
+--     value at once, with no read (script.response_early changes that)
+--   - a 4xx or 5xx status never reaches response() or read(): finishConnect()
+--     returns nil and a reason. For 404 the reason is exactly the requested
+--     URL (M.reason_404). For the other codes it is "Server returned HTTP
+--     response code: <N> for URL: <url>" (M.reason_status)
+--   - other failure texts: "unknown host: <host>: Name or service not known",
+--     "Connection reset", "(certificate_expired) PKIX path validation
+--     failed: ..."
+--   - response header names keep the server's case, one entry per name, and
+--     each value is a list of strings
 -- A script describes the answer to one request (all fields optional):
 --   request_error   request() returns nil and this reason
 --   request_raise   request() raises this value
 --   connect_polls   finishConnect() returns false this many times first
 --   connect_error   then finishConnect() returns nil and this reason
 --   connect_raise   then finishConnect() raises this value
---   response_polls  response() returns nil this many times first
+--   response_polls  response() returns nil this many times after connect (not
+--                   seen in game: the card gives the response at once)
+--   response_early  response() answers before finishConnect() returned true
+--                   (not seen in game)
 --   response_after_read
---                   response() returns nil until read() was called once
+--                   response() returns nil until read() was called once (not
+--                   seen in game)
 --   code, message, headers
 --                   the response() values (code 200, message "OK" and an
 --                   empty headers table by default)
@@ -18,11 +39,25 @@
 --   read_raise      after the body, read() raises this value
 --   endless         after the body, read() returns "" forever
 -- opts: routes (url -> script), default (script for any other url), limit
--- (open connections, default 8), http (isHttpEnabled() result, default true).
+-- (open connections, default 4), http (isHttpEnabled() result, default true).
 
 local M = {}
 
-local DEFAULT_LIMIT = 8
+local DEFAULT_LIMIT = 4
+
+-- The measured finishConnect reasons of an HTTP error status.
+function M.reason_404(url)
+  return url
+end
+
+function M.reason_status(code, url)
+  return "Server returned HTTP response code: " .. code .. " for URL: " .. url
+end
+
+-- A table that calls fn, like the methods of a component proxy.
+local function callable(fn)
+  return setmetatable({}, { __call = function(_, ...) return fn(...) end })
+end
 
 function M.new(opts)
   opts = opts or {}
@@ -31,11 +66,11 @@ function M.new(opts)
   local limit = opts.limit or DEFAULT_LIMIT
   local card = {}
 
-  function card.isHttpEnabled()
+  card.isHttpEnabled = callable(function()
     return opts.http ~= false
-  end
+  end)
 
-  function card.request(url, data, headers)
+  card.request = callable(function(url, data, headers)
     ctl.requests[#ctl.requests + 1] = url
     ctl.data = data
     ctl.headers = headers
@@ -58,7 +93,9 @@ function M.new(opts)
     local body = script.body or {}
     local piece, pos = 1, 1
 
-    function h.finishConnect()
+    local connected = false
+
+    h.finishConnect = callable(function()
       if connect_polls > 0 then
         connect_polls = connect_polls - 1
         return false
@@ -69,10 +106,14 @@ function M.new(opts)
       if script.connect_error ~= nil then
         return nil, script.connect_error
       end
+      connected = true
       return true
-    end
+    end)
 
-    function h.response()
+    h.response = callable(function()
+      if not connected and not script.response_early then
+        return nil
+      end
       if script.response_after_read and h.reads == 0 then
         return nil
       end
@@ -82,9 +123,9 @@ function M.new(opts)
       end
       return script.code or 200, script.message or "OK",
         script.headers or {}
-    end
+    end)
 
-    function h.read(n)
+    h.read = callable(function(n)
       h.reads = h.reads + 1
       while piece <= #body do
         local s = body[piece]
@@ -112,18 +153,18 @@ function M.new(opts)
         return ""
       end
       return nil
-    end
+    end)
 
-    function h.close()
+    h.close = callable(function()
       h.closed = h.closed + 1
       ctl.closes = ctl.closes + 1
       if h.closed == 1 then
         ctl.open = ctl.open - 1
       end
-    end
+    end)
 
     return h
-  end
+  end)
 
   return card, ctl
 end

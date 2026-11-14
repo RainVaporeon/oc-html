@@ -75,7 +75,7 @@ Tests, tools, docs, tasks and releases: `docs/structure.md`.
 ## Global rules
 
 - Controlled errors are one line with the prefix `html: ` (`spec/errors.md`).
-- Exit codes: 0 quit, 1 error, 2 bad arguments, 130 Ctrl+C (also from the viewer).
+- Exit codes: 0 quit, 1 error, 2 bad arguments, 130 Ctrl+C (also from the viewer). In the viewer, a fetch error after the frame opened shows a popup and gives 0 on quit (`spec/loading.md` "Errors after the frame").
 - The screen is restored on every exit path. Error lines print after the restore.
 - Errors and notices go to stderr.
 

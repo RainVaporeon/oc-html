@@ -268,8 +268,7 @@ t.cases(T, "netprobe_facts", {
         "api.get.handle.has.finishConnect", "api.get.handle.has.response",
         "api.get.handle.has.read", "api.get.handle.has.close",
         "api.get.request.handle_type" } },
-    { "table", "true", "function", "function", "function", "function",
-      "table" } },
+    { "table", "true", "table", "table", "table", "table", "table" } },
   { "N2 connect polls",
     { routes = { [HTTP_URL] = { connect_polls = 4 } },
       keys = { "connect.http_1.connect.polls", "connect.http_1.connect.result" } },
@@ -283,6 +282,24 @@ t.cases(T, "netprobe_facts", {
       keys = { "connect.http_1.connect.result", "connect.http_1.connect.error",
         "connect.http_1.response.result" } },
     { "error", "unknown host", "nil" } },
+  { "N2 response() after a connect error is recorded",
+    { routes = { [HTTP_URL] = { connect_error = HTTP_URL, code = 404,
+        message = "Not Found", response_early = true } },
+      keys = { "connect.http_1.connect.error_response",
+        "connect.http_1.connect.error_response_message" } },
+    { "404", "Not Found" } },
+  { "N2 response() after a connect error: nil when the card has none",
+    { routes = { [HTTP_URL] = { connect_error = HTTP_URL } },
+      keys = { "connect.http_1.connect.error_response",
+        "connect.http_1.connect.error_response_message" } },
+    { "nil", "nil" } },
+  { "N3 response() before finishConnect is recorded as its value",
+    { routes = { [HTTP_URL] = { response_early = true, code = 204 } },
+      keys = { "connect.http_1.n3.before_connect" } },
+    { "204" } },
+  { "N3 response() before finishConnect: nil",
+    { keys = { "connect.http_1.n3.before_connect" } },
+    { "nil" } },
   { "N2 connect raise",
     { routes = { [HTTP_URL] = { connect_raise = "tls failed" } },
       keys = { "connect.http_1.connect.result", "connect.http_1.connect.raise" } },
@@ -415,7 +432,7 @@ t.cases(T, "netprobe_facts", {
   { "N13 connection limit and slot reuse",
     { keys = { "limit.opened", "limit.close_one", "limit.reopen_after_close",
         "limit.double_close", "limit.leak.skipped" } },
-    { "8", "ok", "true", "ok", "run with --leak, then run the probe again" } },
+    { "4", "ok", "true", "ok", "run with --leak, then run the probe again" } },
 }, ask)
 
 function T.netprobe_limit_not_reached()
@@ -471,7 +488,7 @@ function T.netprobe_failing_step_does_not_stop_the_probe()
   t.eq(values["net.large.page.error"], "free broke")
   t.ok(tonumber(values["net.probe.errors"]) >= 3)
   -- The later sections still ran, and no handle stayed open.
-  t.eq(values["net.limit.opened"], "8")
+  t.eq(values["net.limit.opened"], "4")
   t.eq(values["net.status.echo404.status.code"], "200")
   t.eq(values["net.headers.real_manual.status.code"], "200")
   t.eq(m.ctl.open, 0)

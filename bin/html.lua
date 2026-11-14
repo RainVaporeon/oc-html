@@ -589,12 +589,19 @@ function M.main(argv, deps)
   -- A fetch error for a guessed URL names the argument, so a mistyped file
   -- name is clear.
   local suffix = guessed and (" (no local file named " .. arg .. ")") or ""
+  -- A fetch error after the frame opened does not end the session: the
+  -- viewer shows it in a popup (see spec/loading.md "Errors after the
+  -- frame"). kept_error is the text of such an error.
+  local kept_error
   local function fetch_error(why)
     if why ~= INTERRUPTED then
       why = why .. suffix
+      kept_error = why
     end
     error(why, 0)
   end
+  -- The finished lines of the render in progress, for a memory stop.
+  local live_lines, live_count = nil, 0
 
   -- The loading screen. The status line shows the phase (see
   -- spec/loading.md). The status text is drawn only when it changes, and the
@@ -655,6 +662,7 @@ function M.main(argv, deps)
   -- the status line changes until the end of the input.
   local ui = {
     before_read = function(lines, count)
+      live_lines, live_count = lines, count
       if not first_drawn and count >= session.rows then
         first_drawn = true
         session.draw_lines(lines, count)
@@ -698,7 +706,7 @@ function M.main(argv, deps)
     open_file = resp
     name, total = resp.final_url, resp.length
     local status = "HTTP " .. int_text(resp.status)
-    if resp.is_error and opts.print then
+    if resp.is_error and opts.print and not resp.notice then
       -- A notice, not an error: the body renders (decision D2).
       deps.err("html: " .. status .. (resp.message ~= "" and (" "
         .. resp.message) or "") .. ": " .. resp.final_url)
@@ -717,6 +725,11 @@ function M.main(argv, deps)
       -- An error status ends its body at a read error. The received part
       -- renders, and the error line follows (popup or stderr).
       tail_error = function()
+        if resp.notice then
+          -- A status from a connect failure: the line in print mode, the
+          -- popup in the viewer. The short page has rendered.
+          return opts.print and resp.notice or resp.popup
+        end
         return resp.read_error and (resp.read_error .. suffix) or nil
       end,
     }
@@ -756,6 +769,26 @@ function M.main(argv, deps)
       end
     end, session and ui or nil)
   end, handler)
+  -- An error that keeps the session: a fetch error or a memory stop after
+  -- the frame opened. The viewer shows a popup over an empty page, or over
+  -- the lines of a memory stop. Quit then gives code 0.
+  if not ok and session and not opts.print and type(result) == "string"
+      and (result == kept_error or find(result,
+        "^html: %a+ too large for available memory")) then
+    local text = result
+    local lines = {}
+    if result ~= kept_error and live_lines and live_count > 0 then
+      lines = live_lines
+      for i = #lines, live_count + 1, -1 do
+        lines[i] = nil
+      end
+    end
+    pcall(close_file)
+    pcall(stop_listening)
+    ok, result = xpcall(session.show, handler, lines, {
+      title = "[error] " .. name, file = name, error = text,
+      no_rescale = opts.no_rescale })
+  end
   -- Each step runs alone, so a failure in one does not skip the other.
   pcall(stop_listening)
   pcall(close_file)

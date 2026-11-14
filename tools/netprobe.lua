@@ -162,6 +162,19 @@ local function err_text(err)
   return tostring(err)
 end
 
+-- True for a function and for a callable table. The game gives the card and
+-- the handle methods as callable tables (measured, netprobe v1).
+local function is_callable(v)
+  if type(v) == "function" then
+    return true
+  end
+  if type(v) == "table" then
+    local ok, mt = pcall(getmetatable, v)
+    return ok and type(mt) == "table" and mt.__call ~= nil
+  end
+  return false
+end
+
 local function is_interrupt(err)
   return type(err) == "string"
     and (err == "interrupted" or err:find("[:%s]interrupted$") ~= nil)
@@ -452,8 +465,9 @@ local function measure(P, R, name, url, o)
     if not early[1] and is_interrupt(early[2]) then
       error(early[2], 0)
     end
-    R.set(k .. "n3.before_connect", early[1] and (early[2] ~= nil and "value"
-      or "nil") or "ERR " .. cut(err_text(early[2]), MAX_VALUE))
+    R.set(k .. "n3.before_connect", early[1] and (early[2] ~= nil
+      and cut(tostring(early[2]), MAX_VALUE) or "nil")
+      or "ERR " .. cut(err_text(early[2]), MAX_VALUE))
 
     -- Connect (N2).
     local polls, c_start = 0, now(P)
@@ -472,6 +486,21 @@ local function measure(P, R, name, url, o)
       if done == nil then
         R.set(k .. "connect.result", "error")
         R.set(k .. "connect.error", cut(err_text(why), MAX_VALUE))
+        -- What response() gives after the failure (the card may know the
+        -- status of an HTTP error).
+        local rr = table.pack(pcall(h.response))
+        if not rr[1] and is_interrupt(rr[2]) then
+          error(rr[2], 0)
+        end
+        if rr[1] then
+          R.set(k .. "connect.error_response", rr[2] ~= nil
+            and cut(tostring(rr[2]), MAX_VALUE) or "nil")
+          R.set(k .. "connect.error_response_message", rr[3] ~= nil
+            and cut(tostring(rr[3]), MAX_VALUE) or "nil")
+        else
+          R.set(k .. "connect.error_response", "ERR "
+            .. cut(err_text(rr[2]), MAX_VALUE))
+        end
         break
       end
       if done then
@@ -783,7 +812,7 @@ local function section_api(P, R, T)
     end
   end
   for _, m in ipairs({ "isHttpEnabled", "isTcpEnabled" }) do
-    if type(card[m]) == "function" then
+    if is_callable(card[m]) then
       local ok, v = pcall(card[m])
       R.set("card." .. m, ok and tostring(v) or "ERR " .. cut(err_text(v), MAX_VALUE))
     else

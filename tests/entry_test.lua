@@ -658,6 +658,30 @@ scenarios("error_status", {
   { "viewer, partial body, guessed URL: the popup line names the argument",
     { args = { "example.com" }, deps = no_local, card = { default = PART } },
     { code = 0, err = {}, views = 1, error_opt = READ_ERROR .. SUFFIX } },
+  { "print, status from a connect failure: the short page, then one line",
+    { args = { "--print", URL }, card = { default = { connect_error =
+      internet.reason_404(URL) } } },
+    { code = 0, err = { "html: HTTP 404 Not Found: " .. URL }, out = 3,
+      events = { "out", "out", "out", "err" }, clean = true } },
+  { "print, unknown status: no phrase",
+    { args = { "--print", URL }, card = { default = { connect_error =
+      internet.reason_status(418, URL) } } },
+    { code = 0, err = { "html: HTTP 418: " .. URL }, out = 3, clean = true } },
+  { "no screen, status from a connect failure: the same line, exit 0",
+    { args = { URL }, gpu = false, card = { default = { connect_error =
+      internet.reason_status(500, URL) } } },
+    { code = 0, err = { NO_GPU_LINE, "html: HTTP 500 Internal Server Error: "
+      .. URL }, out = 3, views = 0 } },
+  { "viewer without a frame: the popup text is [HTTP 404] Not Found",
+    { args = { URL }, card = { default = { connect_error =
+      internet.reason_404(URL) } } },
+    { code = 0, err = {}, views = 1, error_opt = "[HTTP 404] Not Found",
+      clean = true } },
+  { "print, connection error: stderr and exit 1 as before",
+    { args = { "--print", URL }, card = { default = { connect_error =
+      "Connection reset" } } },
+    { code = 1, err = { "html: cannot connect: " .. URL
+      .. ": Connection reset" }, out = 0, clean = true } },
   { "no screen, partial body: print the text, then the error line",
     { args = { URL }, gpu = false, card = { default = PART } },
     { code = 0, err = { NO_GPU_LINE, NOTICE, READ_ERROR }, out = 1, views = 0,
@@ -960,6 +984,18 @@ local function counts(rec)
   return nums, last
 end
 
+-- The non-empty lines of the first viewer call, without style bytes.
+local function page_lines(rec)
+  local out = {}
+  for _, line in ipairs(rec.shown and rec.shown.lines or {}) do
+    local text = is_plain(line)
+    if text ~= "" then
+      out[#out + 1] = text
+    end
+  end
+  return out
+end
+
 -- The values that a row can name, from one run.
 local function observe(rec)
   local nums, last = counts(rec)
@@ -1012,6 +1048,11 @@ local function observe(rec)
     row_draws_before_show = before_show,
     shown = rec.shown ~= nil,
     title = rec.shown and rec.shown.opts.title or false,
+    popup = rec.shown and rec.shown.opts.error or false,
+    popup_memory = rec.shown ~= nil and (rec.shown.opts.error or ""):find(
+      "^html: page too large for available memory") ~= nil,
+    shown_lines = rec.shown and #rec.shown.lines or false,
+    page_lines = page_lines(rec),
     last_kb = last,
     kb_rising = rising,
     updates = #nums,
@@ -1199,22 +1240,9 @@ framed_cases("loading_quit_prompt", {
     { code = 0, shown = false, handles_closed = true } },
 })
 
--- "Exit": the screen is restored before the error line, on every error path.
+-- "Exit": the screen is restored before the error line on the error paths
+-- that end the session (the unexpected error, the file read error).
 framed_cases("loading_error_exits", {
-  { "fetch error: the frame showed, restore, then one line",
-    { args = { URL }, card = { default = { connect_error = "refused" } } },
-    { code = 1, marks = { "restore", "err" }, shown = false,
-      first_status = URL_FIRST,
-      err = { "html: cannot connect: " .. URL .. ": refused" } } },
-  { "memory stop after the first screen: restore, then one line",
-    { text = BIG, step = 0.01,
-      on_read = function(n)
-        if n == 4 then
-          computer.test.set_free(100 * 1024)
-        end
-      end },
-    { code = 1, marks = { "restore", "err" }, early_draw = true,
-      shown = false } },
   { "unexpected error in the render: restore, then one line",
     { text = BIG, step = 0.01,
       on_read = function(n)
@@ -1232,12 +1260,111 @@ framed_cases("loading_error_exits", {
       end } },
     { code = 1, marks = { "restore", "err" },
       err = { "html: read error: disk gone" } } },
-  { "a failed fetch for a guessed URL names the argument",
-    { args = { "example.com" }, deps = { exists = no },
+})
+
+-- "Errors after the frame": a fetch error or a memory stop does not end the
+-- session. The viewer shows a popup over an empty page (over the lines so far
+-- for a memory stop). After OK, q and y quit with code 0. No stderr line.
+local OK_QUIT = { KEY_ENTER, KEY_Q, KEY_Y }
+local function kept(url, text, extra)
+  local e = { code = 0, err = {}, marks = { "restore" }, shown = true,
+    popup = text, title = "[error] " .. url, shown_lines = 0,
+    handles_closed = true }
+  for k, v in pairs(extra or {}) do
+    e[k] = v
+  end
+  return e
+end
+local CONNECT_ERR = "html: cannot connect: " .. URL .. ": "
+framed_cases("loading_errors_keep_the_session", {
+  { "cannot connect",
+    { args = { URL }, show = OK_QUIT,
       card = { default = { connect_error = "refused" } } },
-    { code = 1, marks = { "restore", "err" },
-      err = { "html: cannot connect: http://example.com: refused "
-        .. "(no local file named example.com)" } } },
+    kept(URL, CONNECT_ERR .. "refused", { first_status = URL_FIRST }) },
+  { "unknown host (measured text)",
+    { args = { URL }, show = OK_QUIT, card = { default = { connect_error =
+      "unknown host: example.com: Name or service not known" } } },
+    kept(URL, CONNECT_ERR .. "unknown host: example.com: Name or service "
+      .. "not known") },
+  { "timeout while connecting",
+    { args = { URL }, show = OK_QUIT, step = 0.05,
+      card = { default = { connect_polls = 1e6 } } },
+    kept(URL, "html: timed out connecting to " .. URL) },
+  { "read error in a 200 body",
+    { args = { URL }, show = OK_QUIT,
+      card = { default = served(PAGE, 10, { read_error = "reset" }) } },
+    kept(URL, "html: read error: reset") },
+  { "too many open connections",
+    { args = { URL }, show = OK_QUIT, card = { limit = 0,
+      default = served(PAGE, 10) } },
+    kept(URL, "html: cannot fetch " .. URL .. ": too many open connections") },
+  { "not text/html",
+    { args = { URL }, show = OK_QUIT, card = { default = { headers =
+      { ["Content-Type"] = { "application/pdf" } } } } },
+    kept(URL, "html: not an HTML page: application/pdf") },
+  { "no internet card",
+    { args = { URL }, show = OK_QUIT, deps = { internet = false } },
+    kept(URL, "html: no internet card found (needed for " .. URL .. ")",
+      { handles_closed = true }) },
+  { "too large for the memory, known size: an empty page",
+    { args = { URL }, show = OK_QUIT, card = { default = served(PAGE, 10,
+      { headers = { ["Content-Type"] = { "text/html" },
+        ["Content-Length"] = { "99999999" } } }) } },
+    { code = 0, err = {}, shown = true, popup_memory = true,
+      title = "[error] " .. URL, shown_lines = 0, handles_closed = true } },
+  { "a guessed URL names the argument in the popup",
+    { args = { "example.com" }, show = OK_QUIT, deps = { exists = no },
+      card = { default = { connect_error = "refused" } } },
+    kept("example.com", "html: cannot connect: http://example.com: refused "
+      .. "(no local file named example.com)") },
+  { "memory stop after the first screen: a popup over the lines so far",
+    { text = BIG, step = 0.01, show = OK_QUIT,
+      on_read = function(n)
+        if n == 4 then
+          computer.test.set_free(100 * 1024)
+        end
+      end },
+    { code = 0, err = {}, marks = { "restore" }, early_draw = true,
+      shown = true, popup_memory = true, title = "[error] page.html" } },
+  { "Ctrl+C in the popup exits with 130",
+    { args = { URL }, show = { KEY_CTRL_C },
+      card = { default = { connect_error = "refused" } } },
+    { code = 130, handles_closed = true } },
+  { "the interrupted event in the popup exits with 130",
+    { args = { URL }, show = { EV_INTERRUPTED },
+      card = { default = { connect_error = "refused" } } },
+    { code = 130 } },
+  { "other keys do not close the popup",
+    { args = { URL }, show = { KEY_Q, KEY_Y, KEY_ENTER, KEY_Q, KEY_Y },
+      card = { default = { connect_error = "refused" } } },
+    { code = 0, err = {}, shown = true } },
+})
+
+-- "HTTP error status": the card reports it as a connect failure. The short
+-- page shows with a popup "[HTTP <code>] <phrase>".
+local function http_row(name, reason, code_text, popup, extra)
+  local e = { code = 0, err = {}, shown = true, popup = popup,
+    title = "[HTTP " .. code_text .. "] HTTP " .. code_text
+      .. (extra and extra.phrase and (" " .. extra.phrase) or ""),
+    handles_closed = true }
+  return { name, { args = { URL }, show = OK_QUIT,
+    card = { default = { connect_error = reason } } }, e }
+end
+framed_cases("loading_http_status_popup", {
+  http_row("404: the reason is the URL", internet.reason_404(URL), "404",
+    "[HTTP 404] Not Found", { phrase = "Not Found" }),
+  http_row("500: the Java message", internet.reason_status(500, URL), "500",
+    "[HTTP 500] Internal Server Error", { phrase = "Internal Server Error" }),
+  http_row("unknown code: no phrase", internet.reason_status(418, URL), "418",
+    "[HTTP 418]"),
+  { "the short page shows the URL",
+    { args = { URL }, show = OK_QUIT,
+      card = { default = { connect_error = internet.reason_404(URL) } } },
+    { page_lines = { "HTTP 404 Not Found", URL } } },
+  { "a connection error is not a status",
+    { args = { URL }, show = OK_QUIT, card = { default = { connect_error =
+      "Connection reset" } } },
+    kept(URL, CONNECT_ERR .. "Connection reset") },
 })
 
 -- "Startup" rule 1: an invalid URL is a usage error of the argument checks.

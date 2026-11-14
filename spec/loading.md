@@ -38,7 +38,18 @@ Source: `bin/html.lua`, `lib/html/viewer.lua`, `lib/html/guard.lua`. Index: `SPE
   - When the user cancels, loading continues as before.
 - The guard yield interval is 0.25 s of CPU time (see `spec/guard.md` "Yields"), so Ctrl+C and `q` respond fast.
 
+## Errors after the frame
+
+Decision (user, 2026-11-15): the program will get tabs, so an error after the frame opened must not end the session. Reason: `docs/rationale.md` "Errors keep the session".
+
+- Every fetch error after the frame opened shows as a popup with the error text and an `[OK]` button, over an empty page. This covers: cannot connect, timeout, read error, too many open connections, not text/html, too large, no card, HTTP disabled, and a failed redirect. The status line shows the URL and `[error]`.
+- A memory stop by the guard after the frame shows the popup over the lines received so far when there are lines, and over an empty page otherwise. This holds for a local file too.
+- After OK, the user can scroll and quit with `q` as usual. The exit code is 0 on a normal quit, and nothing prints on stderr.
+- Ctrl+C still exits at once with code 130, also while the popup shows.
+- An HTTP error status (404, 500, ...) is not an error here: the short page shows with the popup `[HTTP <code>] <phrase>` (`spec/fetch.md` "HTTP error statuses").
+- Not covered: the errors before the frame (argument checks, a missing file, a module that cannot load), a read error of a local file, an unexpected error, and print mode and the no-screen path. They keep the stderr line, the screen restore and the exit codes of `spec/errors.md`.
+
 ## Exit
 
 - The screen is restored on every exit path: normal end, quit during load, controlled error, unexpected error and Ctrl+C.
-- Error lines print to stderr after the restore.
+- Error lines print to stderr after the restore, except the errors that show a popup (see "Errors after the frame").

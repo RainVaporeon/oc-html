@@ -18,6 +18,7 @@ Inside the container, the script runs `lua5.3 tests/run.lua` and `lua5.3 tests/f
 - Lua 5.3 in a Docker container runs the automated tests. Tests replace OpenOS libraries with small shims.
 - All automated tests run in Docker. Shims in `tests/shim/` replace `computer`, `unicode` and other OpenOS libraries. The `computer` shim can simulate low memory and `freeMemory()` jitter.
 - The shims copy the measured behavior in `docs/probe/FACTS.md` exactly, including the `unicode.*` results for invalid bytes, surrogates and U+200B.
+- The fake internet card (`tests/shim/internet.lua`) copies the measured card facts: callable-table methods, a limit of 4 connections, `response()` nil until `finishConnect()` returned true, and the 4xx and 5xx failure texts of `finishConnect` (`docs/probe/FACTS.md` "Internet card (netprobe v1)"). A script option that is not seen in game (`response_early`, `response_after_read`, `response_polls`) says so in the shim header.
 - The sandbox env has no `collectgarbage`, like the game.
 - The runner helper `t.load_tool(name)` loads `tools/<name>.lua` the same way. `t.read_repo(path)` reads a file under `releases/<version>/` or `tools/` (read-only, no `..`). `t.release_versions()` lists the release folders. `t.list_cases()` lists the base names of `tests/cases/*.html`, sorted. The env `io.open` limit stays as it is. The user approved these helpers.
 - All tests run with `--network none`. No test touches a real network. A fake internet card in `tests/shim/internet.lua` serves the fetch tests.

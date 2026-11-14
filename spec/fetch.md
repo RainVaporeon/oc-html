@@ -14,13 +14,16 @@ The response is streamed into the renderer. It is not saved to a cache file firs
 
 Decision D1. The program uses the card component directly: `component.internet.request(url, nil, headers)`. It does not use the OpenOS `internet` library. Reasons: `docs/rationale.md` "Remote fetching: Internet card API".
 
-Calls on the request handle (OpenComputers `InternetCard`):
-- `finishConnect()`: true when connected, false while pending, or nil and a reason (or an error) on failure.
-- `response()`: nil until the status line is in, then `code, message, headers`. `headers` maps a name to a list of values.
-- `read(n)`: a string of up to `n` bytes, `""` when no data is ready yet, nil at the end, or nil and a reason on error.
-- `close()`: frees the connection. The card has a limit of open connections (server config `internet.maxConnections`).
+Calls on the request handle (OpenComputers `InternetCard`). The values below are measured in game (netprobe v1, `docs/probe/FACTS.md` "Internet card (netprobe v1)"):
+- The card methods and the handle methods are callable tables, not functions. `type(card.request)` is `"table"`. Code that tests `type(m) == "function"` finds nothing. `pcall(card.request, ...)` and a direct call work.
+- `request(url, nil, headers)` costs one tick (50 ms). It returns a handle, or nil and a reason. The limit is 4 open connections: the 5th `request` returns nil and `too many open connections`. `close()` frees a slot. A second `close()` is safe.
+- `finishConnect()`: true when connected, false while pending, or nil and a reason on failure. It stays false until the response headers arrive (10.3 s on a server that waits 10 s). A 4xx or 5xx status is a failure here (see "HTTP error statuses").
+- `response()`: nil while the request is pending, and `code, message, headers` at once after `finishConnect()` returned true. It needs no `read` first. Before `finishConnect()` returns true it gives nil.
+- `read(n)`: a string of up to `n` bytes, `""` when no data is ready yet, nil at the end, or nil and a reason on error. Each `read` costs one tick (50 ms). Data needs no yield. `""` comes at most once in a row. The first reads on two hosts gave 2048 bytes.
+- `headers` maps a name to a list of strings, one entry per name. The names keep the case of the server (`Content-Type`, `content-length`). The program compares them without case.
+- `close()`: frees the connection.
 
-Request headers sent: `User-Agent: oc-html/<version>` and `Accept-Encoding: identity`. No other header. No request body.
+Request headers sent: `User-Agent: oc-html/<version>` and `Accept-Encoding: identity`. No other header. No request body. With no headers given, the card sends `Accept: */*`, `Host` and `User-Agent: opencomputers/1.12.68-GTNH`, and no `Accept-Encoding`. No measured response had a `Content-Encoding`.
 
 - Response header names are not case-sensitive (`content-length`, `CONTENT-TYPE`).
 
@@ -40,12 +43,13 @@ The handle closes on every exit path: normal end, controlled error, unexpected e
 
 ## Redirects
 
-- The card may follow some redirects itself (Java `HttpURLConnection`, same scheme only). This is not measured yet (N9, `docs/netprobe-plan.md`).
+- The card follows redirects of the same scheme itself (Java `HttpURLConnection`, measured: a chain of 3 redirects gave one 200 response with `hops=0`). The response has no final URL. The program cannot know where the page came from, so the status line shows the URL that `fetch.open` knows: the URL it requested last. After a card-followed redirect that is the first URL (`redirects` is 0 and `final_url` equals the requested URL). Relative links will have to resolve against that URL (`tasks/todo.md` item 2).
+- A change of scheme (http to https or back) is not followed by the card. It gives a 302 with an absolute `Location` and an empty body. The rules below apply to that case.
 - When `response()` gives 301, 302, 303, 307 or 308 with a `Location` header, `fetch.open` closes the handle and requests the new URL.
 - `Location` can be an absolute `http(s)://` URL or a path that starts with `/` (joined to the current scheme, host and port). Any other form stops with `html: cannot follow redirect: <location>`.
 - At most 5 redirects. The 6th stops with `html: too many redirects: <url>`.
 - A redirect to a scheme other than http or https stops with `html: unsupported URL scheme: <scheme>`.
-- The status line shows the final URL.
+- The status line shows the final URL that the program knows (see the first point above).
 
 ## HTTP status and content type
 
@@ -64,10 +68,27 @@ The handle closes on every exit path: normal end, controlled error, unexpected e
 - Error status with a partial body. A read error or a read timeout after the first byte ends the body. The received part renders.
   - In the viewer, a popup reports the error line (`spec/viewer.md` "Error popup"). The user closes it and keeps browsing the partial page. The line is not printed on stderr after the exit. The exit code is 0 when the user quits normally.
   - In print mode or with no screen, the program prints the partial text and then the error line (`html: read error: <reason>` or the read timeout message) on stderr. The exit code is 0 (decision D6).
-- The card may not give an error body at all (Java `HttpURLConnection` raises on 4xx and 5xx). N10 must confirm that the error body can be read. Until N10 is measured, the tests cover both cases: a readable body, and a card that fails the first `read`, which gives the short page. If `finishConnect` itself fails on an error status, no code is known, and the connect error applies.
+- The card gives no error body (N10, measured). See "HTTP error statuses". The rules above for a readable error body stay for a card that gives one. Their tests are marked "not seen in game".
 - `Content-Type` `text/html`, `application/xhtml+xml`, `text/plain` or no `Content-Type`: the body renders. `text/plain` goes through the HTML tokenizer like any text; a stray `<` in it renders as text or as an unknown tag.
   - The media type is compared without case. Parameters after `;` and spaces around the type are ignored. An empty `Content-Type` counts as no `Content-Type`.
 - Any other type with a 2xx status stops before the body with `html: not an HTML page: <type>`. Downloads come with roadmap item 4.
+
+## HTTP error statuses
+
+Measured in game (N10, netprobe v1): for a 4xx or 5xx status, `request()` gives a handle, and `finishConnect()` returns nil and a reason. `response()` and `read()` are never reached, and no error body can be read. The reason holds the status (the Java `HttpURLConnection` message):
+
+- 404: the reason is exactly the requested URL (a `FileNotFoundException` message).
+- Other codes: `Server returned HTTP response code: <N> for URL: <url>` (seen for 500 and 403).
+
+Decision (user, 2026-11-15). `fetch.open` maps the failure back to a status:
+1. After a `finishConnect` failure it tries `pcall(h.response)`. When that gives a number from 400 to 599, it is the code. This is not proven in game (netprobe v1 never called `response()` after a failure; the probe now records it).
+2. A reason equal to the requested URL means 404. A reason that starts with `Server returned HTTP response code: <N> for URL: ` means N, for N from 400 to 599. This is the main path.
+3. Any other reason stays a connection error: `html: cannot connect: <url>: <reason>`. This includes unknown host, `Connection reset`, a TLS failure, a reason that only contains the URL, and a code outside 400 to 599.
+
+A mapped status gives a response, not an error. `fetch.open` closes the handle and returns a response with `status`, `is_error`, the short page as its body (see above), `popup` and `notice`:
+- The reason phrase comes from a table in `fetch.lua`: 400 Bad Request, 401 Unauthorized, 403 Forbidden, 404 Not Found, 405 Method Not Allowed, 408 Request Timeout, 410 Gone, 429 Too Many Requests, 500 Internal Server Error, 501 Not Implemented, 502 Bad Gateway, 503 Service Unavailable, 504 Gateway Timeout. Another code has no phrase.
+- `popup` is `[HTTP <code>] <phrase>` (for example `[HTTP 404] Not Found`), or `[HTTP <code>]` with no phrase. The viewer shows the short page and this popup with an `[OK]` button. The status line shows `[HTTP <code>]`. The exit code is 0 when the user quits.
+- `notice` is `html: HTTP <code> <phrase>: <url>` (no phrase: `html: HTTP <code>: <url>`). Print mode and the no-screen path print the short page, then this line on stderr, and exit with 0 (decision D6).
 
 ## Errors
 
@@ -77,14 +98,16 @@ All errors are controlled. Each is one line with the prefix `html: `, exit code 
 |---|---|
 | No internet card | `html: no internet card found (needed for <url>)` |
 | HTTP disabled in the server config (`isHttpEnabled()` is false) | `html: HTTP requests are disabled on this server` |
-| `request` raises or returns nil (bad address, blocked range, too many connections) | `html: cannot fetch <url>: <reason>` |
-| `finishConnect` fails (unknown host, refused, TLS error) | `html: cannot connect: <url>: <reason>` |
+| `request` raises or returns nil (bad address, blocked range, `too many open connections`) | `html: cannot fetch <url>: <reason>` |
+| `finishConnect` fails (unknown host, `Connection reset`, TLS error) and the reason is not an HTTP status | `html: cannot connect: <url>: <reason>` |
 | Connect or first response takes longer than `CONNECT_TIMEOUT` | `html: timed out connecting to <url>` |
 | No new data for `READ_TIMEOUT` | `html: timed out reading <url> (<bytes> bytes received)` |
 | `read` returns nil and a reason (2xx status) | `html: read error: <reason>` |
 | Content type (2xx status) | `html: not an HTML page: <type>` |
 | Ctrl+C | `html: interrupted`, exit code 130 |
 
+- Measured failure texts: `unknown host: <host>: Name or service not known`, `Connection reset`, and `(certificate_expired) PKIX path validation failed: ...`.
+- In the viewer, every error of this table that happens after the frame opened shows as a popup, and the session stays (`spec/loading.md` "Errors after the frame"). Print mode, the no-screen path and the errors before the frame print the line on stderr and exit with the code above.
 - An error status (4xx, 5xx, or 3xx without `Location`) is not in this table. It renders (see "HTTP status and content type"). Its stderr line `html: HTTP <code> <message>: <url>` is a notice, not an error.
 - For a guessed URL, each message ends with ` (no local file named <arg>)` (see `spec/url.md` "Arguments without a scheme").
 - A reason from the card can be a string or another value. The message uses `tostring`, and the existing `reason()` helper in `bin/html.lua` cleans it.
@@ -92,11 +115,11 @@ All errors are controlled. Each is one line with the prefix `html: `, exit code 
 
 ## Timeouts and yields
 
-- `CONNECT_TIMEOUT` is 15 s. It covers `finishConnect` and the wait for `response()`.
+- `CONNECT_TIMEOUT` is 15 s. It covers `finishConnect` and the wait for `response()`. Because `finishConnect` stays false until the response headers arrive (measured), it also bounds the time to the first header of a slow server. The card has no connect timeout of its own: a silent host was still pending after 20 s.
 - `READ_TIMEOUT` is 30 s without any new byte. Each received chunk restarts it.
 - Wall time comes from `computer.uptime()` (50 ms steps are enough here).
 - Every wait loop calls `sleep(WAIT_STEP)`, so the program yields well inside the 5 s OpenOS limit. The loop also checks the interrupt flag, so Ctrl+C works during a slow server.
-- The values are first guesses. N2, N5 and N11 decide them.
+- Every `request()` and every `read()` costs one tick (50 ms), so a loop of reads is slow even when data is ready. The timeouts are still first guesses. The second netprobe run (large reads, memory) decides them.
 
 ## Charset
 
@@ -148,7 +171,7 @@ The implementation chose the smallest change where a rule above was open or coul
 
 ## In-game measurements and probe plan
 
-The measurements N1 to N15 and the plan for `tools/netprobe.lua`: `docs/netprobe-plan.md`.
+The measurements N1 to N15 and the plan for `tools/netprobe.lua`: `docs/netprobe-plan.md`. The results of netprobe v1: `docs/probe/FACTS.md` "Internet card (netprobe v1)" and `docs/rationale.md` "Remote fetching: measurements (netprobe v1)".
 
 ## Open questions
 

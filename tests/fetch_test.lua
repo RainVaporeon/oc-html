@@ -653,6 +653,10 @@ local function not_found(extra)
   return extra
 end
 
+-- These rows serve a body with a 4xx or 5xx status. The game never does: a
+-- 4xx or 5xx status fails in finishConnect (netprobe v1, see
+-- "http_status_from_connect_failure"). The rows stay for a card that may give
+-- the body, and are "not seen in game".
 t.cases(T, "error_status_body", {
   { "404 renders the body", { script = { code = 404, message = "Bad",
     headers = { ["Content-Type"] = { "text/html" } },
@@ -720,6 +724,167 @@ t.cases(T, "error_status_body", {
   return out
 end)
 
+
+-- HTTP error status from a connect failure (spec/fetch.md "HTTP error
+-- statuses"). Measured in game: for 4xx and 5xx finishConnect returns nil and
+-- a reason, and response() and read() are never reached.
+
+local R404 = internet.reason_404
+local RSTATUS = internet.reason_status
+local function mapped(code, phrase)
+  local head = "HTTP " .. code .. (phrase ~= "" and (" " .. phrase) or "")
+  return { status = code, is_error = true,
+    popup = "[HTTP " .. code .. "]" .. (phrase ~= "" and (" " .. phrase) or ""),
+    notice = "html: " .. head .. ": " .. URL, text = page(head, URL) }
+end
+local function conn(reason)
+  return { why = "html: cannot connect: " .. URL .. ": " .. reason }
+end
+
+t.cases(T, "http_status_from_connect_failure", {
+  { "404: the reason is exactly the URL", { script = { connect_error = R404(URL) } },
+    mapped(404, "Not Found") },
+  { "500 by the Java message", { script = { connect_error = RSTATUS(500, URL) } },
+    mapped(500, "Internal Server Error") },
+  { "403 by the Java message", { script = { connect_error = RSTATUS(403, URL) } },
+    mapped(403, "Forbidden") },
+  { "503 by the Java message", { script = { connect_error = RSTATUS(503, URL) } },
+    mapped(503, "Service Unavailable") },
+  { "an unknown code has no phrase",
+    { script = { connect_error = RSTATUS(418, URL) } }, mapped(418, "") },
+  { "the phrase table", { script = { connect_error = RSTATUS(429, URL) } },
+    mapped(429, "Too Many Requests") },
+  { "the status comes after slow polls",
+    { script = { connect_polls = 3, connect_error = R404(URL) } },
+    mapped(404, "Not Found") },
+  { "response() with a code after the failure wins over the text",
+    { script = { connect_error = "odd", response_early = true, code = 502 } },
+    mapped(502, "Bad Gateway") },
+  { "response() with a code below 400 is ignored",
+    { script = { connect_error = "odd", response_early = true, code = 200 } },
+    conn("odd") },
+  { "a reason with the URL inside is a connection error",
+    { script = { connect_error = "Not found: " .. URL } },
+    conn("Not found: " .. URL) },
+  { "a reason with text after the URL is a connection error",
+    { script = { connect_error = URL .. "x" } }, conn(URL .. "x") },
+  { "TLS failure is a connection error",
+    { script = { connect_error = "(certificate_expired) PKIX path validation "
+      .. "failed: timestamp check failed" } },
+    conn("(certificate_expired) PKIX path validation failed: timestamp check "
+      .. "failed") },
+  { "Connection reset is a connection error",
+    { script = { connect_error = "Connection reset" } },
+    conn("Connection reset") },
+  { "unknown host is a connection error",
+    { script = { connect_error = "unknown host: example.com: Name or service "
+      .. "not known" } },
+    conn("unknown host: example.com: Name or service not known") },
+  { "a code below 400 in the text is a connection error",
+    { script = { connect_error = RSTATUS(200, URL) } },
+    conn(RSTATUS(200, URL)) },
+  { "a code above 599 in the text is a connection error",
+    { script = { connect_error = RSTATUS(999, URL) } },
+    conn(RSTATUS(999, URL)) },
+  { "a raise with the status text maps too",
+    { script = { connect_raise = RSTATUS(500, URL) } },
+    mapped(500, "Internal Server Error") },
+}, function(input)
+  local resp, why, ctl, info = open(input.script, input.url)
+  local out
+  if resp then
+    local text = read_all(resp)
+    out = { status = resp.status, is_error = resp.is_error,
+      popup = resp.popup, notice = resp.notice, text = text }
+    t.eq(info.status, resp.status)
+  else
+    out = { why = why }
+  end
+  finish(resp, ctl)
+  return out
+end)
+
+-- A 404 after a redirect that the program follows itself names the target.
+function T.http_status_after_a_followed_redirect()
+  local next_url = "http://example.com/next"
+  local resp, _, ctl, info = open(nil, URL, { routes = {
+    [URL] = { code = 302, headers = { Location = { "/next" } } },
+    [next_url] = { connect_error = R404(next_url) } } })
+  t.eq(resp.status, 404)
+  t.eq(resp.final_url, next_url)
+  t.eq(info.redirects, 1)
+  t.eq(resp.notice, "html: HTTP 404 Not Found: " .. next_url)
+  finish(resp, ctl)
+end
+
+-- The card follows a redirect of the same scheme itself and gives no final
+-- URL (measured). The response is the last one: no redirect for the program.
+function T.card_followed_redirect_looks_like_a_plain_page()
+  local resp, _, ctl, info = open({ body = { "x" } })
+  t.eq(resp.status, 200)
+  t.eq(info.redirects, 0)
+  t.eq(resp.redirects, 0)
+  t.eq(resp.final_url, URL)
+  finish(resp, ctl)
+end
+
+-- A scheme change comes back as a 302 with an absolute Location and an empty
+-- body (measured). The program follows it.
+function T.scheme_change_redirect_is_followed()
+  local https = "https://example.com/"
+  local resp, _, ctl, info = open(nil, URL, { routes = {
+    [URL] = { code = 302, headers = { Location = { https } }, body = {} },
+    [https] = { body = { "s" } } } })
+  t.eq(resp.final_url, https)
+  t.eq(info.redirects, 1)
+  t.eq(read_all(resp), "s")
+  finish(resp, ctl)
+end
+
+-- The card allows 4 open connections (measured). The 5th request gets a
+-- reason, and close() frees a slot.
+function T.fifth_connection_is_refused()
+  local card, ctl = internet.new({ default = { body = { "x" } } })
+  local handles = {}
+  for i = 1, 4 do
+    local h = card.request(URL .. i)
+    t.ok(h, "connection " .. i)
+    handles[i] = h
+  end
+  local h, why = card.request(URL .. 5)
+  t.eq(h, nil)
+  t.eq(why, "too many open connections")
+  handles[1].close()
+  handles[1].close()
+  t.ok(card.request(URL .. 6), "a slot is free after close")
+  -- The program reports the 5th request in its own words.
+  local card2, ctl2 = internet.new({ default = { body = { "x" } } })
+  for i = 1, 4 do
+    card2.request(URL .. i)
+  end
+  local resp, rwhy = fetch.open(URL, links(card2), {})
+  t.eq(resp, nil)
+  t.eq(rwhy, "html: cannot fetch " .. URL .. ": too many open connections")
+  t.eq(ctl2.open, 4)
+  t.eq(ctl.max_open, 4)
+end
+
+-- The fake card copies the measured API: callable tables, and response() is
+-- nil until finishConnect has returned true.
+function T.fake_card_methods_are_callable_tables()
+  local card = internet.new({ default = { body = { "x" } } })
+  t.eq(type(card.request), "table")
+  t.eq(type(card.isHttpEnabled), "table")
+  local h = card.request(URL)
+  for _, m in ipairs({ "finishConnect", "response", "read", "close" }) do
+    t.eq(type(h[m]), "table", m)
+  end
+  t.eq(h.response(), nil)
+  t.eq(h.finishConnect(), true)
+  t.eq(h.response(), 200)
+  local early = internet.new({ default = { response_early = true } }).request(URL)
+  t.eq(early.response(), 200)
+end
 
 -- spec/loading.md "Status line during load": fetch.open reports its phases to
 -- an optional progress callback. "connect" and "redirect" come with the parsed

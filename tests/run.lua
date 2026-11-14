@@ -266,6 +266,17 @@ local function build_env()
       for k, item in ipairs(v) do
         parts[k] = show(item)
       end
+      -- Named fields follow the list part, sorted by name.
+      local names = {}
+      for k in pairs(v) do
+        if type(k) == "string" then
+          names[#names + 1] = k
+        end
+      end
+      table.sort(names)
+      for _, k in ipairs(names) do
+        parts[#parts + 1] = k .. " = " .. show(v[k])
+      end
       return "{ " .. table.concat(parts, ", ") .. " }"
     end
     local s = escape(v)
