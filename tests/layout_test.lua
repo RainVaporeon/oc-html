@@ -514,14 +514,66 @@ local function normalize(s)
   return table.concat(out, "\n")
 end
 
-local CASES = { "basic", "elements", "broken", "whitespace", "styles" }
+-- The env has no directory listing, so a case is listed here by hand. A
+-- case needs tests/cases/<name>.html and tests/cases/<name>.txt.
+local CASES = { "attributes", "basic", "broken", "comments", "elements",
+  "entities", "images", "nested", "pretabs", "styles", "title",
+  "whitespace", "wide" }
+
+local function escape(s)
+  return (s:gsub("[^\32-\126]", function(c)
+    if c:byte() >= 128 then
+      return c
+    end
+    return string.format("\\x%02X", c:byte())
+  end))
+end
+
+local function split_lines(s)
+  local out = {}
+  for line in (s .. "\n"):gmatch("([^\n]*)\n") do
+    out[#out + 1] = line
+  end
+  return out
+end
+
+-- Returns nil when equal, else a text with the first differing line.
+local function line_diff(expected, actual)
+  if expected == actual then
+    return nil
+  end
+  local e, a = split_lines(expected), split_lines(actual)
+  for i = 1, math.max(#e, #a) do
+    if e[i] ~= a[i] then
+      return string.format("first difference at line %d\n  expected: %s\n"
+        .. "  actual:   %s", i, e[i] and escape(e[i]) or "(no line)",
+        a[i] and escape(a[i]) or "(no line)")
+    end
+  end
+end
+
+function T.diff_names_the_first_differing_line()
+  t.eq(line_diff("a\nb", "a\nb"), nil)
+  t.eq(line_diff("a\nb\nc", "a\nx\nc"),
+    "first difference at line 2\n  expected: b\n  actual:   x")
+  t.eq(line_diff("a", "a\nb"),
+    "first difference at line 2\n  expected: (no line)\n  actual:   b")
+  t.eq(line_diff("a\tb\1", "a b"),
+    "first difference at line 1\n  expected: a\\x09b\\x01\n  actual:   a b")
+end
 
 function T.cases_match_expected_text()
+  local failures = {}
   for _, name in ipairs(CASES) do
     local lines = render("tests/cases/" .. name .. ".html")
-    t.eq(normalize(table.concat(plain(lines), "\n")),
-      normalize(read_file("tests/cases/" .. name .. ".txt")), name)
+    local diff = line_diff(
+      normalize(read_file("tests/cases/" .. name .. ".txt")),
+      normalize(table.concat(plain(lines), "\n")))
+    if diff then
+      failures[#failures + 1] = "case " .. name .. ": " .. diff
+    end
   end
+  t.ok(#failures == 0, "\n" .. table.concat(failures, "\n"))
 end
 
 function T.case_titles()
@@ -529,6 +581,8 @@ function T.case_titles()
   t.eq(lay.title(), "Element table")
   _, lay = render("tests/cases/broken.html")
   t.eq(lay.title(), "Broken")
+  _, lay = render("tests/cases/title.html")
+  t.eq(lay.title(), "Tom & Jerry")
 end
 
 function T.case_style_bytes()

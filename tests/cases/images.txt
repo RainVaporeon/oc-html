@@ -1,0 +1,5 @@
+A [img: cat & dog] B [img] C [img] D
+[img: spaced out] E
+[img: a very long alternative text that
+must wrap across lines at forty columns]
+end
