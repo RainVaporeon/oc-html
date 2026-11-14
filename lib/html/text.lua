@@ -120,24 +120,31 @@ function M.clean(s)
   return concat(parts)
 end
 
+-- Returns the start of a partial UTF-8 sequence at the end of s[i..j], or
+-- j + 1 when there is none. A partial sequence is a lead byte in the last
+-- 3 bytes with too few followers. Bytes before the result can be cleaned
+-- apart from the bytes after it: clean(a .. b) == clean(a) .. clean(b).
+function M.utf8_cut(s, i, j)
+  for k = j, math.max(i, j - 2), -1 do
+    local b = byte(s, k)
+    if b < 0x80 or b >= 0xC0 then
+      local need = b >= 0xF0 and 4 or b >= 0xE0 and 3 or b >= 0xC2 and 2 or 1
+      if j - k + 1 < need then
+        return k
+      end
+      return j + 1
+    end
+  end
+  return j + 1
+end
+
 -- Splits s into head and tail. The tail is a trailing piece that the next
 -- chunk may complete: a partial UTF-8 sequence or a partial entity. A
 -- streaming caller cleans the head and puts the tail before the next chunk.
 -- At the end of a text run the caller passes the whole rest, not split.
 function M.split_tail(s)
   local len = #s
-  local cut = len + 1
-  -- Partial UTF-8: a lead byte in the last 3 bytes with too few followers.
-  for k = len, math.max(1, len - 2), -1 do
-    local b = byte(s, k)
-    if b < 0x80 or b >= 0xC0 then
-      local need = b >= 0xF0 and 4 or b >= 0xE0 and 3 or b >= 0xC2 and 2 or 1
-      if len - k + 1 < need then
-        cut = k
-      end
-      break
-    end
-  end
+  local cut = M.utf8_cut(s, 1, len)
   -- Partial entity: "&" then only "#" and alphanumerics up to the end.
   for k = cut - 1, math.max(1, cut - 1 - M.MAX_ENTITY), -1 do
     local b = byte(s, k)
@@ -149,6 +156,9 @@ function M.split_tail(s)
         or (b >= 0x41 and b <= 0x5A) or (b >= 0x61 and b <= 0x7A)) then
       break
     end
+  end
+  if cut > len then
+    return s, ""
   end
   return sub(s, 1, cut - 1), sub(s, cut)
 end

@@ -221,4 +221,38 @@ function T.split_tail_streaming_matches_whole()
   end
 end
 
+
+function T.utf8_cut()
+  t.eq(text.utf8_cut("ab\xE4\xB8", 1, 4), 3)
+  t.eq(text.utf8_cut("ab\xE4\xB8\xAD", 1, 5), 6)
+  t.eq(text.utf8_cut("ab\xF0\x9F\x98", 1, 5), 3)
+  t.eq(text.utf8_cut("\xE4xy", 1, 1), 1)
+  t.eq(text.utf8_cut("ab\xE4", 1, 2), 3, "range end")
+  t.eq(text.utf8_cut("\xE4\xB8ab", 2, 2), 3, "no lead in range")
+  t.eq(text.utf8_cut("ab", 3, 2), 3, "empty range")
+  t.eq(text.utf8_cut("a&b", 1, 3), 4, "entities are not held back")
+end
+
+-- Cleaning on each side of utf8_cut, then holding back the entity on the
+-- cleaned text, gives decode(clean(s)) at every chunk size, also with
+-- bytes that clean removes inside an entity.
+function T.clean_then_split_matches_whole()
+  local s = "&copy\x04a &lt\x16b &#\x119 &#x\x04a &#\xE2\x80\x8B1 \xE4\xB8"
+    .. "\xAD&#1\x14; \xC2\xAD&amp\xEF\xBB\xBF;x\xF0\x9F\x98\x80&"
+  local whole = entities.decode(text.clean(s))
+  for size = 1, 16 do
+    local out, raw, pend = {}, "", ""
+    for k = 1, #s, size do
+      raw = raw .. s:sub(k, k + size - 1)
+      local cut = text.utf8_cut(raw, 1, #raw)
+      local head
+      head, pend = text.split_tail(pend .. text.clean(raw:sub(1, cut - 1)))
+      raw = raw:sub(cut)
+      out[#out + 1] = entities.decode(head)
+    end
+    out[#out + 1] = entities.decode(pend .. text.clean(raw))
+    t.eq(table.concat(out), whole, "chunk size " .. size)
+  end
+end
+
 return T

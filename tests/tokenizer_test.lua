@@ -391,4 +391,100 @@ function T.generated_broken_input()
   end
 end
 
+
+-- A byte that clean removes inside an entity: the text is
+-- decode(clean(run)) at every chunk size, as SPEC.md says. Found by the
+-- fuzzer.
+local REMOVED_IN_ENTITY = {
+  { "&copy\x04a", "&copya" },
+  { "&lt\x04a", "&lta" },
+  { "&lt\x16a", "&lta" },
+  { "&gt\x03a", "&gta" },
+  { "&amp\x16a", "&ampa" },
+  { "&#\x119", "\t" },
+  { "&#1\x14;", "" },
+  { "&#\x1C5", "" },
+  { "&#x\x04a", "\n" },
+  { "&#\xE2\x80\x8B1", "" },
+}
+
+-- Joined text of all tokens, or the tokens when one is not text.
+local function joined_text(list)
+  if #list == 0 then
+    return ""
+  end
+  if #list == 1 and list[1]:sub(1, 5) == "text:" then
+    return list[1]:sub(6)
+  end
+  return show(list)
+end
+
+local function check_text(doc, expected, prefix, suffix)
+  local single = tokens(doc, #doc + 1)
+  local want = {}
+  if prefix then
+    want[#want + 1] = prefix
+  end
+  if expected ~= "" then
+    want[#want + 1] = "text:" .. expected
+  end
+  if suffix then
+    want[#want + 1] = suffix
+  end
+  t.eq(show(single), show(want), "single chunk")
+  for size = 1, 16 do
+    t.eq(show(tokens(doc, size)), show(single), "chunk size " .. size)
+  end
+end
+
+function T.removed_byte_in_entity_matches_single_chunk()
+  for _, case in ipairs(REMOVED_IN_ENTITY) do
+    local s, expected = case[1], case[2]
+    check_text(s, expected)
+    t.eq(joined_text(tokens(s, 1)), expected)
+    check_text("<p>" .. s .. "</p>", expected, "start:p", "end:p")
+  end
+end
+
+function T.removed_byte_in_entity_in_rcdata()
+  for _, case in ipairs(REMOVED_IN_ENTITY) do
+    for _, name in ipairs({ "title", "textarea" }) do
+      check_text("<" .. name .. ">" .. case[1] .. "</" .. name .. ">",
+        case[2], "start:" .. name, "end:" .. name)
+      -- Unclosed: the content ends with the input.
+      check_text("<" .. name .. ">" .. case[1], case[2], "start:" .. name)
+    end
+  end
+end
+
+-- CDATA is cleaned, not decoded. A removed character cut by a chunk edge
+-- is removed whole.
+function T.cdata_cleans_across_chunks()
+  check_text("<![CDATA[a\xE2\x80\x8Bb&copy\x04c\xC2\xADd]]>", "ab&copycd")
+  check_text("<![CDATA[\xE4\xB8\xAD\xE2\x80", "\xE4\xB8\xAD?")
+end
+
+-- Every fuzz failure file that the env can read gives the same tokens at
+-- every chunk size. The env cannot list a directory, so the names are
+-- probed: <seed>-<index>.html for the seeds of the recorded runs.
+function T.fuzz_failure_files_match_single_chunk()
+  local count = 0
+  for _, seed in ipairs({ 1, 11, 2026, 987654321 }) do
+    for index = 1, 1000 do
+      local path = "tests/fuzz-failures/" .. seed .. "-" .. index .. ".html"
+      local f = io.open(path, "rb")
+      if f then
+        local doc = f:read("a")
+        f:close()
+        count = count + 1
+        local expected = show(tokens(doc, #doc + 1))
+        for _, size in ipairs({ 1, 2, 3, 5, 8, 13, 16 }) do
+          t.eq(show(tokens(doc, size)), expected, path .. " size " .. size)
+        end
+      end
+    end
+  end
+  print("fuzz failure files checked: " .. count)
+end
+
 return T

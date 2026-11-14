@@ -40,8 +40,8 @@ local M = {}
 local byte, find, sub, lower = string.byte, string.find, string.sub,
   string.lower
 local max = math.max
-local clean, split_tail, decode = text.clean, text.split_tail,
-  entities.decode
+local clean, split_tail, utf8_cut, decode = text.clean, text.split_tail,
+  text.utf8_cut, entities.decode
 
 -- A "<" with no ">" within this many bytes is text. This bounds the buffer.
 M.MAX_TAG = 16384
@@ -87,6 +87,9 @@ function M.new(read, progress)
   local raw, rcdata
   -- True inside a CDATA section.
   local cdata
+  -- Cleaned end of the current text run that may start an entity. It waits
+  -- for the rest of the run, so the run gives decode(clean(run)).
+  local pend = ""
 
   local function tick()
     guard.tick(progress and progress())
@@ -125,8 +128,29 @@ function M.new(read, progress)
     return true
   end
 
-  local function text_token(s)
-    return "text", decode(clean(s))
+  -- Takes buf[pos..j] as a part of a text run. A cut UTF-8 sequence at the
+  -- end stays in buf, so clean never sees half a character. A possible
+  -- entity at the end of the cleaned text goes to pend. Returns the decoded
+  -- rest.
+  local function take(j)
+    local cut = utf8_cut(buf, pos, j)
+    local s = clean(sub(buf, pos, cut - 1))
+    pos = cut
+    if pend ~= "" then
+      s = pend .. s
+    end
+    s, pend = split_tail(s)
+    return decode(s)
+  end
+
+  -- Ends a text run with buf[pos..j]. Returns the decoded text with pend.
+  local function finish(j)
+    local s = clean(sub(buf, pos, j))
+    pos = j + 1
+    if pend ~= "" then
+      s, pend = pend .. s, ""
+    end
+    return decode(s)
   end
 
   -- Skips to the end of a comment or bogus tag.
@@ -151,6 +175,9 @@ function M.new(read, progress)
     if pos > #buf then
       if not fill() then
         raw = nil
+        if pend ~= "" then
+          return "text", finish(#buf)
+        end
       end
       return nil
     end
@@ -160,28 +187,24 @@ function M.new(read, progress)
       local keep = byte(buf, #buf) == 60 and #buf or #buf + 1
       local s = ""
       if rcdata then
-        local tail
-        s, tail = split_tail(sub(buf, pos, keep - 1))
-        pos = keep - #tail
+        s = take(keep - 1)
       else
         pos = keep
       end
       if not fill() then
         if rcdata then
-          s = s .. sub(buf, pos)
+          s = s .. finish(#buf)
         end
         pos = #buf + 1
         raw = nil
       end
       if s ~= "" then
-        return text_token(s)
+        return "text", s
       end
       return nil
     end
-    if k > pos and rcdata then
-      local s = sub(buf, pos, k - 1)
-      pos = k
-      return text_token(s)
+    if rcdata and (k > pos or pend ~= "") then
+      return "text", finish(k - 1)
     end
     pos = k
     if not want(#raw + 3) then
@@ -190,7 +213,7 @@ function M.new(read, progress)
       pos = #buf + 1
       raw = nil
       if rcdata then
-        return text_token(s)
+        return "text", decode(clean(s))
       end
       return nil
     end
@@ -222,9 +245,9 @@ function M.new(read, progress)
       return "text", clean(s)
     end
     -- Keep the bytes that can start "]]>" and a cut UTF-8 sequence.
-    local keep = max(pos, #buf - 1)
-    local s, tail = split_tail(sub(buf, pos, keep - 1))
-    pos = keep - #tail
+    local cut = utf8_cut(buf, pos, max(pos, #buf - 1) - 1)
+    local s = sub(buf, pos, cut - 1)
+    pos = cut
     if not fill() then
       s = s .. sub(buf, pos)
       pos = #buf + 1
@@ -492,27 +515,25 @@ function M.new(read, progress)
         end
       else
         if pos > #buf and not fill() then
+          if pend ~= "" then
+            return "text", finish(#buf)
+          end
           return nil
         end
         local lt = find(buf, "<", pos, true)
         if not lt then
           if eof then
-            local s = sub(buf, pos)
-            pos = #buf + 1
-            return text_token(s)
+            return "text", finish(#buf)
           end
           -- A UTF-8 sequence or entity cut by the chunk end waits for the
           -- next chunk.
-          local head, tail = split_tail(sub(buf, pos))
-          pos = #buf - #tail + 1
+          local s = take(#buf)
           fill()
-          if head ~= "" then
-            return text_token(head)
+          if s ~= "" then
+            return "text", s
           end
-        elseif lt > pos then
-          local s = sub(buf, pos, lt - 1)
-          pos = lt
-          return text_token(s)
+        elseif lt > pos or pend ~= "" then
+          return "text", finish(lt - 1)
         else
           local kind, name, attrs, self_closing = tag()
           if kind then
