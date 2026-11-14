@@ -310,6 +310,7 @@ local function run(source, opts, deps, width, done, ui)
   if is_num(size) then
     local free = guard.settled_free()
     if size * SIZE_COST_MIN > free then
+      source.size_stop = true
       error("html: " .. source.kind .. " too large for available memory ("
         .. int_text(size) .. " bytes, " .. int_text(free) .. " free)", 0)
     end
@@ -600,14 +601,17 @@ function M.main(argv, deps)
   -- A fetch error after the frame opened does not end the session: the
   -- viewer shows it in a popup (see spec/loading.md "Errors after the
   -- frame"). kept_error is the text of such an error.
-  -- broken is true when the page broke off after it started to load: the
-  -- popup then says to reload, and no part of the page shows.
-  local kept_error, broken
-  local function fetch_error(why, is_broken)
+  -- offer_reload is true when a retry may fix the error or the page broke off
+  -- after it started to load: the popup then says to reload. A broken page
+  -- shows no part of the page.
+  -- active is the source of the render. It tells a size stop before reading
+  -- (a retry does not help) from a memory stop during the render.
+  local kept_error, offer_reload, active
+  local function fetch_error(why, reload)
     if why ~= INTERRUPTED then
       why = why .. suffix
       kept_error = why
-      broken = is_broken
+      offer_reload = reload
     end
     error(why, 0)
   end
@@ -624,7 +628,7 @@ function M.main(argv, deps)
     local text = "Loading " .. name .. "..."
     if bytes > 0 then
       text = text .. " " .. kb(bytes)
-      if is_num(total) then
+      if type(total) == "number" then
         text = text .. " of " .. kb(math.max(total, bytes))
       end
     end
@@ -690,7 +694,7 @@ function M.main(argv, deps)
           -- error.
           if chunk == nil and why then
             kept_error = "html: read error: " .. reason(why)
-            broken = true
+            offer_reload = true
             error(kept_error, 0)
           end
           if chunk then
@@ -706,12 +710,13 @@ function M.main(argv, deps)
       error(fetch_why, 0)
     end
     local why
-    resp, why = fetch.open(url, { internet = deps.internet,
+    local retry
+    resp, why, retry = fetch.open(url, { internet = deps.internet,
       clock = fetch_clock, sleep = deps.sleep or os.sleep,
       interrupted = stop_flag, progress = session and progress or nil },
       info)
     if not resp then
-      fetch_error(why)
+      fetch_error(why, retry)
     end
     open_file = resp
     name, total = resp.final_url, resp.length
@@ -761,6 +766,7 @@ function M.main(argv, deps)
       arm_guard()
     end
     local source = open_source()
+    active = source
     in_body = true
     if session then
       draw_status()
@@ -788,7 +794,11 @@ function M.main(argv, deps)
       and (result == kept_error or find(result,
         "^html: %a+ too large for available memory")) then
     local text = result
-    if result ~= kept_error or broken then
+    local reload = offer_reload
+    if result ~= kept_error then
+      reload = not (active and active.size_stop)
+    end
+    if reload then
       text = text .. "\n" .. RELOAD_LINE
     end
     -- Nothing holds the lines of the failed render now: the popup shows over

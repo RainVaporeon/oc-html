@@ -144,8 +144,8 @@ local function short_page(code, message, url)
 end
 
 -- Waits for the connection and the status line. Returns true, code, message
--- and headers, or false and a controlled message. When the failure maps to an
--- HTTP error status, the status code is the third value.
+-- and headers, or false, a controlled message, the HTTP error status that the
+-- failure maps to (or nil) and retry (true when trying again may work).
 local function wait_response(h, url, links)
   local clock, interrupted = links.clock, links.interrupted
   local t0 = clock()
@@ -154,7 +154,7 @@ local function wait_response(h, url, links)
       return INTERRUPTED
     end
     if clock() - t0 > CONNECT_TIMEOUT then
-      return "html: timed out connecting to " .. url
+      return "html: timed out connecting to " .. url, true
     end
     if links.progress then
       links.progress("wait")
@@ -167,14 +167,14 @@ local function wait_response(h, url, links)
     if not ok or done == nil then
       local reason = ok and why or done
       return false, "html: cannot connect: " .. url .. ": "
-        .. why_text(reason), status_of(h, reason, url)
+        .. why_text(reason), status_of(h, reason, url), true
     end
     if done then
       break
     end
-    local stop = wait()
+    local stop, retry = wait()
     if stop then
-      return false, stop
+      return false, stop, nil, retry
     end
   end
   if links.progress then
@@ -183,14 +183,15 @@ local function wait_response(h, url, links)
   while true do
     local ok, code, message, headers = pcall(h.response)
     if not ok then
-      return false, "html: cannot connect: " .. url .. ": " .. why_text(code)
+      return false, "html: cannot connect: " .. url .. ": " .. why_text(code),
+        nil, true
     end
     if code ~= nil then
       return true, code, message, headers
     end
-    local stop = wait()
+    local stop, retry = wait()
     if stop then
-      return false, stop
+      return false, stop, nil, retry
     end
   end
 end
@@ -361,7 +362,8 @@ end
 -- ended (clock values).
 -- Returns a response (status, message, is_error, length, content_type,
 -- final_url, redirects, bytes, read(), close(), fetch_time()),
--- or nil and a controlled message. A 4xx or 5xx status that the card reports
+-- or nil, a controlled message and retry (true when trying again may work:
+-- a connect or timeout failure). A 4xx or 5xx status that the card reports
 -- as a connect failure returns a response too: its body is the short page,
 -- and it has notice (the print mode line) and popup (the viewer text).
 function M.open(url, links, info)
@@ -390,7 +392,7 @@ function M.open(url, links, info)
     local ok, h, reason = pcall(card.request, u.url, nil, HEADERS)
     if not ok or not h then
       return nil, "html: cannot fetch " .. u.url .. ": "
-        .. why_text(ok and reason or h)
+        .. why_text(ok and reason or h), true
     end
     local called, got, code, message, headers = pcall(wait_response, h,
       u.url, links)
@@ -400,8 +402,8 @@ function M.open(url, links, info)
       error(got, 0)
     end
     if not got then
-      -- On a failure, code is the message and message is the status of the
-      -- failure, or nil for a connection error.
+      -- On a failure, code is the message, message is the status of the
+      -- failure (nil for a connection error) and headers is retry.
       local status = message
       if status then
         info.status = status
@@ -414,7 +416,7 @@ function M.open(url, links, info)
         return resp
       end
       pcall(h.close)
-      return nil, code
+      return nil, code, headers == true
     end
     code = math.tointeger(tonumber(code)) or 0
     info.status = code

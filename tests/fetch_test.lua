@@ -811,6 +811,7 @@ function T.http_status_after_a_followed_redirect()
   local resp, _, ctl, info = open(nil, URL, { routes = {
     [URL] = { code = 302, headers = { Location = { "/next" } } },
     [next_url] = { connect_error = R404(next_url) } } })
+  assert(resp, "no response for the status after a redirect")
   t.eq(resp.status, 404)
   t.eq(resp.final_url, next_url)
   t.eq(info.redirects, 1)
@@ -822,6 +823,7 @@ end
 -- URL (measured). The response is the last one: no redirect for the program.
 function T.card_followed_redirect_looks_like_a_plain_page()
   local resp, _, ctl, info = open({ body = { "x" } })
+  assert(resp, "no response for the followed redirect")
   t.eq(resp.status, 200)
   t.eq(info.redirects, 0)
   t.eq(resp.redirects, 0)
@@ -836,6 +838,7 @@ function T.scheme_change_redirect_is_followed()
   local resp, _, ctl, info = open(nil, URL, { routes = {
     [URL] = { code = 302, headers = { Location = { https } }, body = {} },
     [https] = { body = { "s" } } } })
+  assert(resp, "no response for the scheme change")
   t.eq(resp.final_url, https)
   t.eq(info.redirects, 1)
   t.eq(read_all(resp), "s")
@@ -855,6 +858,7 @@ function T.fifth_connection_is_refused()
   local h, why = card.request(URL .. 5)
   t.eq(h, nil)
   t.eq(why, "too many open connections")
+  assert(handles[1], "the first handle is missing")
   handles[1].close()
   handles[1].close()
   t.ok(card.request(URL .. 6), "a slot is free after close")
@@ -863,9 +867,10 @@ function T.fifth_connection_is_refused()
   for i = 1, 4 do
     card2.request(URL .. i)
   end
-  local resp, rwhy = fetch.open(URL, links(card2), {})
+  local resp, rwhy, retry = fetch.open(URL, links(card2), {})
   t.eq(resp, nil)
   t.eq(rwhy, "html: cannot fetch " .. URL .. ": too many open connections")
+  t.eq(retry, true)
   t.eq(ctl2.open, 4)
   t.eq(ctl.max_open, 4)
 end
@@ -877,6 +882,7 @@ function T.fake_card_methods_are_callable_tables()
   t.eq(type(card.request), "table")
   t.eq(type(card.isHttpEnabled), "table")
   local h = card.request(URL)
+  assert(h, "the card gave no handle")
   for _, m in ipairs({ "finishConnect", "response", "read", "close" }) do
     t.eq(type(h[m]), "table", m)
   end
@@ -884,6 +890,7 @@ function T.fake_card_methods_are_callable_tables()
   t.eq(h.finishConnect(), true)
   t.eq(h.response(), 200)
   local early = internet.new({ default = { response_early = true } }).request(URL)
+  assert(early, "the card gave no handle")
   t.eq(early.response(), 200)
 end
 

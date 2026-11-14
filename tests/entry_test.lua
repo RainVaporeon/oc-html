@@ -970,15 +970,15 @@ end
 
 -- The KB numbers of the byte-count statuses, and the last such status.
 local function counts(rec)
-  local nums, last = {}, nil
+  local nums, latest = {}, nil
   for _, s in ipairs(rec.statuses) do
     local n = s:match("(%d+) KB")
     if n then
       nums[#nums + 1] = tonumber(n)
-      last = s
+      latest = s
     end
   end
-  return nums, last
+  return nums, latest
 end
 
 -- The non-empty lines of the first viewer call, without style bytes.
@@ -995,7 +995,7 @@ end
 
 -- The values that a row can name, from one run.
 local function observe(rec)
-  local nums, last = counts(rec)
+  local nums, last_status = counts(rec)
   local rising = #nums > 1
   for i = 2, #nums do
     if nums[i] < nums[i - 1] then
@@ -1049,10 +1049,12 @@ local function observe(rec)
     popup_memory = rec.shown ~= nil and (rec.shown.opts.error or ""):find(
       "^html: page too large for available memory") ~= nil,
     shown_lines = rec.shown and #rec.shown.lines or false,
+    popup_reload = rec.shown ~= nil and (rec.shown.opts.error or ""):find(
+      "\nReload to try again%.$") ~= nil,
     popup_last = rec.shown and (rec.shown.opts.error or ""):match(
       "([^\n]*)$") or false,
     page_lines = page_lines(rec),
-    last_kb = last,
+    last_kb = last_status,
     kb_rising = rising,
     updates = #nums,
     within_rate = #nums - 1 <= rec.duration / 0.25 + 1,
@@ -1273,16 +1275,17 @@ framed_cases("loading_errors_keep_the_session", {
   { "cannot connect",
     { args = { URL }, show = OK_QUIT,
       card = { default = { connect_error = "refused" } } },
-    kept(URL, CONNECT_ERR .. "refused", { first_status = URL_FIRST }) },
+    kept(URL, CONNECT_ERR .. "refused" .. RELOAD,
+      { first_status = URL_FIRST, popup_reload = true }) },
   { "unknown host (measured text)",
     { args = { URL }, show = OK_QUIT, card = { default = { connect_error =
       "unknown host: example.com: Name or service not known" } } },
     kept(URL, CONNECT_ERR .. "unknown host: example.com: Name or service "
-      .. "not known") },
+      .. "not known" .. RELOAD) },
   { "timeout while connecting",
     { args = { URL }, show = OK_QUIT, step = 0.05,
       card = { default = { connect_polls = 1e6 } } },
-    kept(URL, "html: timed out connecting to " .. URL) },
+    kept(URL, "html: timed out connecting to " .. URL .. RELOAD) },
   { "read error in a 200 body",
     { args = { URL }, show = OK_QUIT,
       card = { default = served(PAGE, 10, { read_error = "reset" }) } },
@@ -1311,27 +1314,44 @@ framed_cases("loading_errors_keep_the_session", {
   { "too many open connections",
     { args = { URL }, show = OK_QUIT, card = { limit = 0,
       default = served(PAGE, 10) } },
-    kept(URL, "html: cannot fetch " .. URL .. ": too many open connections") },
+    kept(URL, "html: cannot fetch " .. URL .. ": too many open connections"
+      .. RELOAD) },
   { "not text/html",
     { args = { URL }, show = OK_QUIT, card = { default = { headers =
       { ["Content-Type"] = { "application/pdf" } } } } },
-    kept(URL, "html: not an HTML page: application/pdf") },
+    kept(URL, "html: not an HTML page: application/pdf",
+      { popup_reload = false }) },
   { "no internet card",
     { args = { URL }, show = OK_QUIT, deps = { internet = false } },
     kept(URL, "html: no internet card found (needed for " .. URL .. ")",
-      { handles_closed = true }) },
+      { handles_closed = true, popup_reload = false }) },
   { "too large for the memory, known size: an empty page",
     { args = { URL }, show = OK_QUIT, card = { default = served(PAGE, 10,
       { headers = { ["Content-Type"] = { "text/html" },
         ["Content-Length"] = { "99999999" } } }) } },
     { code = 0, err = {}, shown = true, popup_memory = true,
       title = "[error] " .. URL, shown_lines = 0, handles_closed = true,
-      popup_last = "Reload to try again." } },
+      popup_reload = false } },
+  { "too large for the memory, known file size: no reload line",
+    { text = BIG, show = OK_QUIT, deps = { size = function()
+        return 99999999
+      end } },
+    { code = 0, err = {}, shown = true, popup_reload = false } },
+  { "HTTP disabled: no reload line",
+    { args = { URL }, show = OK_QUIT, card = { http = false,
+      default = served(PAGE, 10) } },
+    kept(URL, "html: HTTP requests are disabled on this server",
+      { popup_reload = false }) },
+  { "response timeout: reload line",
+    { args = { URL }, show = OK_QUIT, step = 0.05,
+      card = { default = { response_polls = 1e6 } } },
+    kept(URL, "html: timed out connecting to " .. URL .. RELOAD,
+      { popup_reload = true }) },
   { "a guessed URL names the argument in the popup",
     { args = { "example.com" }, show = OK_QUIT, deps = { exists = no },
       card = { default = { connect_error = "refused" } } },
     kept("example.com", "html: cannot connect: http://example.com: refused "
-      .. "(no local file named example.com)") },
+      .. "(no local file named example.com)" .. RELOAD) },
   { "memory stop after the first screen: an empty page and a popup",
     { text = BIG, step = 0.01, show = OK_QUIT,
       on_read = function(n)
@@ -1381,7 +1401,7 @@ framed_cases("loading_http_status_popup", {
   { "a connection error is not a status",
     { args = { URL }, show = OK_QUIT, card = { default = { connect_error =
       "Connection reset" } } },
-    kept(URL, CONNECT_ERR .. "Connection reset") },
+    kept(URL, CONNECT_ERR .. "Connection reset" .. RELOAD) },
 })
 
 -- "Startup" rule 1: an invalid URL is a usage error of the argument checks.
