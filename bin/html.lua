@@ -84,7 +84,9 @@ Options:
                       default: the terminal width)
   --no-rescale        keep the current screen resolution in the viewer
   --help              show this help
-Viewer keys: Up Down PgUp PgDn Home End, q quit, Ctrl+C exit.]]
+Viewer keys: Up Down PgUp PgDn Home End scroll, Tab Shift+Tab Enter links,
+Left or Bksp back, Right forward, g go to, r reload, z abort a load,
+? key list, q quit, Ctrl+C exit.]]
 
 -- max_width is the largest --width (see max_width_of). Returns an options
 -- table, or nil and a controlled error message.
@@ -300,8 +302,8 @@ local function kb(n)
   return int_text(math.ceil(n / 1024)) .. " KB"
 end
 
--- Checks the input size, renders the input, and prints the lines or opens
--- the viewer. source: read() (a chunk, or nil at the end; it raises on an
+-- Checks the input size, renders the input, and prints the lines or returns
+-- them for the viewer. source: read() (a chunk, or nil at the end; it raises on an
 -- error), size (bytes known before reading, or nil), kind ("file" or
 -- "page", for the size message), name (shown without a title), prefix (put
 -- before the title, or nil), head_line (optional, a line for stderr in print
@@ -311,9 +313,10 @@ end
 -- width is the output width: the
 -- layout wraps at width - 1 (see spec/cli.md "Output width"). done() is
 -- called when the render ends. ui is optional, for the loading screen:
--- before_read(lines, count) and show(lines, opts) in place of deps.view.
--- Returns the viewer result (nil in print mode), the lines, the title and
--- the page table of M.render.
+-- before_read(lines, count).
+-- Returns nil, the lines, the title (with the prefix, in the viewer) and the
+-- page table of M.render. In the viewer it adds a fifth value, the table
+-- { error = popup text or nil, file = source.name } for the viewer call.
 local function run(source, opts, deps, width, done, ui)
   local size = source.size
   -- Without a known size there is no check before reading, so no settle.
@@ -338,10 +341,8 @@ local function run(source, opts, deps, width, done, ui)
     if source.prefix then
       title = source.prefix .. (title or source.name)
     end
-    local shown = (ui and ui.show or deps.view)(lines, { title = title,
-      file = source.name,
-      no_rescale = opts.no_rescale, error = tail_error })
-    return shown, lines, title, page
+    return nil, lines, title, page, { error = tail_error,
+      file = source.name }
   end
   if source.head_line then
     deps.err(source.head_line)
@@ -462,25 +463,50 @@ function M.classify(arg, deps)
     if not u then
       return nil, why, EXIT_USAGE
     end
-    return { url = u.url, fragment = u.fragment, guessed = guessed }
+    -- parse_url drops the fragment. The session jumps to it after the load.
+    local hash = find(url, "#", 1, true)
+    return { url = u.url, fragment = hash and sub(url, hash + 1) or nil,
+      guessed = guessed }
   elseif deps.is_dir and deps.is_dir(path) then
     return nil, "html: not a file: " .. arg, EXIT_ERROR
   end
   return { path = path }
 end
 
--- Runs one load inside the session. All the state of a load lives here.
--- target: the result of classify. ctx: opts, deps, arg (the argument text),
--- width, framed (the loading screen opens inside the load), load_all()
--- (loads the modules, returns true or nil and a message). The screen
--- session opens here when framed, and is stored in ctx.session. The caller
--- closes it. The listener and the file are closed before this returns.
+-- Makes the error handler of xpcall: it maps an error value to the text that
+-- the session reports (see spec/errors.md).
+local function error_handler(deps)
+  return function(e)
+    if e == "interrupted" then
+      return INTERRUPTED
+    end
+    if is_controlled(e) then
+      return e
+    end
+    return deps.traceback(tostring(e), 2)
+  end
+end
+
+-- Runs one load inside the session. All the state of a load lives here. It
+-- never shows the page: the session loop does (see run_session).
+-- target: the result of classify. ctx: opts, deps, arg (the text of the
+-- target), width, framed (the loading screen opens inside the load),
+-- load_all() (loads the modules, returns true or nil and a message), nav
+-- (true for a load after the first one), on_commit() (optional, called after
+-- phase 1 and before the size check: the point where the old page goes).
+-- The screen session opens here when framed, and is stored in ctx.session.
+-- A later load uses it. The caller closes it. The listener and the file are
+-- closed before this returns.
 -- Returns one of:
---   { ok = true, lines =, title =, page =, result = viewer result or nil }
+--   { ok = true, lines =, title =, page =, location = absolute path or final
+--     URL, show = { file =, error = popup text or nil } (nil in print mode) }
+--   { failed = true, committed = bool, text = popup text, reload = bool,
+--     name = text }  an error that keeps the session (spec/navigation.md
+--     "Two phases of a load"). committed is false for a phase 1 failure
+--   { aborted = true, committed = bool, name = text }  the user pressed z
 --   { error = text, reload = bool, kind = "controlled" or "unexpected" }
 --   { interrupted = true, message = text or nil }
---   { quit = true, notice = text or nil, reload = bool or nil }
--- notice is the text of a kept error that the viewer showed in a popup.
+--   { quit = true }
 local function load_page(target, ctx)
   local opts, deps, arg = ctx.opts, ctx.deps, ctx.arg
   local width, framed = ctx.width, ctx.framed
@@ -488,16 +514,33 @@ local function load_page(target, ctx)
   local url, path, guessed = target.url, target.path, target.guessed
   local f
   if path then
-    local why
-    f, why = deps.open(path, "rb")
-    if not f then
-      -- The file can vanish between the check and the open. An open that
-      -- fails on an existing file is a read error.
-      local text
-      if deps.exists and deps.exists(path) then
-        text = "html: read error: " .. reason(why or "cannot open")
-      else
-        text = "html: file not found: " .. arg
+    -- Phase 1 of a local load. The first load was checked by classify. A
+    -- later target (a link) is checked here.
+    local text, retry
+    if ctx.nav and deps.exists and not deps.exists(path) then
+      text = "html: file not found: " .. arg
+    elseif ctx.nav and deps.is_dir and deps.is_dir(path) then
+      text = "html: not a file: " .. arg
+    else
+      local why
+      f, why = deps.open(path, "rb")
+      if not f then
+        -- The file can vanish between the check and the open. An open that
+        -- fails on an existing file is a read error.
+        if deps.exists and deps.exists(path) then
+          text, retry = "html: read error: " .. reason(why or "cannot open"),
+            true
+        else
+          text = "html: file not found: " .. arg
+        end
+      end
+    end
+    if text then
+      if ctx.session or ctx.nav then
+        -- The session goes on: the loop shows a popup.
+        return { failed = true, committed = false, name = arg,
+          text = retry and (text .. "\n" .. RELOAD_LINE) or text,
+          reload = retry or false }
       end
       return { error = text, reload = false, kind = "controlled" }
     end
@@ -506,12 +549,14 @@ local function load_page(target, ctx)
   -- Ctrl+C or a confirmed quit during load: the flags are set by the
   -- listener or by the screen poll, and the next guard.tick raises
   -- INTERRUPTED. A confirmed quit exits with code 0 and no message.
+  -- z (abort) stops the load in the same way (spec/navigation.md "Abort").
   local interrupted, quit_requested, remove = false, false, nil
+  local abort_requested, committed = false, false
   if deps.on_interrupt then
     remove = deps.on_interrupt(function() interrupted = true end)
   end
   local function stop_flag()
-    return interrupted or quit_requested
+    return interrupted or quit_requested or abort_requested
   end
   -- The guard loads with the other modules, so a framed run arms it later.
   local function arm_guard()
@@ -539,16 +584,7 @@ local function load_page(target, ctx)
     end
   end
 
-  local traceback = deps.traceback
-  local function handler(e)
-    if e == "interrupted" then
-      return INTERRUPTED
-    end
-    if is_controlled(e) then
-      return e
-    end
-    return traceback(tostring(e), 2)
-  end
+  local handler = error_handler(deps)
   -- For a URL: the fetch progress (fetch.open fills it), the response and
   -- the clock of the fetch.
   local info, resp = {}, nil
@@ -565,7 +601,7 @@ local function load_page(target, ctx)
   -- active is the source of the render. It tells a size stop before reading
   -- (a retry does not help) from a memory stop during the render.
   local kept_error, offer_reload, active
-  local popup_text, popup_reload
+
   local function fetch_error(why, reload)
     if why ~= INTERRUPTED then
       why = why .. suffix
@@ -578,7 +614,7 @@ local function load_page(target, ctx)
   -- The loading screen. The status line shows the phase (see
   -- spec/loading.md). The status text is drawn only when it changes, and the
   -- byte count at most once per LOAD_TICK. The same tick polls the keys.
-  local session
+  local session = ctx.session
   local name, total, bytes = arg, nil, 0
   local in_body, phase_text, shown = false, "", nil
   local last_tick, first_drawn = 0, false
@@ -613,6 +649,8 @@ local function load_page(target, ctx)
     local key = session.poll()
     if key == "interrupted" then
       interrupted = true
+    elseif key == "abort" then
+      abort_requested = true
     elseif key == "quit" then
       quit_requested = true
     end
@@ -710,14 +748,20 @@ local function load_page(target, ctx)
     }
   end
 
-  local ok, result, lines, title, page = xpcall(function()
-    if framed then
+  local ok, result, lines, title, page, shown_info = xpcall(function()
+    if session then
+      -- A later load: the session and the modules are there. The old page
+      -- stays on screen until the commit.
+      shown = "Loading " .. name .. "..."
+      session.status(shown)
+      last_tick = now()
+      arm_guard()
+    elseif framed then
       session = deps.open_screen({ no_rescale = opts.no_rescale,
         status = "Loading " .. name .. "..." })
       ctx.session = session
       shown = "Loading " .. name .. "..."
       last_tick = now()
-      ui.show = session.show
       set_phase("Loading modules...")
       local loaded, why = load_all()
       if not loaded then
@@ -726,6 +770,12 @@ local function load_page(target, ctx)
       arm_guard()
     end
     local source = open_source()
+    -- The commit: phase 1 is over. The caller releases the old page here,
+    -- before the size check measures the free memory.
+    committed = true
+    if ctx.on_commit then
+      ctx.on_commit()
+    end
     active = source
     in_body = true
     if session then
@@ -747,10 +797,13 @@ local function load_page(target, ctx)
     end, session and ui or nil)
   end, handler)
   -- An error that keeps the session: a fetch error, a file read error or a
-  -- memory stop after the frame opened. The viewer shows a popup over an
-  -- empty page. A broken page is not rendered: the lines so far are dropped.
-  -- Quit then gives code 0.
-  if not ok and session and not opts.print and type(result) == "string"
+  -- memory stop after the frame opened. The caller shows a popup (over the
+  -- old page after a phase 1 failure, else over an empty page). A broken
+  -- page is not rendered: the lines so far are dropped. Quit then gives
+  -- code 0.
+  local failed
+  if not ok and (session or ctx.nav) and not opts.print
+      and type(result) == "string"
       and (result == kept_error or find(result,
         "^html: %a+ too large for available memory")) then
     local text = result
@@ -761,15 +814,9 @@ local function load_page(target, ctx)
     if reload then
       text = text .. "\n" .. RELOAD_LINE
     end
-    popup_text, popup_reload = text, reload and true or false
-    lines, title, page = nil, nil, nil
-    -- Nothing holds the lines of the failed render now: the popup shows over
-    -- an empty page and the memory is free.
-    pcall(close_file)
-    pcall(stop_listening)
-    ok, result = xpcall(session.show, handler, {}, {
-      title = "[error] " .. name, file = name, error = text,
-      no_rescale = opts.no_rescale })
+    failed = { failed = true, committed = committed, text = text,
+      reload = reload and true or false, name = name }
+    ok, result = true, nil
   end
   -- Each step runs alone, so a failure in one does not skip the other.
   pcall(stop_listening)
@@ -779,10 +826,13 @@ local function load_page(target, ctx)
     -- A bare "interrupted" error is Ctrl+C from the event system.
     result = INTERRUPTED
   end
-  if not ok and result == INTERRUPTED and quit_requested and not interrupted
-      then
-    -- The user confirmed the quit prompt during load.
-    ok, result = true, "quit"
+  if not ok and result == INTERRUPTED and not interrupted then
+    if quit_requested then
+      -- The user confirmed the quit prompt during load.
+      ok, result = true, "quit"
+    elseif abort_requested then
+      return { aborted = true, committed = committed, name = name }
+    end
   end
   if not ok then
     if result == INTERRUPTED then
@@ -791,16 +841,329 @@ local function load_page(target, ctx)
     return { error = result,
       reload = result == kept_error and offer_reload and true or false,
       kind = is_controlled(result) and "controlled" or "unexpected" }
+  elseif failed then
+    return failed
   elseif result == "quit" then
-    return { quit = true, notice = popup_text, reload = popup_reload }
-  elseif result == "interrupted" then
-    return { interrupted = true, notice = popup_text, reload = popup_reload }
+    return { quit = true }
   end
   return { ok = true, lines = lines, title = title, page = page,
-    result = result }
+    location = resp and resp.final_url or path, show = shown_info }
 end
 
 M.load_page = load_page
+
+-- The session loop ----------------------------------------------------------
+-- See spec/navigation.md.
+
+local HISTORY_CAP = 32
+
+-- Loads html.history. Returns true, or nil and a controlled message.
+local history
+local function load_history()
+  if history then
+    return true
+  end
+  local ok, mod = pcall(require, "html.history")
+  if not ok then
+    return nil, "html: cannot load html.history: " .. reason(mod)
+  end
+  history = mod
+  return true
+end
+
+local function key_of(spec)
+  return spec.url or spec.path
+end
+
+-- Makes a load target from a history key: a URL or an absolute path.
+-- guesses maps the key of a guessed URL to the text that was typed.
+local function spec_of(key, guesses)
+  local spec
+  if find(key, "^%a[%w+.-]*://") then
+    spec = { url = key }
+  else
+    spec = { path = key }
+  end
+  if guesses[key] then
+    spec.guessed, spec.arg = true, guesses[key]
+  end
+  return spec
+end
+
+local function unescape(s)
+  return (gsub(s, "%%(%x%x)", function(h)
+    return string.char(tonumber(h, 16))
+  end))
+end
+
+-- Returns the line of the anchor that fragment names. An empty fragment is
+-- line 1. Returns nil for no fragment or an unknown one.
+local function anchor_line(page, fragment)
+  if fragment == nil then
+    return nil
+  end
+  if fragment == "" then
+    return 1
+  end
+  local anchors = page and page.anchors
+  if not anchors then
+    return nil
+  end
+  local wanted = layout.hash40(unescape(fragment))
+  local list = anchors.list
+  for i = 1, anchors.count do
+    if list[i] >> 24 == wanted then
+      return list[i] & 0xFFFFFF
+    end
+  end
+  return nil
+end
+
+-- Returns the base of the links of a page: its <base href> resolved against
+-- the page location, else the location.
+local function page_base(location, base)
+  if base then
+    local r = urlmod.resolve(location, base)
+    if r and r.kind == "http" then
+      return r.url
+    elseif r and r.kind == "file" then
+      return r.path
+    end
+  end
+  return location
+end
+
+-- Runs the viewer path: loads the first target, shows the page and acts on
+-- the action of the viewer until the user quits. target: the result of
+-- classify, with arg (the text of the target). ctx: see load_page. Returns
+-- the same kinds as load_page: { quit }, { interrupted, message } or
+-- { error, kind }.
+local function run_session(target, ctx)
+  local deps, opts = ctx.deps, ctx.opts
+  local loaded, why = load_url()
+  if loaded then
+    loaded, why = load_history()
+  end
+  if not loaded then
+    return { error = why, reload = false, kind = "controlled" }
+  end
+  local handler = error_handler(deps)
+  local hist = history.new(HISTORY_CAP)
+  local guesses = {}
+  -- The page on screen: { lines, title, name, page, location, base, resolve,
+  -- broken } or nil. The commit of a load drops it.
+  local held
+  -- The target of the page on screen.
+  local cur
+  local top, sel = 1, nil
+  -- The text of a popup for the next show.
+  local popup
+  -- The next load: { spec, mode = "first" | "link" | "go" | "back" |
+  -- "forward" | "reload" | "prev", top, sel, fragment }.
+  local req = { spec = target, mode = "first", fragment = target.fragment }
+  if target.guessed then
+    guesses[key_of(target)] = target.arg
+  end
+
+  -- An empty page with a title: a broken or an aborted load.
+  local function empty_page(title, name)
+    return { lines = {}, title = title, name = name, broken = true }
+  end
+
+  -- The resolver of the viewer for the page h: the text of the status line,
+  -- or nil and a notice. A link that cannot resolve gives its href, so that
+  -- Enter reaches the loop and the popup shows the reason.
+  local function make_resolve(h)
+    return function(href)
+      local r = urlmod.resolve(h.base, href)
+      if not r then
+        return href
+      elseif r.kind == "unsupported" then
+        return nil, r.scheme .. ": links are not supported"
+      end
+      local frag = r.fragment and ("#" .. r.fragment) or ""
+      if r.kind == "http" then
+        return r.url .. frag
+      elseif r.kind == "file" then
+        return r.path .. frag
+      end
+      return h.base .. frag
+    end
+  end
+
+  -- Runs one load of r. Sets held, cur, top, sel, popup and req. Returns a
+  -- final result, or nil to show.
+  local function load(r)
+    local spec = r.spec
+    local had = held ~= nil
+    ctx.arg = spec.arg or key_of(spec)
+    ctx.nav = r.mode ~= "first"
+    ctx.on_commit = function()
+      held = nil
+      if r.mode == "link" or r.mode == "go" or hist.size() == 0 then
+        hist.push(key_of(spec))
+      elseif r.mode == "reload" then
+        hist.replace({ target = key_of(spec), top = r.top, sel = r.sel })
+      end
+    end
+    local res = load_page(spec, ctx)
+    ctx.on_commit = nil
+    if res.quit or res.interrupted or res.error then
+      return res
+    end
+    if res.ok then
+      cur = spec
+      local h = { lines = res.lines, title = res.title, name = res.show.file,
+        page = res.page, location = res.location }
+      h.base = page_base(res.location, res.page.base)
+      h.resolve = make_resolve(h)
+      held = h
+      popup = res.show.error
+      if r.mode == "first" or r.mode == "link" or r.mode == "go" then
+        top, sel = anchor_line(h.page, r.fragment) or 1, nil
+      else
+        top, sel = r.top, r.sel
+      end
+      return nil
+    end
+    -- A phase 1 failure or an abort before the commit leaves the old page.
+    -- A back or forward move of the history goes back.
+    local function undo()
+      if r.mode == "back" then
+        hist.forward()
+      elseif r.mode == "forward" then
+        hist.back()
+      end
+    end
+    if res.failed then
+      popup = res.text
+      if res.committed or not had then
+        cur = spec
+        held = empty_page("[error] " .. res.name, res.name)
+        top, sel = 1, nil
+      else
+        undo()
+      end
+    elseif not res.committed then
+      if had then
+        undo()
+      else
+        cur = spec
+        held = empty_page("[aborted] " .. res.name, res.name)
+        top, sel = 1, nil
+      end
+    elseif hist.can_back() then
+      -- The old page is gone: load the previous page again. The entry of the
+      -- aborted target goes.
+      local prev = hist.drop_current()
+      req = { spec = spec_of(prev.target, guesses), mode = "prev",
+        top = prev.top, sel = prev.sel }
+    else
+      cur = spec
+      held = empty_page("[aborted] " .. res.name, res.name)
+      top, sel = 1, nil
+    end
+    return nil
+  end
+
+  -- Shows the page. Returns ok and the result of the viewer.
+  local function present()
+    local h = held
+    local o = { title = h.title, file = h.name, no_rescale = opts.no_rescale,
+      error = popup, top = top, sel = sel }
+    if h.page then
+      o.links = h.page.links
+      o.resolve = h.resolve
+    end
+    popup = nil
+    local session = ctx.session
+    return xpcall(session and session.show or deps.view, handler, h.lines, o)
+  end
+
+  -- A same-document link: a new history entry and a jump to the anchor.
+  local function jump(fragment)
+    top = anchor_line(held.page, fragment) or top
+    hist.push(key_of(cur))
+    hist.set_pos(top, sel)
+  end
+
+  while true do
+    if req then
+      local r = req
+      req = nil
+      local final = load(r)
+      if final then
+        return final
+      end
+    end
+    if not req then
+      local ok, out = present()
+      if not ok then
+        if out == "interrupted" or out == INTERRUPTED then
+          return { interrupted = true, message = INTERRUPTED }
+        end
+        return { error = out, reload = false,
+          kind = is_controlled(out) and "controlled" or "unexpected" }
+      elseif out == "quit" then
+        return { quit = true }
+      elseif out == "interrupted" then
+        return { interrupted = true }
+      end
+      -- An action: store the position before the page goes.
+      top, sel = out.top, out.sel
+      hist.set_pos(top, sel)
+      local kind = out.kind
+      if kind == "link" then
+        local r, why_not = urlmod.resolve(held.base, out.href)
+        if not r then
+          popup = why_not
+        elseif r.kind == "same" then
+          jump(r.fragment)
+        elseif r.kind ~= "unsupported" then
+          local key = r.url or r.path
+          if key == key_of(cur) or key == held.location then
+            jump(r.fragment)
+          else
+            req = { spec = spec_of(key, guesses), mode = "link",
+              fragment = r.fragment }
+          end
+        end
+      elseif kind == "back" or kind == "forward" then
+        local entry
+        if kind == "back" then
+          entry = hist.back()
+        else
+          entry = hist.forward()
+        end
+        if entry then
+          if not held.broken and entry.target == key_of(cur) then
+            top, sel = entry.top, entry.sel
+          else
+            req = { spec = spec_of(entry.target, guesses), mode = kind,
+              top = entry.top, sel = entry.sel }
+          end
+        end
+      elseif kind == "reload" then
+        req = { spec = cur, mode = "reload", top = top, sel = sel }
+        if held.broken then
+          req.top, req.sel = 1, nil
+        end
+      elseif kind == "go" then
+        local spec, msg = M.classify(out.text, deps)
+        if not spec then
+          popup = msg
+        else
+          spec.arg = out.text
+          if spec.guessed then
+            guesses[key_of(spec)] = out.text
+          end
+          req = { spec = spec, mode = "go", fragment = spec.fragment }
+        end
+      end
+    end
+  end
+end
+
 
 -- argv: the program arguments (a table, n is optional).
 -- deps: the machine links:
@@ -825,7 +1188,7 @@ M.load_page = load_page
 --                          no_rescale and status. Without it, the viewer
 --                          opens after the render, through view
 --   view(lines, opts)      optional, runs the viewer (see viewer.run).
---                          Returns "quit" or "interrupted"
+--                          Returns "quit", "interrupted" or an action table
 --   on_interrupt(fn)       optional, calls fn on Ctrl+C. Returns a function
 --                          that removes the listener
 --   internet               optional, the internet card proxy (for a URL)
@@ -884,7 +1247,13 @@ function M.main(argv, deps)
 
   local ctx = { opts = opts, deps = deps, arg = arg, width = width,
     framed = framed, load_all = load_all }
-  local page = load_page(target, ctx)
+  target.arg = arg
+  local page
+  if opts.print then
+    page = load_page(target, ctx)
+  else
+    page = run_session(target, ctx)
+  end
   -- The screen is restored before any error line prints.
   local restored, restore_err = true, nil
   if ctx.session then

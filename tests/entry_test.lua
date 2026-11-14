@@ -1477,4 +1477,601 @@ framed_cases("loading_settle_only_with_a_known_size", {
     { code = 0, sleeps = 11 } },
 })
 
+-- Navigation (spec/navigation.md) --------------------------------------------
+-- These runs use the real viewer session over the fake GPU (80 columns, 9
+-- line rows and the status row), the fake card and an event queue. The queue
+-- has one stream for the viewer (show) and one for the key polls of a load
+-- (ticks).
+
+local KEY_TAB = { "key_down", "kbd", 9, 15, "player" }
+local KEY_LEFT = { "key_down", "kbd", 0, 203, "player" }
+local KEY_RIGHT = { "key_down", "kbd", 0, 205, "player" }
+local KEY_R = { "key_down", "kbd", 114, 19, "player" }
+local KEY_G = { "key_down", "kbd", 103, 34, "player" }
+local KEY_Z = { "key_down", "kbd", 122, 44, "player" }
+
+-- The key events of a typed text.
+local function typed(text)
+  local out = {}
+  for i = 1, #text do
+    out[i] = { "key_down", "kbd", text:byte(i), 0, "player" }
+  end
+  return out
+end
+
+-- Joins lists of events and function items into one list.
+local function events(...)
+  local out = {}
+  for _, part in ipairs({ ... }) do
+    if type(part) == "function" or (type(part[1]) == "string") then
+      out[#out + 1] = part
+    else
+      for _, e in ipairs(part) do
+        out[#out + 1] = e
+      end
+    end
+  end
+  return out
+end
+
+local QUIT = events(KEY_Q, KEY_Y)
+
+local function doc(title, body)
+  return "<title>" .. title .. "</title>" .. body
+end
+
+-- 30 paragraphs are 30 lines.
+local FILL = string.rep("<p>fill</p>", 30)
+local function link(href, text)
+  return '<p><a href="' .. href .. '">' .. (text or "go") .. "</a></p>"
+end
+
+local HOST = "http://x.org/"
+local URL_A, URL_B = HOST .. "a", HOST .. "b"
+
+-- Runs main over the fake machine. o: args, routes (card routes, a table that
+-- on_request(rec, url, routes) can change), default (card script for other
+-- URLs), files (path to text), dirs (set of paths), show (events and function
+-- items for the viewer), ticks (per load number: a list of event lists, one
+-- list for each key poll, or a function(rec, poll_number) that returns one),
+-- step (clock seconds per read), on_read(rec) (before each read),
+-- restore_error (the screen restore fails). The load number counts the
+-- loads that reach the interrupt listener. rec.reads_in_load, rec.status and
+-- rec.loads are for the function items.
+local function nav(o)
+  computer.test.reset()
+  local rec = { shows = {}, snaps = {}, err = {}, opens = {}, loads = 0,
+    reads_in_load = 0, load_polls = 0, status = "", files_open = 0 }
+  local gpu, gctl = fake_screen.new({ width = 80, height = STATUS_ROW,
+    max_width = 80, max_height = STATUS_ROW })
+  rec.gctl = gctl
+  local set = gpu.set
+  gpu.set = function(x, y, s)
+    if y == STATUS_ROW then
+      rec.status = s:gsub("%s+$", "")
+    end
+    return set(x, y, s)
+  end
+  local term = { setCursor = function() end,
+    clear = function()
+      if o.restore_error then
+        error("restore boom", 0)
+      end
+    end }
+
+  local items, at, in_show = o.show or {}, 1, false
+  local batch, batch_at
+  local function pull(timeout)
+    if in_show then
+      while true do
+        local item = items[at]
+        if item == nil then
+          if timeout == 0 then
+            return nil
+          end
+          error("test: no event for the viewer", 0)
+        end
+        if type(item) == "function" then
+          if timeout == 0 then
+            return nil
+          end
+          at = at + 1
+          item(rec)
+        else
+          at = at + 1
+          return table.unpack(item)
+        end
+      end
+    end
+    if not batch then
+      rec.load_polls = rec.load_polls + 1
+      local source = o.ticks and o.ticks[rec.loads]
+      if type(source) == "function" then
+        batch = source(rec, rec.load_polls)
+      else
+        batch = source and source[rec.load_polls]
+      end
+      batch, batch_at = batch or {}, 1
+    end
+    local e = batch[batch_at]
+    batch_at = batch_at + 1
+    if type(e) == "function" then
+      e = e(rec)
+    end
+    if e then
+      return table.unpack(e)
+    end
+    batch = nil
+    return nil
+  end
+
+  local function on_read()
+    if o.step then
+      computer.test.advance(o.step)
+    end
+    rec.reads_in_load = rec.reads_in_load + 1
+    if o.on_read then
+      o.on_read(rec)
+    end
+  end
+
+  local routes = o.routes or {}
+  local card, ctl = internet.new({ routes = routes, default = o.default })
+  rec.ctl = ctl
+  local request = card.request
+  card.request = function(url, ...)
+    if o.on_request then
+      o.on_request(rec, url, routes)
+    end
+    local h, why = request(url, ...)
+    if h then
+      local read = h.read
+      h.read = function(...)
+        on_read()
+        return read(...)
+      end
+    end
+    return h, why
+  end
+
+  local files, dirs = o.files or {}, o.dirs or {}
+  local deps = {
+    out = function() end,
+    err = function(line)
+      rec.err[#rec.err + 1] = without_position(line)
+    end,
+    width = 50,
+    traceback = function(msg) return msg .. "\nstack traceback: (fake)" end,
+    clock = os.clock, uptime = computer.uptime, sleep = os.sleep,
+    gpu = gpu, internet = card,
+    exists = function(p) return files[p] ~= nil or dirs[p] == true end,
+    is_dir = function(p) return dirs[p] == true end,
+    open = function(p)
+      if files[p] == nil then
+        return nil, p .. ": No such file or directory"
+      end
+      local f = fake_file(files[p], on_read)
+      local close = f.close
+      rec.files_open = rec.files_open + 1
+      f.close = function(...)
+        rec.files_open = rec.files_open - 1
+        return close(...)
+      end
+      return f
+    end,
+    on_interrupt = function(fn)
+      rec.loads = rec.loads + 1
+      rec.load_polls, rec.reads_in_load = 0, 0
+      rec.interrupt = fn
+      return function() end
+    end,
+    open_screen = function(so)
+      local s = viewer.open({ gpu = gpu, pull = pull, term = term }, so)
+      local show = s.show
+      s.show = function(lines, opts)
+        rec.shows[#rec.shows + 1] = { title = opts.title or false,
+          file = opts.file, error = opts.error or false, top = opts.top,
+          sel = opts.sel or false, n = #lines, entry = gctl.screen() }
+        rec.opens[#rec.opens + 1] = ctl.open
+        in_show = true
+        local res = table.pack(pcall(show, lines, opts))
+        in_show = false
+        if not res[1] then
+          error(res[2], 0)
+        end
+        return table.unpack(res, 2, res.n)
+      end
+      return s
+    end,
+  }
+  for k, v in pairs(o.deps or {}) do
+    deps[k] = v
+  end
+  local chunk = t.load_bin("html")({})
+  local args = { n = #o.args }
+  for i, a in ipairs(o.args) do
+    args[i] = a
+  end
+  rec.code = chunk.main(args, deps)
+  return rec
+end
+
+-- The values that a row can name, from one run.
+local function observe_nav(rec)
+  local out = { code = rec.code, err = rec.err, requests = rec.ctl.requests,
+    open_max = rec.ctl.max_open, open_end = rec.ctl.open,
+    opens = rec.opens, files_open = rec.files_open, snaps = rec.snaps,
+    shows = #rec.shows, titles = {}, files = {}, errors = {}, tops = {},
+    sels = {}, ns = {}, entries = {} }
+  for i, s in ipairs(rec.shows) do
+    out.titles[i], out.files[i], out.errors[i] = s.title, s.file, s.error
+    out.tops[i], out.sels[i], out.ns[i] = s.top, s.sel, s.n
+    out.entries[i] = s.entry[1]:match("^%S+ %S+") or false
+  end
+  return out
+end
+
+local function nav_cases(name, rows)
+  for _, row in ipairs(rows) do
+    local keys = {}
+    for k in pairs(row[3]) do
+      keys[#keys + 1] = k
+    end
+    row[2].keys = keys
+  end
+  t.cases(T, name, rows, function(input)
+    local obs, out = observe_nav(nav(input)), {}
+    for _, k in ipairs(input.keys) do
+      out[k] = obs[k]
+    end
+    return out
+  end)
+end
+
+local function snap_status(index)
+  return function(rec)
+    local row = rec.gctl.row(STATUS_ROW):gsub("%s+%d+%%.*$", "")
+    rec.snaps[index] = (row:gsub("%s+$", ""))
+  end
+end
+
+local A_LINK = doc("A", "<p>AAA first</p>" .. link(URL_B))
+local A_TALL = doc("A", FILL .. link(URL_B))
+local A_SHORT = doc("A", link(URL_B))
+local B = doc("B", "<p>bbb</p>")
+local ROUTES_AB = function()
+  return { [URL_A] = served(A_LINK, 10), [URL_B] = served(B, 10) }
+end
+
+-- Follow, back, forward and reload: each load asks the server again. The
+-- tall page puts its link on line 31, so the first Tab scrolls to top 23.
+nav_cases("navigation_history", {
+  { "follow a link: one request, the handle closes",
+    { args = { URL_A }, routes = ROUTES_AB(),
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, requests = { URL_A, URL_B }, titles = { "A", "B" },
+      files = { URL_A, URL_B }, open_max = 1, open_end = 0,
+      opens = { 0, 0 } } },
+  { "back: the page loads again and the top returns",
+    { args = { URL_A }, routes = { [URL_A] = served(A_TALL, 10),
+        [URL_B] = served(B, 10) },
+      show = events(KEY_TAB, KEY_ENTER, KEY_LEFT, QUIT) },
+    { code = 0, requests = { URL_A, URL_B, URL_A },
+      titles = { "A", "B", "A" }, tops = { 1, 1, 23 }, sels = { false, false, 1 },
+      open_max = 1, opens = { 0, 0, 0 } } },
+  { "forward: the page loads again",
+    { args = { URL_A }, routes = { [URL_A] = served(A_TALL, 10),
+        [URL_B] = served(B, 10) },
+      show = events(KEY_TAB, KEY_ENTER, KEY_LEFT, KEY_RIGHT, QUIT) },
+    { code = 0, requests = { URL_A, URL_B, URL_A, URL_B },
+      titles = { "A", "B", "A", "B" }, tops = { 1, 1, 23, 1 },
+      open_max = 1, open_end = 0, opens = { 0, 0, 0, 0 } } },
+  { "back and forward at the ends do nothing",
+    { args = { URL_A }, routes = ROUTES_AB(),
+      show = events(KEY_LEFT, KEY_RIGHT, QUIT) },
+    { code = 0, requests = { URL_A }, shows = 3 } },
+  { "reload keeps the top and the selection",
+    { args = { URL_A }, routes = { [URL_A] = served(A_TALL, 10) },
+      show = events(KEY_TAB, KEY_R, QUIT) },
+    { code = 0, requests = { URL_A, URL_A }, tops = { 1, 23 },
+      sels = { false, 1 }, open_max = 1, opens = { 0, 0 } } },
+  { "reload of a shorter page: the top clamps",
+    { args = { URL_A }, routes = { [URL_A] = served(A_TALL, 10) },
+      on_request = function(rec, url, routes)
+        if #rec.ctl.requests == 1 then
+          routes[URL_A] = served(A_SHORT, 10)
+        end
+      end,
+      show = events(KEY_TAB, KEY_R, KEY_R, QUIT) },
+    { code = 0, requests = { URL_A, URL_A, URL_A }, tops = { 1, 23, 1 },
+      sels = { false, 1, 1 } } },
+  { "reload of a broken page: it loads at the top, with no selection",
+    { args = { URL_A },
+      routes = { [URL_A] = served(A_TALL, 10, { read_error = "reset" }) },
+      on_request = function(rec, url, routes)
+        if #rec.ctl.requests == 1 then
+          routes[URL_A] = served(A_TALL, 10)
+        end
+      end,
+      show = events(KEY_ENTER, KEY_R, QUIT) },
+    { code = 0, requests = { URL_A, URL_A }, titles = { "[error] " .. URL_A, "A" },
+      errors = { "html: read error: reset\nReload to try again.", false },
+      tops = { 1, 1 }, sels = { false, false }, ns = { 0, 31 },
+      open_end = 0 } },
+  { "a memory stop on the second page; back returns to the first",
+    { args = { "/p/a.html" },
+      files = { ["/p/a.html"] = link("big.html"), ["/p/big.html"] = BIG },
+      step = 0.01,
+      on_read = function(rec)
+        if rec.loads == 2 and rec.reads_in_load == 4 then
+          computer.test.set_free(100 * 1024)
+        end
+      end,
+      show = events(KEY_TAB, KEY_ENTER, KEY_ENTER, function()
+        computer.test.set_free(1800000)
+      end, KEY_LEFT, QUIT) },
+    { code = 0, titles = { false, "[error] /p/big.html", false },
+      files = { "/p/a.html", "/p/big.html", "/p/a.html" },
+      ns = { 1, 0, 1 }, files_open = 0 } },
+})
+
+-- A link that cannot load: the popup shows over the old page, and the old
+-- page cells stay (the status row is the only row that changed).
+local POPUP_A = { code = 0, titles = { "A", "A" }, shows = 2,
+  files = { URL_A, URL_A }, tops = { 1, 1 }, entries = { false,
+    "AAA first" }, open_max = 1, open_end = 0, opens = { 0, 0 } }
+local function popup_row(name, route, text, extra)
+  local expected = {}
+  for k, v in pairs(POPUP_A) do
+    expected[k] = v
+  end
+  expected.errors = { false, text }
+  expected.requests = { URL_A, "http://bad/" }
+  for k, v in pairs(extra or {}) do
+    expected[k] = v
+  end
+  return { name, { args = { URL_A },
+    routes = { [URL_A] = served(A_LINK:gsub(URL_B, "http://bad/"), 10),
+      ["http://bad/"] = route },
+    show = events(KEY_TAB, KEY_ENTER, KEY_ENTER, QUIT) }, expected }
+end
+local BAD = "html: cannot connect: http://bad/: "
+nav_cases("navigation_phase_1_failures", {
+  popup_row("unknown host", { connect_error =
+    "unknown host: bad: Name or service not known" },
+    BAD .. "unknown host: bad: Name or service not known" .. RELOAD),
+  popup_row("timeout", { connect_polls = 1e6 },
+    "html: timed out connecting to http://bad/" .. RELOAD),
+  popup_row("not an HTML page", { headers =
+    { ["Content-Type"] = { "application/pdf" } } },
+    "html: not an HTML page: application/pdf"),
+  popup_row("too many redirects", { code = 302,
+    headers = { Location = { "http://bad/" } } },
+    "html: too many redirects: http://bad/", { open_max = 1, requests = {
+      URL_A, "http://bad/", "http://bad/", "http://bad/", "http://bad/",
+      "http://bad/", "http://bad/" } }),
+  { "a 404: the short page, a two-line popup and a history entry",
+    { args = { URL_A },
+      routes = { [URL_A] = served(A_LINK:gsub(URL_B, "http://bad/"), 10),
+        ["http://bad/"] = { connect_error = internet.reason_404(
+          "http://bad/") } },
+      show = events(KEY_TAB, KEY_ENTER, KEY_ENTER, KEY_LEFT, QUIT) },
+    { code = 0, titles = { "A", "[HTTP 404] Not Found", "A" },
+      errors = { false, "[HTTP 404] Not Found\nhttp://bad/", false },
+      requests = { URL_A, "http://bad/", URL_A }, open_max = 1,
+      open_end = 0 } },
+  { "a remote page cannot link to a file",
+    { args = { URL_A }, routes = { [URL_A] = served(
+        doc("A", link("file:///etc/x")), 10) },
+      show = events(KEY_TAB, KEY_ENTER, KEY_ENTER, QUIT) },
+    { code = 0, requests = { URL_A }, titles = { "A", "A" },
+      errors = { false, "html: unsupported URL scheme: file" } } },
+  { "a javascript: link: a notice and no request",
+    { args = { URL_A }, routes = { [URL_A] = served(
+        doc("A", link("javascript:void(0)")), 10) },
+      show = events(KEY_TAB, KEY_ENTER, snap_status(1), QUIT) },
+    { code = 0, requests = { URL_A }, shows = 1,
+      snaps = { " javascript: links are not supported" } } },
+})
+
+-- Anchors: no request, a new history entry, Back inside the page.
+local FRAG = doc("A", link("#sec") .. FILL .. '<p id="sec">target</p>' .. FILL)
+local SPACE = doc("A", link("#a%20b") .. FILL .. '<p id="a b">target</p>'
+  .. FILL)
+nav_cases("navigation_anchors", {
+  { "a #fragment link: no request, the top is the anchor line",
+    { args = { URL_A }, routes = { [URL_A] = served(FRAG, 10) },
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, requests = { URL_A }, tops = { 1, 32 }, sels = { false, 1 },
+      titles = { "A", "A" } } },
+  { "Back inside the page returns to the old top",
+    { args = { URL_A }, routes = { [URL_A] = served(FRAG, 10) },
+      show = events(KEY_TAB, KEY_ENTER, KEY_LEFT, KEY_RIGHT, QUIT) },
+    { code = 0, requests = { URL_A }, tops = { 1, 32, 1, 32 }, shows = 4 } },
+  { "an unknown fragment stays at the top",
+    { args = { URL_A }, routes = { [URL_A] = served(
+        doc("A", link("#none") .. FILL), 10) },
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, requests = { URL_A }, tops = { 1, 1 } } },
+  { "an empty fragment goes to line 1",
+    { args = { URL_A }, routes = { [URL_A] = served(
+        doc("A", FILL .. link("#")), 10) },
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, requests = { URL_A }, tops = { 1, 1 } } },
+  { "a fragment with %20 matches the id \"a b\"",
+    { args = { URL_A }, routes = { [URL_A] = served(SPACE, 10) },
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, requests = { URL_A }, tops = { 1, 32 } } },
+  { "a local page: %20 matches the id \"a b\" too",
+    { args = { "/p/a.html" }, files = { ["/p/a.html"] = SPACE },
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, tops = { 1, 32 } } },
+  { "a link to the same URL is a same-document link",
+    { args = { URL_A }, routes = { [URL_A] = served(
+        doc("A", link(URL_A .. "#sec") .. FILL .. '<p id="sec">t</p>' .. FILL),
+        10) },
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, requests = { URL_A }, tops = { 1, 32 } } },
+  { "the URL fragment of the argument jumps after the first load",
+    { args = { URL_A .. "#sec" }, routes = { [URL_A] = served(FRAG, 10) },
+      show = QUIT },
+    { code = 0, requests = { URL_A }, tops = { 32 }, files = { URL_A } } },
+  { "an unknown fragment of the argument stays at the top",
+    { args = { URL_A .. "#none" }, routes = { [URL_A] = served(FRAG, 10) },
+      show = QUIT },
+    { code = 0, tops = { 1 } } },
+})
+
+-- The base of the links: the first <base href> counts, also outside head and
+-- after a link. The status line shows the resolved target.
+local function base_row(name, body, target)
+  return { name, { args = { HOST .. "dir/a" },
+      routes = { [HOST .. "dir/a"] = served(body, 10),
+        [target] = served(B, 10) },
+      show = events(KEY_TAB, snap_status(1), KEY_ENTER, QUIT) },
+    { code = 0, requests = { HOST .. "dir/a", target }, titles = { "A", "B" },
+      snaps = { " -> " .. target } } }
+end
+nav_cases("navigation_base", {
+  base_row("no base: relative to the page", doc("A", link("p")),
+    HOST .. "dir/p"),
+  base_row("base in head", '<head><title>A</title><base href="http://y.org/z/">'
+    .. "</head>" .. link("p"), "http://y.org/z/p"),
+  base_row("base in body, before the link", doc("A",
+    '<base href="http://y.org/z/">' .. link("p")), "http://y.org/z/p"),
+  base_row("base after the link", doc("A", link("p")
+    .. '<base href="http://y.org/z/">'), "http://y.org/z/p"),
+  base_row("relative base", doc("A", '<base href="/other/">' .. link("p")),
+    HOST .. "other/p"),
+})
+
+-- Local pages: a link to another file, a missing file, a directory and a
+-- file that is not HTML.
+local PNG = "\137PNG\r\n\26\n<p>"
+local LOCAL = { ["/p/a.html"] = doc("A", link("b.html") .. link("none.html")
+    .. link("d") .. link("pic.png")), ["/p/b.html"] = "<p>bbb</p>",
+  ["/p/pic.png"] = PNG }
+local LOCAL_DIRS = { ["/p/d"] = true }
+nav_cases("navigation_local", {
+  { "a local page to another local file",
+    { args = { "/p/a.html" }, files = LOCAL, dirs = LOCAL_DIRS,
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, titles = { "A", false }, files = { "/p/a.html", "/p/b.html" },
+      files_open = 0, errors = { false, false } } },
+  { "a link to a missing file: a popup and the page stays",
+    { args = { "/p/a.html" }, files = LOCAL, dirs = LOCAL_DIRS,
+      show = events(KEY_TAB, KEY_TAB, KEY_ENTER, KEY_ENTER, QUIT) },
+    { code = 0, titles = { "A", "A" }, tops = { 1, 1 }, sels = { false, 2 },
+      errors = { false, "html: file not found: /p/none.html" },
+      files_open = 0 } },
+  { "a link to a directory: a popup",
+    { args = { "/p/a.html" }, files = LOCAL, dirs = LOCAL_DIRS,
+      show = events(KEY_TAB, KEY_TAB, KEY_TAB, KEY_ENTER, KEY_ENTER, QUIT) },
+    { code = 0, errors = { false, "html: not a file: /p/d" } } },
+  { "a link to a .png file opens as text",
+    { args = { "/p/a.html" }, files = LOCAL, dirs = LOCAL_DIRS,
+      show = events(KEY_TAB, KEY_TAB, KEY_TAB, KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, files = { "/p/a.html", "/p/pic.png" }, errors = { false, false },
+      files_open = 0 } },
+  { "a local page links to a remote page",
+    { args = { "/p/a.html" }, files = { ["/p/a.html"] = doc("A",
+        link(URL_B)) }, routes = { [URL_B] = served(B, 10) },
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, requests = { URL_B }, titles = { "A", "B" } } },
+})
+
+-- The go prompt.
+nav_cases("navigation_go", {
+  { "g with a URL loads it and adds an entry",
+    { args = { "/p/a.html" }, files = LOCAL, dirs = LOCAL_DIRS,
+      routes = { [URL_B] = served(B, 10) },
+      show = events(KEY_G, typed(URL_B), KEY_ENTER, KEY_LEFT, QUIT) },
+    { code = 0, requests = { URL_B }, titles = { "A", "B", "A" },
+      open_end = 0 } },
+  { "g with a local path",
+    { args = { "/p/a.html" }, files = LOCAL, dirs = LOCAL_DIRS,
+      show = events(KEY_G, typed("/p/b.html"), KEY_ENTER, QUIT) },
+    { code = 0, files = { "/p/a.html", "/p/b.html" } } },
+  { "g with a bad URL: a popup, and the page stays",
+    { args = { "/p/a.html" }, files = LOCAL, dirs = LOCAL_DIRS,
+      show = events(KEY_G, typed("http://"), KEY_ENTER, KEY_ENTER, QUIT) },
+    { code = 0, titles = { "A", "A" }, shows = 2,
+      errors = { false, "html: invalid URL: http://" } } },
+  { "g with a missing local file: a popup",
+    { args = { "/p/a.html" }, files = LOCAL, dirs = LOCAL_DIRS,
+      show = events(KEY_G, typed("/p/zzz.html"), KEY_ENTER, KEY_ENTER, QUIT) },
+    { code = 0, titles = { "A", "A" },
+      errors = { false, "html: file not found: /p/zzz.html" } } },
+})
+
+-- Abort (z) in the two phases and on the first load.
+local function after_commit(rec)
+  if rec.reads_in_load >= 1 then
+    return KEY_Z
+  end
+end
+nav_cases("navigation_abort", {
+  { "z in phase 1: the page stays",
+    { args = { URL_A }, routes = { [URL_A] = served(A_LINK, 10),
+        [URL_B] = { connect_polls = 1e6 } },
+      ticks = { [2] = { { KEY_Z } } },
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, requests = { URL_A, URL_B }, titles = { "A", "A" },
+      errors = { false, false }, entries = { false, "AAA first" },
+      open_max = 1, open_end = 0, opens = { 0, 0 } } },
+  { "z after the commit: the previous page loads again",
+    { args = { URL_A }, step = 0.3, routes = { [URL_A] = served(A_LINK, 10),
+        [URL_B] = served(BIG, 500) },
+      ticks = { [2] = function() return { after_commit } end },
+      show = events(KEY_TAB, KEY_ENTER, KEY_RIGHT, QUIT) },
+    { code = 0, requests = { URL_A, URL_B, URL_A }, titles = { "A", "A", "A" },
+      shows = 3, open_max = 1, open_end = 0, opens = { 0, 0, 0 } } },
+  { "z on the first load: the [aborted] page, and r reloads it",
+    { args = { URL_A }, routes = { [URL_A] = { connect_polls = 1e6 } },
+      on_request = function(rec, url, routes)
+        if #rec.ctl.requests == 1 then
+          routes[URL_A] = served(A_LINK, 10)
+        end
+      end,
+      ticks = { [1] = { { KEY_Z } } },
+      show = events(KEY_R, QUIT) },
+    { code = 0, requests = { URL_A, URL_A },
+      titles = { "[aborted] " .. URL_A, "A" }, ns = { 0, 2 },
+      errors = { false, false }, open_end = 0 } },
+  { "z on the first load of a page that began: the empty [aborted] page",
+    { args = { URL_A }, step = 0.3, routes = { [URL_A] = served(BIG, 500) },
+      ticks = { [1] = function() return { after_commit } end },
+      show = QUIT },
+    { code = 0, titles = { "[aborted] " .. URL_A }, ns = { 0 },
+      open_end = 0 } },
+  { "Ctrl+C during a navigation load exits with 130",
+    { args = { URL_A }, routes = { [URL_A] = served(A_LINK, 10),
+        [URL_B] = { connect_polls = 1e6 } },
+      ticks = { [2] = { { KEY_CTRL_C } } },
+      show = events(KEY_TAB, KEY_ENTER) },
+    { code = 130, err = { "html: interrupted" }, open_end = 0 } },
+})
+
+-- Quit and exit.
+nav_cases("navigation_exit", {
+  { "a confirmed quit after a navigation popup exits with 0",
+    { args = { URL_A }, routes = { [URL_A] = served(A_LINK, 10),
+        [URL_B] = { connect_error = "refused" } },
+      show = events(KEY_TAB, KEY_ENTER, KEY_ENTER, KEY_Q, KEY_Y) },
+    { code = 0, err = {}, titles = { "A", "A" } } },
+  { "a confirmed quit after an error popup of the first load exits with 0",
+    { args = { URL_A }, routes = { [URL_A] = { connect_error = "refused" } },
+      show = events(KEY_ENTER, KEY_Q, KEY_Y) },
+    { code = 0, err = {}, titles = { "[error] " .. URL_A } } },
+  { "a screen restore failure after a popup is an unexpected error",
+    { args = { URL_A }, restore_error = true,
+      routes = { [URL_A] = { connect_error = "refused" } },
+      show = events(KEY_ENTER, KEY_Q, KEY_Y) },
+    { code = 1, err = { "html: unexpected error: restore boom" } } },
+  { "a restore failure after a quit with no popup",
+    { args = { URL_A }, restore_error = true,
+      routes = { [URL_A] = served(B, 10) }, show = QUIT },
+    { code = 1, err = { "html: unexpected error: restore boom" } } },
+})
+
 return T
