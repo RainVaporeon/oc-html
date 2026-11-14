@@ -155,9 +155,10 @@ Test command for every task: `pwsh tests/docker/test.ps1`.
 **Estimated scope:** Small
 
 ### Checkpoint 2: Parser survives fuzzing
-- [ ] All tests pass.
+- [x] All tests pass.
 - [x] `fuzz 1000` gives zero uncontrolled errors, with three different seeds.
 - [x] Every fuzz failure found has become a unit test.
+- [x] Review items done: fresh-context review and fixes in 0ae63c5 and in the "Fix minor review leftovers before the MVP release" commit.
 
 ## Phase 3: Layout
 

@@ -178,6 +178,23 @@ function T.long_title_is_cut_at_a_character_boundary()
   t.eq(#title % 3, 0)
 end
 
+function T.long_leading_whitespace_in_title_keeps_the_text()
+  local html = t.load_bin("html")({})
+  local input = "<title>" .. string.rep(" ", 5000) .. "Real</title>"
+  for _, size in ipairs({ 1, 7, 4096 }) do
+    local pos = 1
+    local _, title = html.render(function()
+      if pos > #input then
+        return nil
+      end
+      local c = input:sub(pos, pos + size - 1)
+      pos = pos + size
+      return c
+    end, 40)
+    t.eq(title, "Real", "read size " .. size)
+  end
+end
+
 function T.unclosed_title_in_head_ends_at_body()
   local lines, lay = new_run(40, { S("head"), S("title"), "T", S("body"),
     "x" })

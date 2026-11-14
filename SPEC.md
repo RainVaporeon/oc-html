@@ -103,6 +103,7 @@ A release is a fixed copy of the in-game files.
 - Plan: the tracer bullet is `0.0.1a`. Test builds before the MVP are `0.0.x` with `a`. The MVP is `0.1.0a`.
 - `0.0.2a`: peak-memory stats, `--stats-out`, and the first one-file installer.
 - `0.0.3a`: clears cached `html.*` modules (fixes the `lowest_free` crash after an update), `n/a` for missing stats values, and the `trace` stats line. `tools/memprobe.lua` is fetched from `tools/` and is not part of a release.
+- `0.1.0a`: the MVP release. It has the viewer, the quit prompt, `--no-rescale`, `--print`, `--stats` and the exit paths. The in-game checklist is `docs/ingame/mvp.md`.
 - `releases/latest` is a symlink to the newest release folder. It does not resolve on the user's host (it shows as a plain file that holds the version text). It stays for local use. Fetch by version path, for example `releases/0.0.2a/html-install.lua`.
 - Each release folder has `release.tar.gz` with the bin and lib files: the same files as `files.txt`, with the same relative paths.
 - Unpacking a `.tar.gz` in game needs gzip inflate and a tar program. The test machine has no data card, and OpenOS has no tar by default. So in game, fetch `html-install.lua` (from 0.0.2a) or the single files. The tarball is for transfer outside the game.

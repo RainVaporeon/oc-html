@@ -111,6 +111,30 @@ function New-ReleaseInstaller($version, $target) {
   Write-Host "html-install.lua size: $((Get-Item -LiteralPath $installer).Length) bytes"
 }
 
+# Old releases/latest, saved before it is replaced. $latestTouched is set once
+# the replacement starts.
+$script:latestTouched = $false
+$script:oldMode = $null
+$script:oldHash = $null
+$script:oldLinkTarget = $null
+$script:oldFileBytes = $null
+
+# Puts the old releases/latest back in the index and on disk.
+function Restore-Latest {
+  $path = Join-Path $releases 'latest'
+  if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force }
+  git rm --cached -q --ignore-unmatch -- releases/latest 2>$null | Out-Null
+  if ($script:oldHash) {
+    git update-index --add --cacheinfo "$($script:oldMode),$($script:oldHash),releases/latest"
+    if ($LASTEXITCODE -ne 0) { throw 'git update-index failed.' }
+  }
+  if ($script:oldLinkTarget) {
+    New-Item -ItemType SymbolicLink -Path $path -Target $script:oldLinkTarget -ErrorAction Stop | Out-Null
+  } elseif ($null -ne $script:oldFileBytes) {
+    [IO.File]::WriteAllBytes($path, $script:oldFileBytes)
+  }
+}
+
 $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 Set-Location $root
 
@@ -172,8 +196,26 @@ try {
   New-ReleaseInstaller $version $target
 
   $link = Join-Path $releases 'latest'
-  if (Test-Path -LiteralPath $link) { Remove-Item -LiteralPath $link -Recurse -Force }
+  # Remember the old releases/latest, in the index and on disk, so a failure
+  # below can put it back.
+  $entry = git ls-files -s -- releases/latest
+  if ($LASTEXITCODE -ne 0) { throw 'git ls-files failed.' }
+  if ($entry -match '^(\d+) ([0-9a-f]+) \d\t') {
+    $script:oldMode = $Matches[1]
+    $script:oldHash = $Matches[2]
+  }
+  if (Test-Path -LiteralPath $link) {
+    $item = Get-Item -LiteralPath $link -Force
+    if ($item.LinkType) {
+      $script:oldLinkTarget = @($item.Target)[0]
+    } elseif (-not $item.PSIsContainer) {
+      $script:oldFileBytes = [IO.File]::ReadAllBytes($link)
+    }
+    Remove-Item -LiteralPath $link -Recurse -Force
+  }
+  $script:latestTouched = $true
   git rm --cached -q --ignore-unmatch -- releases/latest 2>$null | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'git rm --cached failed for releases/latest.' }
 
   $method = $null
   if ((git config core.symlinks) -eq 'true') {
@@ -188,17 +230,22 @@ try {
     $tmp = [IO.Path]::GetTempFileName()
     try {
       [IO.File]::WriteAllBytes($tmp, $utf8.GetBytes($version))
-      $hash = (git hash-object -w $tmp).Trim()
+      $hash = (git hash-object -w $tmp)
+      if ($LASTEXITCODE -ne 0 -or -not $hash) { throw 'git hash-object failed.' }
+      $hash = $hash.Trim()
     } finally {
       Remove-Item -LiteralPath $tmp -Force
     }
     git update-index --add --cacheinfo "120000,$hash,releases/latest"
-    if ($LASTEXITCODE -ne 0) { Fail 'could not record releases/latest in the git index.' }
+    if ($LASTEXITCODE -ne 0) { throw 'could not record releases/latest in the git index.' }
     $method = 'git index only'
     Write-Host 'note: releases/latest exists in git only. No file-system link was made.'
   }
 } catch {
   $err = $_.Exception.Message
+  if ($script:latestTouched) {
+    try { Restore-Latest } catch { $err += " (could not restore releases/latest: $($_.Exception.Message))" }
+  }
   Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue
   Fail "release failed, releases/$version removed: $err"
 }

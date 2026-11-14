@@ -34,7 +34,7 @@ Tasks with acceptance criteria are in `tasks/todo.md`.
 - [x] Task 5: Entities and UTF-8 validation
 - [x] Task 6: Fuzz generator
 
-### Checkpoint 2: Parser survives fuzzing
+### Checkpoint 2: Parser survives fuzzing — done
 
 ### Phase 3: Layout
 - [x] Task 7: Element handling table

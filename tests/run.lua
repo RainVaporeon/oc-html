@@ -273,6 +273,9 @@ local function build_env()
     }
   end
 
+  -- The real os.clock the runner keeps. Read-only use.
+  test_api.real_clock = real_clock
+
   -- A binary chunk built outside the env, where string.dump exists.
   function test_api.binary_chunk()
     return real_dump(function() return 1 end)

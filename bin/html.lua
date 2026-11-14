@@ -518,7 +518,16 @@ function M.main(argv, deps)
       return EXIT_USAGE
     end
   end
-  local loaded, load_why = load_modules()
+  -- load_modules can fail while it builds its message (for example out of
+  -- memory), so it runs protected and any failure gives one controlled line.
+  local called, loaded, load_why = pcall(load_modules)
+  if not called then
+    local built, line = pcall(function()
+      return "html: cannot load modules: " .. reason(loaded)
+    end)
+    loaded = nil
+    load_why = built and line or "html: cannot load modules"
+  end
   if not loaded then
     deps.err(load_why)
     return EXIT_ERROR
@@ -693,7 +702,8 @@ function M.run_program(argv, get_deps, loaded)
   clear_modules(loaded)
   if not ok then
     if is_controlled(code) then
-      -- A failed module load: one line and exit code 1.
+      -- Prints any controlled "html: " error that reaches this point, in one
+      -- line, and exits with code 1. Today only module load errors do.
       if type(io) == "table" and io.stderr then
         io.stderr:write(code, "\n")
       else

@@ -316,10 +316,17 @@ function M.new(width)
   end
 
   -- Adds text to the title buffer. Stops at TITLE_BUF bytes and cuts the
-  -- piece that crosses the limit at a character boundary.
+  -- piece that crosses the limit at a character boundary. Leading white
+  -- space is dropped and does not count toward the limit.
   local function add_title(value)
     if title_at == 0 or title_len >= 64 or title_bytes >= TITLE_BUF then
       return
+    end
+    if title_bytes == 0 then
+      value = gsub(value, "^[ \t\n\r\f]+", "")
+      if value == "" then
+        return
+      end
     end
     local room = TITLE_BUF - title_bytes
     if #value > room then

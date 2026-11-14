@@ -213,6 +213,40 @@ function T.f7_require_failure_is_controlled()
   t.eq(code, 1, "exit code")
 end
 
+-- Runs main with a loader that raises the given value.
+local function run_with_failing_require(raised)
+  local fresh = t.load_bin("html")({})
+  local real_require = require
+  local err = {}
+  _G.require = function() error(raised, 0) end
+  local ok, code = pcall(fresh.run_program, { "page.html" }, function()
+    return { err = function(l) err[#err + 1] = l end, out = print,
+      home = "/home" }
+  end, {})
+  _G.require = real_require
+  t.ok(ok, "raw error escaped: " .. tostring(code))
+  t.eq(code, 1, "exit code")
+  t.eq(#err, 1, "one line")
+  t.eq(err[1]:sub(1, 6), "html: ")
+  t.ok(not err[1]:find("\n"), "single line")
+  return err[1]
+end
+
+function T.f7b_loader_raising_a_table_gives_one_line()
+  run_with_failing_require({ code = 1 })
+end
+
+function T.f7b_loader_raising_a_failing_tostring_gives_one_line()
+  run_with_failing_require(setmetatable({}, {
+    __tostring = function() error("boom", 0) end,
+  }))
+end
+
+function T.f7b_loader_out_of_memory_gives_one_line()
+  local line = run_with_failing_require("not enough memory")
+  t.ok(line:find("not enough memory", 1, true), line)
+end
+
 function T.f8_raw_interrupted_exits_130()
   local code, rec = run({ "page.html" }, PAGE, {
     view = function() error("interrupted", 0) end,
