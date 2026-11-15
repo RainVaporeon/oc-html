@@ -42,6 +42,10 @@ local TRACE_MAX = 60
 local last_yield = os.clock()
 -- A function that returns true after Ctrl+C, or nil. reset() keeps it.
 local interrupted
+-- A function fn(seconds) that replaces os.sleep in every yield and settle, or
+-- nil for os.sleep. reset() keeps it, because the loader sets it once per
+-- session and tests reset the guard between pages.
+local yield_fn
 -- The lowest freeMemory() reading since the last reset. It includes garbage
 -- that is not collected yet, so it is a lower bound of the real free memory.
 local lowest
@@ -89,7 +93,7 @@ local function trace_add(free, mark)
 end
 
 local function yield()
-  os.sleep(0)
+  (yield_fn or os.sleep)(0)
   last_yield = os.clock()
 end
 
@@ -185,6 +189,13 @@ end
 -- true, tick() raises "html: interrupted". nil removes the check.
 function M.set_interrupt_check(fn)
   interrupted = fn
+end
+
+-- Sets the function fn(seconds) that every guard yield and settle calls in
+-- place of os.sleep. An error raised by fn propagates out of tick(). nil
+-- restores os.sleep. reset() keeps it.
+function M.set_yield(fn)
+  yield_fn = fn
 end
 
 -- The layout calls this when its link or anchor arrays pass a power of

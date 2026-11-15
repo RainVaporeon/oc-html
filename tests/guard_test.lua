@@ -453,6 +453,55 @@ function T.run_past_16384_lines_stops_before_the_doubling()
   t.ok(line > 15000, "stopped at " .. line)
 end
 
+-- Yield hook (spec/guard.md "Yield hook"). Each row runs a scenario with a
+-- recording fn. The result is { fn calls, os.sleep calls, first fn argument }.
+local HOOK = {
+  { "a tick past the interval calls fn(0), not os.sleep", "tick",
+    { 1, 0, 0 } },
+  { "a settle calls fn as often as os.sleep (no GC, 11 yields)", "settle",
+    { 11, 0, 0 } },
+  { "set_yield(nil) restores os.sleep", "restore", { 0, 1, nil } },
+  { "reset keeps the hook", "reset", { 1, 0, 0 } },
+}
+
+t.cases(T, "yield_hook", HOOK, function(scenario)
+  local guard, clock = setup()
+  local calls, first = 0, nil
+  guard.set_yield(function(seconds)
+    calls = calls + 1
+    if calls == 1 then
+      first = seconds
+    end
+  end)
+  if scenario == "tick" then
+    clock.advance(0.3)
+    guard.tick(0)
+  elseif scenario == "settle" then
+    computer.test.model({ live = 1000000, garbage = 600000,
+      yield_gc = false })
+    guard.settled_free()
+  elseif scenario == "restore" then
+    guard.set_yield(nil)
+    clock.advance(0.3)
+    guard.tick(0)
+  else
+    guard.reset()
+    clock.advance(0.3)
+    guard.tick(0)
+  end
+  local sleeps = computer.test.sleeps()
+  guard.set_yield(nil)
+  return { calls, sleeps, first }
+end)
+
+function T.yield_hook_error_propagates_out_of_tick()
+  local guard, clock = setup()
+  guard.set_yield(function() error("html: aborted", 0) end)
+  clock.advance(0.3)
+  t.raises(function() guard.tick(1) end, "^html: aborted$")
+  guard.set_yield(nil)
+end
+
 function T.interrupt_check_raises_controlled_string()
   local guard = setup()
   local flag = false

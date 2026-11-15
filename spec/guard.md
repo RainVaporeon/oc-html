@@ -8,8 +8,15 @@ There are no fixed size caps. The program measures and stops before damage happe
 
 - `guard.tick()` runs once per token, once per text token in layout and once per emitted line (not per byte).
 - It measures time with `os.clock()`, which has sub-millisecond steps (`computer.uptime()` moves in 50 ms steps).
-- It yields with `os.sleep(0)` when more than `YIELD_INTERVAL` (0.25 s of CPU time) has passed since the last yield. This is well below the 5 second OpenOS timeout, and it lets Ctrl+C and `q` respond fast during load (see `spec/loading.md`).
+- It yields with `os.sleep(0)` (or the yield hook below) when more than `YIELD_INTERVAL` (0.25 s of CPU time) has passed since the last yield. This is well below the 5 second OpenOS timeout, and it lets Ctrl+C and `q` respond fast during load (see `spec/loading.md`).
 - `guard.reset()` restarts the yield timer, and the tests use it.
+
+## Yield hook
+
+- `guard.set_yield(fn)` sets `fn(seconds)` in place of `os.sleep` in every guard yield and every settle yield. The default is `os.sleep`. `guard.set_yield(nil)` restores it.
+- A loader that runs as a coroutine uses the hook to yield to the viewer, so no load code calls `os.sleep` (OpenOS `os.sleep` discards events).
+- `guard.reset()` keeps the hook, like the interrupt check. The loader sets it once per session.
+- An error raised by `fn` propagates out of `guard.tick()`, `guard.tick_output()` and `guard.settled_free()`. An abort can stop the render this way.
 
 ## Memory reserve
 
