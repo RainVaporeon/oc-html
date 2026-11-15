@@ -41,7 +41,7 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 - Backspace (code 14, char 8) is Back, but only when no input field has focus. When an input field has focus (forms, later), Backspace deletes a character and is not Back. Forms rely on this rule. Reason: `docs/rationale.md` "Navigation".
 - `g` opens the go prompt (`spec/navigation.md` "Go prompt"). The prompt accepts the space key, so a path with spaces can be typed.
 - `r` and `R` reload the page (`spec/navigation.md` "Reload"). F5 does not reload.
-- `z` aborts a page load (`spec/navigation.md` "Abort").
+- `z` aborts a page load (`spec/navigation.md` "Abort"). During a load, Backspace and Left abort it too, and Right does nothing.
 - `?` shows a key-list popup. It lists the keys of this section and of "Keys". Only Enter closes it.
 - Back, Forward, reload and `g` start a load through the session loop (`spec/navigation.md`).
 
@@ -57,6 +57,7 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 
 - `q` shows the prompt "Quit? (y/n)". `y`, `Y` or Enter quits. Any other key cancels. A `key_up` event does not answer the prompt.
 - Ctrl+C quits at once, without the prompt. It arrives as `key_down` with char 3, then an "interrupted" event from `event.pull` (measured, not an error). The viewer quits on either one.
+- During a load the prompt works the same way, but the keys come from the key listener of the session: `session.listen` installs it, `session.poll` reads its intents and never calls `event.pull`, `session.unlisten` removes it (`spec/loading.md` "Keys during load"). A key that answers the prompt cancels it, also `z`, Backspace and Left. A `key_up` event only updates the Shift state.
 
 ## Error popup
 

@@ -4,6 +4,9 @@
 --   deps.gpu    a GPU component proxy
 --   deps.pull   event.pull: pull(timeout) returns name, ... or nil
 --   deps.term   a table with clear() and setCursor(x, y)
+--   deps.on_key on_key(fn) calls fn(name, char, code) for each key_down and
+--               key_up event and returns a function that stops it. A session
+--               uses it during a load
 
 local unicode = require("unicode")
 
@@ -62,6 +65,8 @@ local CHAR_R, CHAR_UPPER_R, CHAR_G, CHAR_HELP = 114, 82, 103, 63
 
 -- event.pull with a timeout, so the program yields while it waits.
 local IDLE_TIMEOUT = 1
+-- The most intents that wait for a poll.
+local INTENT_MAX = 32
 
 local HINT = "Tab:link Enter:open Bksp:back r:reload ?:keys q:quit"
 local SHORT_HINT = "?:keys q:quit"
@@ -775,12 +780,16 @@ end
 --   draw_lines(lines, count) draws the first screen from lines, which can
 --                            still grow. It reads lines[1] to lines[rows].
 --                            With count 0 it blanks the line rows
---   poll()                   takes the queued events without waiting. Returns
---                            "interrupted", "quit" (the user confirmed the
---                            quit prompt), "abort" (the user pressed z) or
---                            nil. "q" shows the quit prompt and the status
---                            row keeps it until the user answers. Other keys
---                            are dropped
+--   listen()                 starts the key listener (deps.on_key) and drops
+--                            the old intents. A load calls it at its start
+--   unlisten()               stops the listener. close calls it too
+--   poll()                   takes the intents of the listener without
+--                            waiting and never reads events. Returns
+--                            "interrupted" (Ctrl+C), "quit" (the user
+--                            confirmed the quit prompt), "abort" (z, Z,
+--                            Backspace or Left) or nil. "q" shows the quit
+--                            prompt and the status row keeps it until the
+--                            user answers. Other keys are dropped
 --   show(lines, opts)        the interactive loop (see M.run). A quit prompt
 --                            still on screen is answered first
 --   close()                  restores the screen. A second call does nothing
@@ -876,36 +885,81 @@ function M.open(deps, opts)
     end
   end
 
-  function s.poll()
-    if not pull then
-      return nil
+  -- The key listener of a load (see listen). It turns each key into an
+  -- intent: "interrupted" (Ctrl+C), "abort" (z, Backspace, Left), "quit" (q),
+  -- "yes" (y or Enter) or "other". Repeats of "other" in a row count once.
+  local on_key, remove_key = deps.on_key, nil
+  local intents = {}
+
+  local function intent_of(char, code)
+    if char == CHAR_CTRL_C then
+      return "interrupted"
     end
-    while true do
-      local name, _, char, code = pull(0)
-      if name == nil then
-        return nil
-      end
-      base.track(name, char, code)
-      if name == "interrupted"
-          or (name == "key_down" and char == CHAR_CTRL_C) then
+    if char == CHAR_Z or char == CHAR_UPPER_Z or code == CODE_BACKSPACE
+        or char == CHAR_BACKSPACE or code == CODE_LEFT
+        or (char == 0 and code == NUMPAD_LEFT) then
+      return "abort"
+    end
+    if char == CHAR_Q or char == CHAR_UPPER_Q then
+      return "quit"
+    end
+    if char == CHAR_Y or char == CHAR_UPPER_Y or is_enter(char, code) then
+      return "yes"
+    end
+    return "other"
+  end
+
+  local function on_event(name, char, code)
+    base.track(name, char, code)
+    if name ~= "key_down" then
+      return
+    end
+    local intent = intent_of(char, code)
+    local n = #intents
+    if n < INTENT_MAX and not (intent == "other" and intents[n] == intent) then
+      intents[n + 1] = intent
+    end
+  end
+
+  -- Starts the key listener and drops the old intents. A second call restarts
+  -- it. Without deps.on_key nothing listens.
+  function s.listen()
+    s.unlisten()
+    if on_key then
+      remove_key = on_key(on_event)
+    end
+  end
+
+  -- Stops the listener and drops the intents. A second call does nothing.
+  function s.unlisten()
+    local remove = remove_key
+    remove_key = nil
+    intents = {}
+    if remove then
+      remove()
+    end
+  end
+
+  function s.poll()
+    while #intents > 0 do
+      local intent = table.remove(intents, 1)
+      if intent == "interrupted" then
         return "interrupted"
       end
       if prompt then
-        if name == "key_down" then
-          if char == CHAR_Y or char == CHAR_UPPER_Y or is_enter(char, code) then
-            return "quit"
-          end
-          prompt = false
-          base.screen.status(text)
+        if intent == "yes" then
+          return "quit"
         end
-      elseif classify(name, char, code) == "quit" then
+        prompt = false
+        base.screen.status(text)
+      elseif intent == "quit" then
         prompt = true
         base.screen.status(PROMPT)
-      elseif name == "key_down"
-          and (char == CHAR_Z or char == CHAR_UPPER_Z) then
+      elseif intent == "abort" then
         return "abort"
       end
     end
+    return nil
   end
 
   function s.show(lines, o)
@@ -915,6 +969,7 @@ function M.open(deps, opts)
   function s.close()
     if not closed then
       closed = true
+      pcall(s.unlisten)
       restore()
     end
   end

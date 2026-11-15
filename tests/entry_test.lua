@@ -834,34 +834,39 @@ local function framed(o)
   local term = { clear = function() trace("restore") end,
     setCursor = function() end }
 
-  -- The queue: each poll (pull(0) until nil) gets o.ticks[n].
-  local batch, at = nil, 1
+  -- The viewer events.
   local show_events = o.show or { KEY_Q, KEY_Y }
   local show_at = 1
   local function pull(timeout)
-    if timeout ~= 0 then
-      local e = show_events[show_at]
-      show_at = show_at + 1
-      if not e then
-        error("test: no event for the viewer", 0)
+    local e = show_events[show_at]
+    show_at = show_at + 1
+    if not e then
+      error("test: no event for the viewer", 0)
+    end
+    return table.unpack(e)
+  end
+
+  -- The key events of a load: o.ticks[n] goes to the listeners at the nth
+  -- wait or read, as os.sleep gives the events to event.listen listeners.
+  -- A key with no listener installed is lost. The interrupted event goes to
+  -- the interrupt listener.
+  local key_fn, int_fn
+  local function pump()
+    polls = polls + 1
+    for _, e in ipairs((o.ticks or {})[polls] or {}) do
+      if e[1] == "interrupted" then
+        if int_fn then
+          int_fn()
+        end
+      elseif key_fn then
+        key_fn(e[1], e[3], e[4])
       end
-      return table.unpack(e)
     end
-    if not batch then
-      polls = polls + 1
-      batch, at = (o.ticks or {})[polls] or {}, 1
-    end
-    local e = batch[at]
-    at = at + 1
-    if e then
-      return table.unpack(e)
-    end
-    batch = nil
-    return nil
   end
 
   local file, state = fake_file(o.text or PAGE, function(n)
     advance()
+    pump()
     if o.on_read then
       o.on_read(n)
     end
@@ -884,10 +889,22 @@ local function framed(o)
     end,
     width = 50, open = function() return file end,
     traceback = function(msg) return msg .. "\nstack traceback: (fake)" end,
-    clock = os.clock, uptime = computer.uptime, sleep = os.sleep,
+    clock = os.clock, uptime = computer.uptime,
+    sleep = function(seconds)
+      pump()
+      return os.sleep(seconds)
+    end,
     gpu = gpu,
+    on_interrupt = function(fn)
+      int_fn = fn
+      return function() int_fn = nil end
+    end,
     open_screen = function(so)
-      local s = viewer.open({ gpu = gpu, pull = pull, term = term }, so)
+      local s = viewer.open({ gpu = gpu, pull = pull, term = term,
+        on_key = function(fn)
+          key_fn = fn
+          return function() key_fn = nil end
+        end }, so)
       local show = s.show
       s.show = function(lines, opts)
         trace("show")
@@ -912,6 +929,7 @@ local function framed(o)
         local read = h.read
         h.read = function(...)
           advance()
+          pump()
           local s, e = read(...)
           if s == nil and e == nil then
             trace("eof")
@@ -1540,8 +1558,10 @@ local URL_A, URL_B = HOST .. "a", HOST .. "b"
 -- rec.loads are for the function items.
 local function nav(o)
   computer.test.reset()
+  require("event").test.reset()
   local rec = { shows = {}, snaps = {}, err = {}, opens = {}, loads = 0,
-    reads_in_load = 0, load_polls = 0, status = "", files_open = 0 }
+    reads_in_load = 0, load_polls = 0, status = "", files_open = 0,
+    key_listeners = 0 }
   local gpu, gctl = fake_screen.new({ width = 80, height = STATUS_ROW,
     max_width = 80, max_height = STATUS_ROW })
   rec.gctl = gctl
@@ -1559,53 +1579,68 @@ local function nav(o)
       end
     end }
 
-  local items, at, in_show = o.show or {}, 1, false
-  local batch, batch_at
+  local items, at = o.show or {}, 1
   local function pull(timeout)
-    if in_show then
-      while true do
-        local item = items[at]
-        if item == nil then
-          if timeout == 0 then
-            return nil
-          end
-          error("test: no event for the viewer", 0)
+    while true do
+      local item = items[at]
+      if item == nil then
+        if timeout == 0 then
+          return nil
         end
-        if type(item) == "function" then
-          if timeout == 0 then
-            return nil
-          end
-          at = at + 1
-          item(rec)
-        else
-          at = at + 1
-          return table.unpack(item)
+        error("test: no event for the viewer", 0)
+      end
+      if type(item) == "function" then
+        if timeout == 0 then
+          return nil
         end
+        at = at + 1
+        item(rec)
+      else
+        at = at + 1
+        return table.unpack(item)
       end
     end
-    if not batch then
+  end
+
+  -- The key events of a load. o.ticks[load][n] goes to the listeners at the
+  -- nth wait or read of the load, as os.sleep gives the events to
+  -- event.listen listeners. A key with no listener installed is lost. With
+  -- o.event_keys the listeners are the ones of game_deps over the event
+  -- module of the test, and the row queues the keys itself.
+  local pump
+  if o.event_keys then
+    pump = function() end
+  else
+    function pump()
       rec.load_polls = rec.load_polls + 1
       local source = o.ticks and o.ticks[rec.loads]
+      local batch
       if type(source) == "function" then
         batch = source(rec, rec.load_polls)
       else
         batch = source and source[rec.load_polls]
       end
-      batch, batch_at = batch or {}, 1
+      for i = 1, #(batch or {}) do
+        local e = batch[i]
+        if type(e) == "function" then
+          e = e(rec)
+        end
+        if not e then
+          break
+        end
+        if e[1] == "interrupted" then
+          if rec.interrupt then
+            rec.interrupt()
+          end
+        elseif rec.key_fn then
+          rec.key_fn(e[1], e[3], e[4])
+        end
+      end
     end
-    local e = batch[batch_at]
-    batch_at = batch_at + 1
-    if type(e) == "function" then
-      e = e(rec)
-    end
-    if e then
-      return table.unpack(e)
-    end
-    batch = nil
-    return nil
   end
 
   local function on_read()
+    pump()
     if o.step then
       computer.test.advance(o.step)
     end
@@ -1635,14 +1670,19 @@ local function nav(o)
   end
 
   local files, dirs = o.files or {}, o.dirs or {}
-  local deps = {
+  local deps
+  deps = {
     out = function() end,
     err = function(line)
       rec.err[#rec.err + 1] = without_position(line)
     end,
     width = 50,
     traceback = function(msg) return msg .. "\nstack traceback: (fake)" end,
-    clock = os.clock, uptime = computer.uptime, sleep = os.sleep,
+    clock = os.clock, uptime = computer.uptime,
+    sleep = function(seconds)
+      pump()
+      return os.sleep(seconds)
+    end,
     gpu = gpu, internet = card,
     exists = function(p) return files[p] ~= nil or dirs[p] == true end,
     is_dir = function(p) return dirs[p] == true end,
@@ -1665,17 +1705,20 @@ local function nav(o)
       rec.interrupt = fn
       return function() end
     end,
+    on_key = function(fn)
+      rec.key_fn = fn
+      return function() rec.key_fn = nil end
+    end,
     open_screen = function(so)
-      local s = viewer.open({ gpu = gpu, pull = pull, term = term }, so)
+      local s = viewer.open({ gpu = gpu, pull = pull, term = term,
+        on_key = deps.on_key }, so)
       local show = s.show
       s.show = function(lines, opts)
         rec.shows[#rec.shows + 1] = { title = opts.title or false,
           file = opts.file, error = opts.error or false, top = opts.top,
           sel = opts.sel or false, n = #lines, entry = gctl.screen() }
         rec.opens[#rec.opens + 1] = ctl.open
-        in_show = true
         local res = table.pack(pcall(show, lines, opts))
-        in_show = false
         if not res[1] then
           error(res[2], 0)
         end
@@ -1686,6 +1729,32 @@ local function nav(o)
   }
   for k, v in pairs(o.deps or {}) do
     deps[k] = v
+  end
+  if o.event_keys then
+    -- The listeners of game_deps over the event module of the test.
+    local event = require("event")
+    deps.on_interrupt = function(fn)
+      rec.loads = rec.loads + 1
+      rec.load_polls, rec.reads_in_load = 0, 0
+      event.listen("interrupted", fn)
+      return function() event.ignore("interrupted", fn) end
+    end
+    deps.on_key = function(fn)
+      local function down(_, _, char, code)
+        fn("key_down", char, code)
+      end
+      local function up(_, _, char, code)
+        fn("key_up", char, code)
+      end
+      event.listen("key_down", down)
+      event.listen("key_up", up)
+      rec.key_listeners = rec.key_listeners + 1
+      return function()
+        event.ignore("key_down", down)
+        event.ignore("key_up", up)
+        rec.key_listeners = rec.key_listeners - 1
+      end
+    end
   end
   local chunk = t.load_bin("html")({})
   local args = { n = #o.args }
@@ -1702,7 +1771,7 @@ local function observe_nav(rec)
     open_max = rec.ctl.max_open, open_end = rec.ctl.open,
     opens = rec.opens, files_open = rec.files_open, snaps = rec.snaps,
     shows = #rec.shows, titles = {}, files = {}, errors = {}, tops = {},
-    sels = {}, ns = {}, entries = {} }
+    sels = {}, ns = {}, entries = {}, key_listeners = rec.key_listeners }
   for i, s in ipairs(rec.shows) do
     out.titles[i], out.files[i], out.errors[i] = s.title, s.file, s.error
     out.tops[i], out.sels[i], out.ns[i] = s.top, s.sel, s.n
@@ -2043,7 +2112,7 @@ nav_cases("navigation_abort", {
   race_row(6),
   { "z right before the commit: the page stays, no second request for A",
     { args = { URL_A }, routes = { [URL_A] = served(A_LINK, 10),
-        [URL_B] = served(BIG, 500) },
+        [URL_B] = served(BIG, 500, { connect_polls = 1 }) },
       ticks = { [2] = { { KEY_Z } } },
       show = events(KEY_TAB, KEY_ENTER, QUIT) },
     { code = 0, requests = { URL_A, URL_B }, titles = { "A", "A" },
@@ -2140,6 +2209,155 @@ nav_cases("navigation_abort", {
       ticks = { [2] = { { KEY_CTRL_C } } },
       show = events(KEY_TAB, KEY_ENTER) },
     { code = 130, err = { "html: interrupted" }, open_end = 0 } },
+})
+
+-- Keys during a load, caught by the key listener of game_deps. The row queues
+-- the keys in the event module of the test, and os.sleep gives them to the
+-- listeners, as OpenOS does. A key pressed while the load sleeps counts at
+-- once (spec/loading.md "Keys during load").
+local KEY_BKSP = { "key_down", "kbd", 8, 14, "player" }
+local KEY_NUMPAD_LEFT = { "key_down", "kbd", 0, 75, "player" }
+
+local function push(e)
+  require("event").test.push(table.unpack(e))
+end
+
+-- Queues the keys when the request of B starts: the load of B is in connect.
+local function at_connect_of_b(...)
+  local keys = { ... }
+  return function(rec, url)
+    if url == URL_B then
+      for _, e in ipairs(keys) do
+        push(e)
+      end
+    end
+  end
+end
+
+-- Queues the keys at the nth read of the load of B, once.
+local function at_read(n, ...)
+  local keys = { ... }
+  return function(rec)
+    if #rec.ctl.requests == 2 and rec.reads_in_load == n then
+      for _, e in ipairs(keys) do
+        push(e)
+      end
+    end
+  end
+end
+
+-- A page that reads in pieces with an empty read after each, so the body
+-- waits and sleeps between the pieces.
+local function gapped(body, size)
+  return { headers = { ["Content-Type"] = { "text/html" } },
+    body = internet.pieces(body, size, true) }
+end
+
+local STAYS = { code = 0, requests = { URL_A, URL_B },
+  titles = { "A", "A" }, errors = { false, false },
+  entries = { false, "AAA first" }, open_end = 0, key_listeners = 0 }
+local AGAIN = { code = 0, requests = { URL_A, URL_B, URL_A },
+  titles = { "A", "A", "A" }, shows = 3, open_end = 0, key_listeners = 0 }
+
+local function connect_row(name, key)
+  return { name .. " during connect: the page stays",
+    { args = { URL_A }, event_keys = true,
+      routes = { [URL_A] = served(A_LINK, 10),
+        [URL_B] = { connect_polls = 1e6 } },
+      on_request = at_connect_of_b(key),
+      show = events(KEY_TAB, KEY_ENTER, QUIT) }, STAYS }
+end
+local function body_row(name, key)
+  return { name .. " during the body after the commit: the page loads again",
+    { args = { URL_A }, event_keys = true, step = 0.3,
+      routes = { [URL_A] = served(A_LINK, 10), [URL_B] = gapped(BIG, 500) },
+      on_read = at_read(1, key),
+      show = events(KEY_TAB, KEY_ENTER, KEY_RIGHT, QUIT) }, AGAIN }
+end
+
+nav_cases("navigation_load_keys", {
+  connect_row("z", KEY_Z),
+  body_row("z", KEY_Z),
+  connect_row("Backspace", KEY_BKSP),
+  body_row("Backspace", KEY_BKSP),
+  connect_row("Left", KEY_LEFT),
+  body_row("Left", KEY_LEFT),
+  connect_row("NumPad Left", KEY_NUMPAD_LEFT),
+  { "z in connect of the first load: the [aborted] page",
+    { args = { URL_A }, event_keys = true,
+      routes = { [URL_A] = { connect_polls = 1e6 } },
+      on_request = function() push(KEY_Z) end,
+      show = QUIT },
+    { code = 0, titles = { "[aborted] " .. URL_A }, ns = { 0 },
+      open_end = 0, key_listeners = 0 } },
+  { "Right during connect does nothing: the load finishes",
+    { args = { URL_A }, event_keys = true,
+      routes = { [URL_A] = served(A_LINK, 10),
+        [URL_B] = served(B, 10, { connect_polls = 3 }) },
+      on_request = at_connect_of_b(KEY_RIGHT),
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, requests = { URL_A, URL_B }, titles = { "A", "B" },
+      open_end = 0, key_listeners = 0 } },
+  { "Right during the body does nothing: the load finishes",
+    { args = { URL_A }, event_keys = true, step = 0.3,
+      routes = { [URL_A] = served(A_LINK, 10), [URL_B] = gapped(BIG, 500) },
+      on_read = at_read(1, KEY_RIGHT),
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, requests = { URL_A, URL_B }, titles = { "A", "Big" },
+      open_end = 0, key_listeners = 0 } },
+  { "q then y during connect: exit 0",
+    { args = { URL_A }, event_keys = true,
+      routes = { [URL_A] = served(A_LINK, 10),
+        [URL_B] = { connect_polls = 1e6 } },
+      on_request = at_connect_of_b(KEY_Q, KEY_Y),
+      show = events(KEY_TAB, KEY_ENTER) },
+    { code = 0, err = {}, shows = 1, open_end = 0, key_listeners = 0 } },
+  { "q, then y at a later wait: exit 0",
+    { args = { URL_A }, event_keys = true, step = 0.3,
+      routes = { [URL_A] = served(A_LINK, 10), [URL_B] = gapped(BIG, 500) },
+      on_read = function(rec)
+        at_read(1, KEY_Q)(rec)
+        at_read(2, KEY_Y)(rec)
+      end,
+      show = events(KEY_TAB, KEY_ENTER) },
+    { code = 0, err = {}, shows = 1, open_end = 0, key_listeners = 0 } },
+  { "q then n during the body: the load goes on",
+    { args = { URL_A }, event_keys = true, step = 0.3,
+      routes = { [URL_A] = served(A_LINK, 10), [URL_B] = gapped(BIG, 500) },
+      on_read = function(rec)
+        at_read(1, KEY_Q)(rec)
+        at_read(2, KEY_N)(rec)
+      end,
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, requests = { URL_A, URL_B }, titles = { "A", "Big" },
+      open_end = 0, key_listeners = 0 } },
+  { "Ctrl+C (the interrupted event) during connect exits with 130",
+    { args = { URL_A }, event_keys = true,
+      routes = { [URL_A] = served(A_LINK, 10),
+        [URL_B] = { connect_polls = 1e6 } },
+      on_request = at_connect_of_b({ "interrupted" }),
+      show = events(KEY_TAB, KEY_ENTER) },
+    { code = 130, err = { "html: interrupted" }, open_end = 0,
+      key_listeners = 0 } },
+  { "Ctrl+C (key_down char 3) during connect exits with 130",
+    { args = { URL_A }, event_keys = true,
+      routes = { [URL_A] = served(A_LINK, 10),
+        [URL_B] = { connect_polls = 1e6 } },
+      on_request = at_connect_of_b(KEY_CTRL_C),
+      show = events(KEY_TAB, KEY_ENTER) },
+    { code = 130, err = { "html: interrupted" }, open_end = 0,
+      key_listeners = 0 } },
+  { "a fetch error removes the listener",
+    { args = { URL_A }, event_keys = true,
+      routes = { [URL_A] = served(A_LINK, 10),
+        [URL_B] = { connect_error = "refused" } },
+      show = events(KEY_TAB, KEY_ENTER, KEY_ENTER, QUIT) },
+    { code = 0, titles = { "A", "A" }, key_listeners = 0 } },
+  { "a finished load removes the listener",
+    { args = { URL_A }, event_keys = true,
+      routes = { [URL_A] = served(A_LINK, 10), [URL_B] = served(B, 10) },
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, titles = { "A", "B" }, key_listeners = 0 } },
 })
 
 -- Quit and exit.

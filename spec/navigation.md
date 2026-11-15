@@ -23,7 +23,7 @@ Phase 1, open. The program checks and opens the target. The page on screen stays
 - The popup text is the error line, plus `Reload to try again.` for the errors in "Retry line".
 - On the first load of the session no page is on screen. A phase 1 failure there shows the broken page (an empty page with the title `[error] <target>`, the popup and the reload line for the retry errors). The session goes on, and `r` retries the target.
 
-Stop check. When phase 1 succeeds, the program polls the keys once more, with no time gate, and checks the stop flags. A `z` that came during phase 1 (for example while the connect or the response completed) still counts as a phase 1 abort: the handle closes, the commit does not happen, and the page on screen stays (`## Abort`). Ctrl+C and a confirmed quit stop the load in the same way.
+Stop check. When phase 1 succeeds, the program takes the intents of the key listener once more and checks the stop flags. A `z`, Backspace or Left that came during phase 1 (for example while the connect or the response completed) still counts as a phase 1 abort: the handle closes, the commit does not happen, and the page on screen stays (`## Abort`). Ctrl+C and a confirmed quit stop the load in the same way.
 
 Commit. When the stop check passes, the program commits:
 1. It releases the old page: lines, links, anchors and base. No reference to them stays. It also blanks the line rows, so the old page does not look active. The status line keeps the loading text. The first screen of the new page draws when its lines fill it.
@@ -87,17 +87,18 @@ Commit. When the stop check passes, the program commits:
 
 ## Abort
 
-- `z` stops a load at once. It works in phase 1 and after the commit. The handle closes.
-- Abort in phase 1: the page on screen was never released, so it stays. Nothing else changes. A `z` seen up to the stop check before the commit counts as phase 1 (`## Two phases of a load`): the previous page is not fetched again. After the commit the screen is blank, so the abort shows as a load of the previous page.
+- `z`, `Z`, Backspace and Left (also NumPad Left with char 0) stop a load at once. They work in phase 1 and after the commit. The handle closes. Backspace and Left abort a load as `z` does, and they do not go back a second time. Right does nothing during a load.
+- Abort in phase 1: the page on screen was never released, so it stays. Nothing else changes. A `z` (or Backspace or Left) seen up to the stop check before the commit counts as phase 1 (`## Two phases of a load`): the previous page is not fetched again. After the commit the screen is blank, so the abort shows as a load of the previous page.
 - Abort after the commit of a new navigation (a link or a go): the old page is already released. `z` loads the previous history entry again (two phases). The aborted target gets no history entry: `z` drops the entry of the target that was loading. With no previous entry, the entry stays and the empty `[aborted] <target>` page shows.
 - Abort after the commit of a reload, back, forward or of the load of the previous entry: the entry of the page that was loading stays (the current index is unchanged). The old page is already released, so the program shows the empty page with the status `[aborted] <target>`. `r` reloads it.
 - Abort with no previous entry (the first page of the session): the program shows an empty page with the target and the status `[aborted] <target>`. `r` reloads it. This holds also for `z` in phase 1 of the very first load, when no page is on screen: the empty `[aborted] <target>` page shows, and `r` retries.
-- Ctrl+C still exits at once. `q` still asks to quit (`spec/viewer.md` "Quit").
+- Ctrl+C still exits at once. `q` still asks to quit (`spec/viewer.md` "Quit"): the load goes on while the prompt shows. The key listener catches all these keys during the sleeps of the load (`spec/loading.md` "Keys during load").
 
 ## During a load
 
-- The loading screen rules apply to every navigation load: the status phases, `q`, Ctrl+C and no scrolling (`spec/loading.md`). `z` is added.
-- Other keys do nothing during a load.
+- The loading screen rules apply to every navigation load: the status phases, `q`, Ctrl+C and no scrolling (`spec/loading.md`). `z`, Backspace and Left are added: they abort the load (`## Abort`).
+- Each load installs the key listener at its start and removes it at its end, on every exit path. The listener works while the load sleeps.
+- Right and other keys do nothing during a load.
 - At most one connection is open at any time. Each phase 1 failure closes its handle. Each end of a load closes its handle. The card allows 4 open connections (`spec/fetch.md` "Internet card API"), so a leaked handle would break later loads.
 
 ## Retry line

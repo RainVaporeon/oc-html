@@ -918,18 +918,36 @@ end
 
 local WHITE_BG = 0xFFFFFF
 
--- Opens a session on a fake GPU. A function item in events ends one poll,
--- and the viewer takes it at its next blocking pull.
+-- Opens a session on a fake GPU. events is the queue of the viewer's own
+-- pull. hooks is the fake key listener: hooks.fn is the listener while one is
+-- installed, hooks.installs and hooks.removes count the calls.
 local function open_session(events, opts, dims)
   local gpu, ctl = fake_gpu.new(dims or size(80, 10))
   local term = fake_term()
   local pull = queue(events or {}, ctl)
-  local s = viewer.open({ gpu = gpu, pull = pull, term = term }, opts)
-  return s, ctl, term, gpu
+  local hooks = { installs = 0, removes = 0 }
+  local function on_key(fn)
+    hooks.fn = fn
+    hooks.installs = hooks.installs + 1
+    return function()
+      hooks.fn = nil
+      hooks.removes = hooks.removes + 1
+    end
+  end
+  local s = viewer.open({ gpu = gpu, pull = pull, term = term,
+    on_key = on_key }, opts)
+  return s, ctl, term, gpu, hooks
 end
 
--- Ends a poll: the queue gives nil to pull(0) until the viewer pulls.
-local function gap() return function() end end
+-- Gives the key events of a list to the listener, like event.listen does.
+-- Other events never reach it.
+local function feed(hooks, events)
+  for _, e in ipairs(events) do
+    if hooks.fn and (e[1] == "key_down" or e[1] == "key_up") then
+      hooks.fn(e[1], e[3], e[4])
+    end
+  end
+end
 
 -- The text of the status row, without trailing spaces.
 local function status_row(ctl, h)
@@ -991,8 +1009,9 @@ t.cases(T, "session_draw_lines", {
   return { rows = rows, status = status_row(ctl) }
 end)
 
--- poll: "q" shows the quit prompt, y or Enter confirms, other keys cancel,
--- other events and keys are dropped (spec/viewer.md "Quit").
+-- poll: the listener turns keys into intents and poll reads only them. "q"
+-- shows the quit prompt, y or Enter confirms, other keys cancel, other keys
+-- are dropped (spec/viewer.md "Quit", spec/loading.md "Keys during load").
 local PROMPT_TEXT = " Quit? (y/n)"
 
 t.cases(T, "session_poll", {
@@ -1009,7 +1028,8 @@ t.cases(T, "session_poll", {
   { "a key_up does not answer the prompt", { Q, key_up(21, 121) },
     { nil, PROMPT_TEXT } },
   { "Ctrl+C", { CTRL_C }, { "interrupted", "load" } },
-  { "the interrupted event", { INTERRUPTED }, { "interrupted", "load" } },
+  { "the interrupted event never reaches the listener", { INTERRUPTED },
+    { nil, "load" } },
   { "Ctrl+C while the prompt shows", { Q, CTRL_C },
     { "interrupted", PROMPT_TEXT } },
   { "q while the prompt shows cancels it", { Q, Q }, { nil, "load" } },
@@ -1022,47 +1042,139 @@ t.cases(T, "session_poll", {
   { "z does not abort when Ctrl+C comes first", { CTRL_C, key(44, 122) },
     { "interrupted", "load" } },
   { "key_up of z does not abort", { key_up(44, 122) }, { nil, "load" } },
+  { "Backspace by code aborts", { key(14) }, { "abort", "load" } },
+  { "Backspace by char aborts", { key(0, 8) }, { "abort", "load" } },
+  { "Left aborts", { key(203) }, { "abort", "load" } },
+  { "NumPad Left with char 0 aborts", { key(75, 0) }, { "abort", "load" } },
+  { "NumPad 4 (NumLock on) does not abort", { key(75, 52) },
+    { nil, "load" } },
+  { "Right does nothing", { key(205) }, { nil, "load" } },
+  { "NumPad Right does nothing", { key(77, 0) }, { nil, "load" } },
+  { "Backspace while the prompt shows only cancels it", { Q, key(14) },
+    { nil, "load" } },
+  { "Left while the prompt shows only cancels it", { Q, key(203) },
+    { nil, "load" } },
+  { "Right while the prompt shows cancels it", { Q, key(205) },
+    { nil, "load" } },
+  { "Backspace then q: abort first", { key(14), Q }, { "abort", "load" } },
+  { "y and Enter without a prompt are dropped", { Y, ENTER },
+    { nil, "load" } },
 }, function(events)
-  local s, ctl = open_session(events, { status = "load" })
+  local s, ctl, _, _, hooks = open_session({}, { status = "load" })
+  s.listen()
+  feed(hooks, events)
   local result = s.poll()
   return { result, status_row(ctl) }
 end)
 
+-- poll reads the intents only: it never calls pull.
+function T.session_poll_does_not_pull()
+  local gpu = fake_gpu.new(size(80, 10))
+  local hooks = {}
+  local pulls = 0
+  local s = viewer.open({ gpu = gpu, term = fake_term(),
+    pull = function() pulls = pulls + 1 end,
+    on_key = function(fn)
+      hooks.fn = fn
+      return function() end
+    end }, { status = "load" })
+  s.listen()
+  t.eq(s.poll(), nil)
+  hooks.fn("key_down", 122, 44)
+  t.eq(s.poll(), "abort")
+  t.eq(pulls, 0)
+end
+
+function T.session_keys_before_listen_and_after_unlisten_are_ignored()
+  local s, _, _, _, hooks = open_session({}, { status = "load" })
+  t.eq(hooks.fn, nil, "no listener at open")
+  s.listen()
+  t.eq(hooks.installs, 1)
+  feed(hooks, { key(44, 122) })
+  s.unlisten()
+  t.eq(hooks.removes, 1)
+  t.eq(hooks.fn, nil, "the listener is gone")
+  t.eq(s.poll(), nil, "unlisten drops the intents")
+  s.unlisten()
+  t.eq(hooks.removes, 1, "a second unlisten does nothing")
+end
+
+function T.session_listen_drops_the_old_intents()
+  local s, _, _, _, hooks = open_session({}, { status = "load" })
+  s.listen()
+  feed(hooks, { key(44, 122) })
+  s.listen()
+  t.eq(hooks.installs, 2)
+  t.eq(hooks.removes, 1, "the old listener is removed")
+  t.eq(s.poll(), nil)
+end
+
+function T.session_close_removes_the_listener()
+  local s, _, _, _, hooks = open_session({}, { status = "load" })
+  s.listen()
+  s.close()
+  t.eq(hooks.removes, 1)
+  t.eq(hooks.fn, nil)
+end
+
+function T.session_intents_come_in_order()
+  local s, ctl, _, _, hooks = open_session({}, { status = "load" })
+  s.listen()
+  -- q opens the prompt, z cancels it, Ctrl+C is the third.
+  feed(hooks, { Q, key(44, 122), CTRL_C })
+  t.eq(s.poll(), "interrupted")
+  t.eq(status_row(ctl), "load")
+end
+
+function T.session_intents_are_capped()
+  local s, _, _, _, hooks = open_session({}, { status = "load" })
+  s.listen()
+  for i = 1, 500 do
+    feed(hooks, { i % 2 == 0 and Q or N })
+  end
+  feed(hooks, { key(44, 122) })
+  -- The queue is full of q and n, which only open and cancel the prompt.
+  t.eq(s.poll(), nil)
+end
+
 function T.session_status_keeps_the_prompt_until_the_user_answers()
   local gpu, ctl = fake_gpu.new(size(80, 10))
-  local current = {}
-  local function pull()
-    local e = table.remove(current, 1)
-    if e then
-      return table.unpack(e)
-    end
-  end
-  local s = viewer.open({ gpu = gpu, pull = pull, term = fake_term() },
-    { status = "load" })
-  current = { Q }
+  local hooks = {}
+  local s = viewer.open({ gpu = gpu, term = fake_term(),
+    on_key = function(fn)
+      hooks.fn = fn
+      return function() end
+    end }, { status = "load" })
+  s.listen()
+  feed(hooks, { Q })
   t.eq(s.poll(), nil)
   s.status("load 12 KB")
   t.eq(status_row(ctl), PROMPT_TEXT, "the prompt stays")
-  current = { N }
+  feed(hooks, { N })
   t.eq(s.poll(), nil)
   t.eq(status_row(ctl), "load 12 KB", "the newest status comes back")
 end
 
-function T.session_poll_without_pull_returns_nil()
+function T.session_poll_without_on_key_returns_nil()
   local gpu = fake_gpu.new(size(80, 10))
   local s = viewer.open({ gpu = gpu, term = fake_term() }, {})
+  s.listen()
   t.eq(s.poll(), nil)
+  s.unlisten()
 end
 
 -- show answers a quit prompt that is still on screen from the load, then
 -- works as the interactive loop.
 t.cases(T, "session_show_after_a_prompt", {
-  { "y: quits at once", { Q, gap(), Y }, "quit" },
-  { "n: the page stays, then q and y quit", { Q, gap(), N, Q, Y }, "quit" },
-  { "Ctrl+C at the prompt", { Q, gap(), CTRL_C }, "interrupted" },
+  { "y: quits at once", { Y }, "quit" },
+  { "n: the page stays, then q and y quit", { N, Q, Y }, "quit" },
+  { "Ctrl+C at the prompt", { CTRL_C }, "interrupted" },
 }, function(events)
-  local s, ctl = open_session(events, { status = "load" })
+  local s, ctl, _, _, hooks = open_session(events, { status = "load" })
+  s.listen()
+  feed(hooks, { Q })
   s.poll()
+  s.unlisten()
   local result = s.show(make_lines(30), { title = "T" })
   return result
 end)

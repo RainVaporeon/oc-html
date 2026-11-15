@@ -555,7 +555,14 @@ local function load_page(target, ctx)
   if deps.on_interrupt then
     remove = deps.on_interrupt(function() interrupted = true end)
   end
+  -- The key listener of the session feeds the intents. Each check takes them,
+  -- so a key counts at the next guard tick or fetch wait. poll_keys is set
+  -- below.
+  local poll_keys
   local function stop_flag()
+    if ctx.session then
+      poll_keys()
+    end
     return interrupted or quit_requested or abort_requested
   end
   -- The guard loads with the other modules, so a framed run arms it later.
@@ -568,6 +575,9 @@ local function load_page(target, ctx)
   local function stop_listening()
     if guard then
       guard.set_interrupt_check(nil)
+    end
+    if ctx.session then
+      pcall(ctx.session.unlisten)
     end
     if remove then
       local fn = remove
@@ -613,7 +623,7 @@ local function load_page(target, ctx)
 
   -- The loading screen. The status line shows the phase (see
   -- spec/loading.md). The status text is drawn only when it changes, and the
-  -- byte count at most once per LOAD_TICK. The same tick polls the keys.
+  -- byte count at most once per LOAD_TICK. The keys are polled at every tick.
   local session = ctx.session
   local name, total, bytes = arg, nil, 0
   local in_body, phase_text, shown = false, "", nil
@@ -640,7 +650,7 @@ local function load_page(target, ctx)
     in_body, phase_text = false, text
     draw_status()
   end
-  local function poll_keys()
+  function poll_keys()
     local key = session.poll()
     if key == "interrupted" then
       interrupted = true
@@ -651,12 +661,12 @@ local function load_page(target, ctx)
     end
   end
   local function tick_load()
+    poll_keys()
     local t = now()
     if t - last_tick < LOAD_TICK then
       return
     end
     last_tick = t
-    poll_keys()
     draw_status()
   end
   -- The phases of the fetch (see fetch.open).
@@ -758,11 +768,13 @@ local function load_page(target, ctx)
       shown = "Loading " .. name .. "..."
       session.status(shown)
       last_tick = now()
+      session.listen()
       arm_guard()
     elseif framed then
       session = deps.open_screen({ no_rescale = opts.no_rescale,
         status = "Loading " .. name .. "..." })
       ctx.session = session
+      session.listen()
       shown = "Loading " .. name .. "..."
       last_tick = now()
       set_phase("Loading modules...")
@@ -773,11 +785,8 @@ local function load_page(target, ctx)
       arm_guard()
     end
     local source = open_source()
-    -- A key that came while the response opened still counts for phase 1.
-    -- The poll has no LOAD_TICK gate.
-    if session then
-      poll_keys()
-    end
+    -- stop_flag takes the keys that came while the response opened, so they
+    -- still count for phase 1.
     if stop_flag() then
       error(INTERRUPTED, 0)
     end
@@ -1203,6 +1212,9 @@ end
 --                          loading screen (see viewer.open). It takes
 --                          no_rescale and status. Without it, the viewer
 --                          opens after the render, through view
+--                          The viewer session takes deps.on_key from the
+--                          caller (see viewer.open), so a test passes a
+--                          viewer built on its own deps
 --   view(lines, opts)      optional, runs the viewer (see viewer.run).
 --                          Returns "quit", "interrupted" or an action table
 --   on_interrupt(fn)       optional, calls fn on Ctrl+C. Returns a function
@@ -1327,6 +1339,22 @@ function M.game_deps()
   if component.isAvailable("internet") then
     internet = component.internet
   end
+  -- Calls fn(name, char, code) for each key event until the returned function
+  -- runs. The listeners see the keys that os.sleep takes from the queue.
+  local function on_key(fn)
+    local function down(_, _, char, code)
+      fn("key_down", char, code)
+    end
+    local function up(_, _, char, code)
+      fn("key_up", char, code)
+    end
+    event.listen("key_down", down)
+    event.listen("key_up", up)
+    return function()
+      event.ignore("key_down", down)
+      event.ignore("key_up", up)
+    end
+  end
   return {
     out = function(line) io.write(line, "\n") end,
     err = function(line) io.stderr:write(line, "\n") end,
@@ -1351,7 +1379,8 @@ function M.game_deps()
     sleep = os.sleep,
     open_screen = function(opts)
       local viewer = need("html.viewer")
-      return viewer.open({ gpu = gpu, pull = event.pull, term = term }, opts)
+      return viewer.open({ gpu = gpu, pull = event.pull, term = term,
+        on_key = on_key }, opts)
     end,
     view = function(lines, opts)
       local viewer = need("html.viewer")

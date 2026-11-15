@@ -32,14 +32,17 @@ Source: `bin/html.lua`, `lib/html/viewer.lua`, `lib/html/guard.lua`. Index: `SPE
 
 ## Keys during load
 
-- The program checks for key events during load. The check is cheap: an event pull costs about 15 ms in game. It does not pull per token. It pulls about every 0.25 s.
-- A key poll with no time gate runs once before the commit of a later load. A `z` that it finds is a phase 1 abort.
-- `z` during load aborts the load (`spec/navigation.md` "Abort"). On the first load, with no page to go back to, it shows an empty page with the status `[aborted] <target>`.
-- Ctrl+C during load exits at once: `html: interrupted`, exit code 130.
-- `q` during load shows the quit confirmation (`spec/viewer.md` "Quit"). Loading continues while the prompt shows.
+- A key listener catches the keys of the whole load. Reason: `os.sleep` pulls and drops every event during the sleep (OpenOS), and a load sleeps in the fetch waits, the guard yields and the settles, so a poll with `event.pull` would lose most keys. Only `event.listen` listeners see them.
+  - `deps.on_key(fn)` installs the listener and returns a function that removes it. `game_deps` builds it with `event.listen("key_down", ...)`, `event.listen("key_up", ...)` and `event.ignore`. The screen session installs it at the start of each load (`session.listen`) and removes it on every exit path of the load: the end of the input, an abort, a quit, Ctrl+C, a fetch error, a failed commit and an unexpected error.
+  - The listener turns each key into an intent in a small queue (at most 32): abort (`z`, `Z`, Backspace, Left, NumPad Left with char 0), quit (`q`), yes (`y`, `Y`, Enter), other keys, and Ctrl+C. It does not act on them.
+  - `session.poll` reads only that queue. It never calls `event.pull`, so no key is handled twice. The load takes the intents at every fetch wait, every read step, every guard tick and at the stop check before the commit. There is no time gate for the keys. `LOAD_TICK` (0.25 s) limits only the redraw of the byte count on the status line.
+- `z`, Backspace and Left during load abort the load in the same way (`spec/navigation.md` "Abort"). On the first load, with no page to go back to, it shows an empty page with the status `[aborted] <target>`.
+- Right and all other keys do nothing during load.
+- Ctrl+C during load exits at once: `html: interrupted`, exit code 130. It works through the "interrupted" listener (`deps.on_interrupt`) and through a `key_down` with char 3 from the key listener.
+- `q` during load shows the quit confirmation (`spec/viewer.md` "Quit"). Loading continues while the prompt shows. `y`, `Y` or Enter confirms. Any other key cancels, also `z`, Backspace and Left.
   - When the user confirms, loading stops and the program exits with code 0.
   - When the user cancels, loading continues as before.
-- The guard yield interval is 0.25 s of CPU time (see `spec/guard.md` "Yields"), so Ctrl+C and `q` respond fast.
+- The guard yield interval is 0.25 s of CPU time (see `spec/guard.md` "Yields"). Each yield and each fetch wait gives the listener the events, and the next stop check takes them, so keys respond fast.
 
 ## Errors after the frame
 

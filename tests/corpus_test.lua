@@ -217,6 +217,7 @@ local function run_view(doc, framed, size, source)
     deps.open_screen = function()
       return { rows = 24, status = function() end,
         draw_lines = function() end, poll = function() end, show = keep,
+        listen = function() end, unlisten = function() end,
         close = function() end }
     end
   else
