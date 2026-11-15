@@ -14,7 +14,8 @@ There are no fixed size caps. The program measures and stops before damage happe
 ## Yield hook
 
 - `guard.set_yield(fn)` sets `fn(seconds)` in place of `os.sleep` in every guard yield and every settle yield. The default is `os.sleep`. `guard.set_yield(nil)` restores it.
-- A loader that runs as a coroutine uses the hook to yield to the viewer, so no load code calls `os.sleep` (OpenOS `os.sleep` discards events).
+- The loader of the viewer path runs as a coroutine and sets the hook to `function() coroutine.yield("slice") end` when its modules are loaded. Every guard yield and every settle yield then returns to the viewer loop, which pulls events with timeout 0 and resumes the loader. So no load code calls `os.sleep` (OpenOS `os.sleep` discards events). The loader restores the hook (`guard.set_yield(nil)`) on every exit path of the load. Print mode and the no-screen path keep `os.sleep`.
+- The hook runs inside the coroutine. A memory stop (`guard.tick` raises) therefore ends the coroutine, and the session loop treats it as a broken page.
 - `guard.reset()` keeps the hook, like the interrupt check. The loader sets it once per session.
 - An error raised by `fn` propagates out of `guard.tick()`, `guard.tick_output()` and `guard.settled_free()`. An abort can stop the render this way.
 

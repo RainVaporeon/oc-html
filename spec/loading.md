@@ -7,42 +7,52 @@ Source: `bin/html.lua`, `lib/html/viewer.lua`, `lib/html/guard.lua`. Index: `SPE
 1. `bin/html.lua` checks the arguments (see `spec/cli.md`). A usage error stops here.
 2. For a local file, it checks that the file exists and is a file. For a URL, it checks that the URL is valid (`html.url`). A failed check stops here, before the TUI opens.
 3. It opens the TUI at once. It sets the resolution (see `spec/viewer.md` "Resolution"), draws the frame and a status line. This happens before it loads the heavy modules (`tokenizer`, `layout`, `fetch` and their dependencies) and before any network request.
-4. It loads the modules, opens the source and renders. The status line shows the phase.
+4. It loads the modules, opens the source and renders, in a coroutine that the viewer loop drives (see "Keys during load"). The status line shows the phase.
 
-- This section describes the first load of a session. A later load (a link, Back, Forward, go, reload) reuses the same phases and status texts, with two phases and the commit (`spec/navigation.md` "Two phases of a load"). For a later load, the size check comes after the commit, because the old page must be released before the free memory is measured. On the first load there is no old page. At the commit of a later load, after a last stop check (`z` still aborts in phase 1), the line rows go blank and the status line keeps the loading text.
+- This section describes the first load of a session. A later load (a link, Back, Forward, go, reload) reuses the same phases and status texts, with two phases and the commit (`spec/navigation.md` "Two phases of a load"). For a later load, the size check comes after the commit, because the old page must be released before the free memory is measured. On the first load there is no old page. At the commit of a later load, after a last stop check (`z` still aborts in phase 1), the old page leaves and the new, empty live page shows at once (see "Content during load").
 - Print mode and the no-screen path do not open the TUI. They keep the order of `spec/cli.md`.
 - `html.url` (small, no dependencies) loads during the argument checks for a URL or a missing local path. It parses the URL and decides the host rule. An invalid URL (exit code 2) stops here, before the TUI opens, with no draw call. `html.fetch` loads after the TUI opens, only for a URL.
 
 ## Status line during load
 
-- The status line shows the current phase. The text is exact:
+- Before the commit (phase 1), the left part of the status line shows the phase. The text is exact:
   - `Loading <name>...` (the file argument or the URL argument, at once)
   - `Loading modules...`
   - `Connecting to <host>...`
   - `Waiting for response...`
   - `Redirect to <url>...`
-  - `Loading <name>... 12 KB` once bytes arrive, or `Loading <name>... 12 KB of 98 KB` when the size is known (from the file size or `Content-Length`). The count rounds up to whole KB. `<name>` is the final URL after a redirect.
-- Byte count updates are rate-limited to one each 0.25 s. A phase text shows at once. The last update at the end of the input shows the total and is not rate-limited.
+- After the commit the left part shows `<label> - Loading <n> KB of <m> KB`. The label is the title of the page when it is known (with the `[HTTP <code>] ` prefix of an error status), else the name (the file argument, or the final URL after a redirect). The count rounds up to whole KB. The size is known from the file size or from `Content-Length`. Without a size the text is `Loading <n> KB`, and before the first byte it is `Loading`. A long label is cut, and the `Loading ...` part stays whole.
+- The right part is the normal one: the percent and the key hint (`spec/viewer.md` "Status line"). The percent counts the loaded part: `max_top` comes from the lines that are complete so far.
+- A selected link that is visible still shows `-> <target>` in place of the left part.
+- A phase text, and a new title, show at once. A byte count update is rate-limited to one each 0.25 s. The last update at the end of the input shows the total and is not rate-limited.
+- At the end of the load the normal status line returns (title, percent and key hint).
 
 ## Content during load
 
-- The first screen of content draws as soon as enough lines exist to fill it. It does not wait for the end of input.
-- Scrolling during load is not supported in this version. It is planned later.
-- When the load ends, the viewer works as in `spec/viewer.md`.
+- The load runs as a coroutine, and the viewer loop drives it (see "Keys during load"). The page is usable while it loads: the user can scroll, select links and follow them in the part that is already laid out. Reason: `docs/rationale.md` "Interactive loading".
+- The viewer shows a live source: the layout lines, the number of complete lines, the link arrays and the title. A line counts only when it is complete. The lines and the links only grow while the load runs. Only the last link span can still grow, so the viewer reads it again at each pass.
+- The viewer loop draws, at each pass, only the rows inside the visible window whose line became complete since the last pass. It does not redraw the rest. A row whose line is not complete shows blank.
+- `max_top` uses the number of complete lines at the time of the key. PgDn, Down and End past the loaded part stop at the last complete screen. The page never scrolls by itself: the view stays where the user left it (user decision).
+- A link joins the selection list (Tab, Up, Down) when its start line is complete. A link that starts in an unfinished line is not selectable yet.
+- Phase 1 of a later load also runs in the coroutine. The old page stays on screen, scrollable and selectable, while the program connects. At the commit the old page is released and the new, empty live page replaces it at once. There is no blank-screen gap.
+- A broken page (an error after the commit) shows no part of the page, as in "Errors after the frame": at the end of the load the lines so far are dropped and the popup shows over an empty page.
+- When the load ends, the viewer shows the final page with the same `top` and selection. If the user did not scroll or select anything, a URL fragment (or the saved position of Back, Forward and reload) applies as before.
 
 ## Keys during load
 
-- A key listener catches the keys of the whole load. Reason: `os.sleep` pulls and drops every event during the sleep (OpenOS), and a load sleeps in the fetch waits, the guard yields and the settles, so a poll with `event.pull` would lose most keys. Only `event.listen` listeners see them.
-  - `deps.on_key(fn)` installs the listener and returns a function that removes it. `game_deps` builds it with `event.listen("key_down", ...)`, `event.listen("key_up", ...)` and `event.ignore`. The screen session installs it at the start of each load (`session.listen`) and removes it on every exit path of the load: the end of the input, an abort, a quit, Ctrl+C, a fetch error, a failed commit and an unexpected error.
-  - The listener turns each key into an intent in a small queue (at most 32): abort (`z`, `Z`, Backspace, Left, NumPad Left with char 0), quit (`q`), yes (`y`, `Y`, Enter), other keys, and Ctrl+C. It does not act on them.
-  - `session.poll` reads only that queue. It never calls `event.pull`, so no key is handled twice. The load takes the intents at every fetch wait, every read step, every guard tick and at the stop check before the commit. There is no time gate for the keys. `LOAD_TICK` (0.25 s) limits only the redraw of the byte count on the status line.
-- `z`, Backspace and Left during load abort the load in the same way (`spec/navigation.md` "Abort"). On the first load, with no page to go back to, it shows an empty page with the status `[aborted] <target>`.
-- Right and all other keys do nothing during load.
-- Ctrl+C during load exits at once: `html: interrupted`, exit code 130. It works through the "interrupted" listener (`deps.on_interrupt`) and through a `key_down` with char 3 from the key listener.
-- `q` during load shows the quit confirmation (`spec/viewer.md` "Quit"). Loading continues while the prompt shows. `y`, `Y` or Enter confirms. Any other key cancels, also `z`, Backspace and Left.
-  - When the user confirms, loading stops and the program exits with code 0.
-  - When the user cancels, loading continues as before.
-- The guard yield interval is 0.25 s of CPU time (see `spec/guard.md` "Yields"). Each yield and each fetch wait gives the listener the events, and the next stop check takes them, so keys respond fast.
+- The viewer loop owns `event.pull` during a load. Reason: a user coroutine can call the GPU and the card, and `event.pull` and `os.sleep` work there (`docs/probe/FACTS.md` "Coroutines (coprobe v1)"). So the loader never calls `os.sleep`: it yields to the loop, and the loop pulls the events.
+  - When the loader yields `wait` (a fetch wait or an empty read), the loop pulls with the timeout of the wait. When it yields `slice` (CPU work, a guard yield, a phase change, or about 0.1 s of work), the loop pulls with timeout 0.
+  - The loader yields `commit` once, after phase 1 and the stop check. The loop then releases the old page and shows the live page.
+  - Keys are handled at once, from the events that the loop pulls. Only the loop reads events. There is no key listener (`deps.on_key`) and no intent queue: a second source would handle a key twice. The "interrupted" listener (`deps.on_interrupt`) stays: it only sets the stop flag.
+- Scroll keys, Tab, Shift+Tab, Up and Down, and the selection work on the loaded part (`spec/viewer.md`).
+- Enter on a visible link, `g` (after the user confirms the text), Forward and `r` stop the load first: the loop closes the handle, ends the coroutine and aborts the cache writer. Then the action goes to the session loop as when no load runs (`spec/navigation.md` "During a load"). The page that was left is not cached, so Back to it fetches.
+  - `g` opens the prompt, and the load goes on while the prompt is open. The load stops when the user submits a text. Esc or an empty Enter cancels the prompt and the load goes on.
+- `z`, `Z`, Backspace and Left (also NumPad Left with char 0) keep the abort meaning (`spec/navigation.md` "Abort"): the load stops and the program goes back as before.
+- `q` shows the quit prompt (`spec/viewer.md` "Quit") and loading goes on while it shows. `y`, `Y` or Enter confirms: the load stops and the program exits with code 0. Any other key cancels.
+- Ctrl+C during a load exits at once: `html: interrupted`, exit code 130. The loop stops the load first.
+- Every exit of the viewer loop while a load runs stops the load first: the handle closes and the guard hooks are restored.
+- Print mode and the no-screen path have no loop. They keep the synchronous load with `os.sleep` and no keys.
+- The guard yield interval stays 0.25 s of CPU time (`spec/guard.md` "Yields"). The loader also yields when about 0.1 s have passed since its last yield, before a read, so the loop responds fast.
 
 ## Errors after the frame
 

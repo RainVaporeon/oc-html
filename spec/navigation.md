@@ -16,17 +16,17 @@ Status: for roadmap items 2 (link following) and 2a (visible cursor), with reloa
 
 Every load of a navigation (link, back, forward, go, reload, and an abort that loads again) has two phases.
 
-Phase 1, open. The program checks and opens the target. The page on screen stays in memory and on screen.
+Phase 1, open. The program checks and opens the target, in the loader coroutine. The page on screen stays in memory and on screen, and the user can scroll it, select links and use the keys of "During a load" while the program connects.
 - Local target: it checks that the file exists and is a file, and opens it.
 - Remote target: `fetch.open` runs (connect, status mapping, redirects, content type).
 - A failure in phase 1 shows a popup over the current page. Nothing else changes: same page, same `top`, same `sel`, same history. The handle that phase 1 opened is closed.
 - The popup text is the error line, plus `Reload to try again.` for the errors in "Retry line".
 - On the first load of the session no page is on screen. A phase 1 failure there shows the broken page (an empty page with the title `[error] <target>`, the popup and the reload line for the retry errors). The session goes on, and `r` retries the target.
 
-Stop check. When phase 1 succeeds, the program takes the intents of the key listener once more and checks the stop flags. A `z`, Backspace or Left that came during phase 1 (for example while the connect or the response completed) still counts as a phase 1 abort: the handle closes, the commit does not happen, and the page on screen stays (`## Abort`). Ctrl+C and a confirmed quit stop the load in the same way.
+Stop check. When phase 1 succeeds, the loader checks the stop flags once more. The viewer loop handles the keys as they come, so a `z`, Backspace or Left that came during phase 1 has already stopped the load: the handle closed, the commit does not happen, and the page on screen stays (`## Abort`). Ctrl+C and a confirmed quit stop the load in the same way. The loader then yields `commit` to the loop.
 
 Commit. When the stop check passes, the program commits:
-1. It releases the old page: lines, links, anchors and base. No reference to them stays. It also blanks the line rows, so the old page does not look active. The status line keeps the loading text. The first screen of the new page draws when its lines fill it.
+1. It releases the old page: lines, links, anchors and base. No reference to them stays. The viewer loop then shows the new, empty live page in place of the old page (`spec/loading.md` "Content during load"). The status line keeps the loading text. The rows of the new page draw as its lines complete. `top` is 1 and no link is selected.
 2. It settles the memory (`guard.settled_free`) and runs the size check (`spec/guard.md` "Size check before reading") on the new source.
 3. It resets the guard and renders.
 
@@ -88,18 +88,26 @@ Commit. When the stop check passes, the program commits:
 
 ## Abort
 
-- `z`, `Z`, Backspace and Left (also NumPad Left with char 0) stop a load at once. They work in phase 1 and after the commit. The handle closes. Backspace and Left abort a load as `z` does, and they do not go back a second time. Right does nothing during a load.
+- `z`, `Z`, Backspace and Left (also NumPad Left with char 0) stop a load at once. They work in phase 1 and after the commit. The handle closes. Backspace and Left abort a load as `z` does, and they do not go back a second time. Right stops the load and goes forward (`## During a load`).
 - Abort in phase 1: the page on screen was never released, so it stays. Nothing else changes. A `z` (or Backspace or Left) seen up to the stop check before the commit counts as phase 1 (`## Two phases of a load`): the previous page is not fetched again. After the commit the screen is blank, so the abort shows as a load of the previous page.
 - Abort after the commit of a new navigation (a link or a go): the old page is already released. `z` loads the previous history entry again (two phases). The load takes the cached copy of that page when there is one, so it makes no request (`spec/cache.md`). An aborted load is never cached. The aborted target gets no history entry: `z` drops the entry of the target that was loading. With no previous entry, the entry stays and the empty `[aborted] <target>` page shows.
 - Abort after the commit of a reload, back, forward or of the load of the previous entry: the entry of the page that was loading stays (the current index is unchanged). The old page is already released, so the program shows the empty page with the status `[aborted] <target>`. `r` reloads it.
 - Abort with no previous entry (the first page of the session): the program shows an empty page with the target and the status `[aborted] <target>`. `r` reloads it. This holds also for `z` in phase 1 of the very first load, when no page is on screen: the empty `[aborted] <target>` page shows, and `r` retries.
-- Ctrl+C still exits at once. `q` still asks to quit (`spec/viewer.md` "Quit"): the load goes on while the prompt shows. The key listener catches all these keys during the sleeps of the load (`spec/loading.md` "Keys during load").
+- Ctrl+C still exits at once. `q` still asks to quit (`spec/viewer.md` "Quit"): the load goes on while the prompt shows. The viewer loop reads all these keys (`spec/loading.md` "Keys during load").
+- Right is not an abort. During a load it is a Forward action (`## During a load`).
 
 ## During a load
 
-- The loading screen rules apply to every navigation load: the status phases, `q`, Ctrl+C and no scrolling (`spec/loading.md`). `z`, Backspace and Left are added: they abort the load (`## Abort`).
-- Each load installs the key listener at its start and removes it at its end, on every exit path. The listener works while the load sleeps.
-- Right and other keys do nothing during a load.
+- The loading screen rules apply to every navigation load: the status phases, the live page, `q` and Ctrl+C (`spec/loading.md`). `z`, Backspace and Left abort the load (`## Abort`).
+- A load is a coroutine that the viewer loop drives. The loop shows the old page until the commit and the live page after it. Nothing calls `os.sleep` during a load.
+- Scroll keys, Tab, Shift+Tab, Up, Down and the selection work on the page that is shown: the old page in phase 1, the loaded part after the commit.
+- Enter on a visible link, `g` (once a text is submitted), Forward and `r` first stop the load: the loop closes the handle, ends the coroutine and aborts the cache writer. Then the action goes to the session loop as if no load had run. A page left before it finished is not cached, so Back to it fetches.
+  - The page that was left after the commit keeps its history entry (the commit appended it), with the `top` and `sel` of the moment. The loaded lines, links and base serve as the page for the action, so a link of the loaded part resolves against the base of that page.
+  - A stop before the commit leaves the old page as it was. A Back or Forward load that was in phase 1 moves the history index back, as an abort does.
+  - Forward with no page on screen and no commit yet (the first load) does nothing and the load goes on.
+- Enter on a link that is not complete yet is not possible: a link joins the selection when its start line is complete.
+- An action that stops a load behaves as in the rows above for each kind: Back, Left, Backspace and `z` use the rules of `## Abort`.
+- A memory stop during the render (`guard.tick` raises inside the coroutine) ends the coroutine with an error. The session loop makes the broken page and the popup, as for any failure after the commit.
 - At most one connection is open at any time. Each phase 1 failure closes its handle. Each end of a load closes its handle. The card allows 4 open connections (`spec/fetch.md` "Internet card API"), so a leaked handle would break later loads.
 
 ## Retry line

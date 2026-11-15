@@ -329,6 +329,23 @@ Measured in game with `tools/netprobe.lua` v1: one run, a GT:NH server, user age
 
 Not measured yet: large reads (N4 to N6), the 1 MB page (N7), N8, N12 under the default address config, N13 with `--leak`, and an https to https redirect.
 
+## Coroutines (coprobe v1)
+
+Measured in game with `tools/coprobe.lua` v1 on 2026-11-15: Lua 5.3, 2 MiB, one run. Raw data: `datacollection/coprobe.txt`. The probe checks whether a user coroutine can do the load work while the main loop owns the events.
+
+| Fact | Value | Source key |
+|---|---|---|
+| GPU calls inside a user coroutine | work | `coprobe: q1.gpu.ok=true`, `q1.gpu.final_status=dead` |
+| Internet card `request` and `read` inside a user coroutine | work | `coprobe: q1.net.ok=true`, `q1.net.bytes=27` |
+| `os.sleep` and `event.pull` inside a user coroutine | work (a 250 ms sleep, a 100 ms pull) | `coprobe: q2.ok=true`, `q2.sleep_ms=250.0`, `q2.pull_ms=99.999999998545` |
+| A coroutine that yields at every pass, with the main loop calling `event.pull(0.05)` | all 72 key presses reached the main loop and a listener (188 passes) | `coprobe: q3.main_key_down=72`, `q6.listener_key_down=72`, `q3.passes=188`, `q3.status_after=suspended` |
+| Listeners while the coroutine is suspended | fire (a ping event reached its listener) | `coprobe: q6.listener_ping=1` |
+| Kernel GC with a yielding coroutine | still runs: free memory rose from 1750421 to 1876445 after 11 main passes | `coprobe: q4.free_dropped=1750421`, `q4.free_after_passes=1876445`, `q4.gc_seen=true` |
+| An error inside the coroutine | `coroutine.resume` returns `false` and the message | `coprobe: q5.ok=false`, `q5.error=/home/coprobe.lua:199: coprobe boom`, `q5.message_has_boom=true` |
+| Ctrl+C | not pressed in this run | `coprobe: interrupted=false` |
+
+Costs from other probes (used by the design): a card `request` and each `read` cost one tick (50 ms); `event.pull(0)` costs about 15 ms; `os.sleep(0)` about 10 ms; the render takes about 630 KB/s of CPU; a realistic network gives about 3 KB/s.
+
 ## Components (t3)
 
 - Internet card: HTTP and TCP enabled (`extras.internet.*`).

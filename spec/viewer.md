@@ -10,6 +10,7 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 - The key hint is `Tab:link Enter:open Bksp:back r:reload ?:keys q:quit`. When the title would keep fewer than 20 columns (a screen narrower than 81 columns), the hint is `?:keys q:quit`, so the key list stays easy to find. When the title would still keep fewer than 20 columns with that hint (a screen narrower than 42 columns), the hint is `q:quit`.
 - While a link is selected and visible, the left part shows `-> <resolved url or path>` in place of the title. On a short HTTP status page the `[HTTP ...]` prefix stays before it.
 - Status texts: `<scheme>: links are not supported` (`spec/url.md` "Link resolution") and `[aborted] <target>` (`spec/navigation.md` "Abort"). The first one stays until the next key.
+- During a load the left part shows the phase or `<label> - Loading <n> KB of <m> KB` (exact texts and the rate limit: `spec/loading.md` "Status line during load"). The percent and the hint on the right stay. The percent counts the loaded part. A visible selected link still shows `-> <target>`.
 - A long title is cut so the status line fits the screen width. A wide character never goes past the right edge.
 - Control bytes in the title show as spaces.
 
@@ -28,6 +29,7 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
   - On a page with no links, Up and Down scroll one page like PgUp and PgDn.
   - Links on one line are reached with Up and Down in document order: Down goes right, Up goes left.
   - NumPad 8 and 2 with char 0 act as Up and Down (see "Key codes"). Queued Up and Down keys apply in order, with one redraw.
+- During a load the same keys work on the loaded part (see "Live source").
 - Key repeat sends about 28 events per second after 500 ms (measured). Before a redraw, the viewer takes all queued scroll, Up, Down and Tab events in order and applies them, so one redraw covers them.
 
 ## Link keys
@@ -48,9 +50,17 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 - Backspace (code 14, char 8) is Back, but only when no input field has focus. When an input field has focus (forms, later), Backspace deletes a character and is not Back. Forms rely on this rule. Reason: `docs/rationale.md` "Navigation".
 - `g` opens the go prompt (`spec/navigation.md` "Go prompt"). The prompt accepts the space key, so a path with spaces can be typed.
 - `r` and `R` reload the page (`spec/navigation.md` "Reload"). F5 does not reload.
-- `z` aborts a page load (`spec/navigation.md` "Abort"). During a load, Backspace and Left abort it too, and Right does nothing.
+- `z` aborts a page load (`spec/navigation.md` "Abort"). During a load, Backspace and Left abort it too. Right, Enter on a link, `g` and `r` stop the load and act (`spec/navigation.md` "During a load"). `z` does nothing when no load runs.
 - `?` shows a key-list popup. It lists the keys of this section and of "Keys". Only Enter closes it.
 - Back, Forward, reload and `g` start a load through the session loop (`spec/navigation.md`).
+
+## Live source
+
+- `session.show(lines, opts)` can show a page that is still loading. `opts.live` is the live source: `{ lines, count(), links(), title() }`, with `lines` the layout lines (they only grow), `count()` the number of complete lines and `links()` the link table `{ span, href, count }` of the layout. `opts.load` is the driver: `drive()` runs the loader one step and returns `"wait", seconds`, `"slice"`, `"commit"` or `"done"`, and `status()` returns the label and the tail of the status line (`spec/loading.md`). Without `opts.live` the page is the fixed `lines` and `opts.links`. `opts.load` without `opts.live` is phase 1: the old page, or an empty page, with a phase text in the status line.
+- The loop of the viewer drives the loader. Each pass it calls `drive()`, then refreshes the live page, then pulls an event: with the timeout of a `wait`, with 0 after a `slice`, and with 1 s when the load is over. A `commit` or a `done` makes `show` return the action `commit` or `done` (with `top` and `sel`). The session loop then shows the new page or the final page. The nested prompts (quit, go, help) drive the loader too, so loading goes on behind them. A `commit` or a `done` that comes during a prompt waits until the prompt closes.
+- Refresh: `max_top` uses `count()`. The rows whose line became complete since the last pass and that are inside the window draw (the rest of the window is not redrawn). A link joins the selection list when its start line is at most `count()`. The last link span can still grow, so the loop reads it again at each pass, and when the selected link grew, it draws the rows of that link again. The view never scrolls by itself.
+- `z`, Backspace and Left return the action `abort` while a load runs (the load is not over yet). With no load, Backspace and Left are Back.
+- The status line is redrawn only when its text changes. The loader limits the byte count updates (`spec/loading.md`).
 
 ## Visible cursor
 
@@ -64,7 +74,7 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 
 - `q` shows the prompt "Quit? (y/n)". `y`, `Y` or Enter quits. Any other key cancels. A `key_up` event does not answer the prompt.
 - Ctrl+C quits at once, without the prompt. It arrives as `key_down` with char 3, then an "interrupted" event from `event.pull` (measured, not an error). The viewer quits on either one.
-- During a load the prompt works the same way, but the keys come from the key listener of the session: `session.listen` installs it, `session.poll` reads its intents and never calls `event.pull`, `session.unlisten` removes it (`spec/loading.md` "Keys during load"). A key that answers the prompt cancels it, also `z`, Backspace and Left. A `key_up` event only updates the Shift state.
+- During a load the prompt works the same way, and loading goes on while it shows (`spec/loading.md` "Keys during load"). The viewer loop reads the key: it is the only reader of events. A key that answers the prompt cancels it, also `z`, Backspace and Left. A `key_up` event only updates the Shift state.
 
 ## Error popup
 

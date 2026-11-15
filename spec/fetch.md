@@ -29,6 +29,8 @@ Request headers sent: `User-Agent: oc-html/<version>` and `Accept-Encoding: iden
 
 `lib/html/fetch.lua` takes the card proxy, a clock, a sleep function and an interrupt check as parameters. It never calls `require("component")`. `bin/html.lua` passes the real links through `deps` (`deps.internet`, `deps.sleep`), so the tests can pass fakes.
 
+In the viewer path the sleep function is not `os.sleep`. `bin/html.lua` passes `function(seconds) coroutine.yield("wait", seconds) end`, because the loader runs as a coroutine and the viewer loop waits for it with `event.pull` (`spec/loading.md` "Keys during load"). `fetch.lua` calls `links.sleep` only, in the connect wait, the response wait and the empty-read wait. It never calls `os.sleep` itself. Print mode and the no-screen path pass `os.sleep`.
+
 ## Stream into the pipeline
 
 1. `bin/html.lua` parses the URL and opens the request with `fetch.open(url, links)`.
@@ -37,7 +39,7 @@ Request headers sent: `User-Agent: oc-html/<version>` and `Accept-Encoding: iden
 4. `bin/html.lua` passes `response.read` to `M.render(read, width)` in place of the file reader. The tokenizer, the layout and their guards do not change.
 5. `response.read()` calls `handle.read(CHUNK)` (4096 bytes, the same as a file). On `""` it waits (`sleep(WAIT_STEP)`, 0.05 s) and asks again. It returns the first non-empty chunk, or nil at the end. A nil with a reason raises `html: read error: <reason>` (see implementation note 1).
 6. The tokenizer already joins split tags, entities and UTF-8 sequences across chunk ends. So a response chunk can end at any byte.
-7. The TUI opens before the request, and the content draws while the response streams (see `spec/loading.md`). The whole response is read before scrolling starts. The handle closes when the render ends.
+7. The TUI opens before the request, and the content draws while the response streams (see `spec/loading.md`). The user can scroll, select links and follow them in the loaded part while the response streams. The handle closes when the render ends, or when the user leaves the page before that.
 
 The handle closes on every exit path: normal end, controlled error, unexpected error, quit during load and Ctrl+C. `bin/html.lua` closes it in the same cleanup as the local file (`close_file`). A double close is safe.
 
@@ -143,7 +145,7 @@ All errors are controlled. Each is one line with the prefix `html: `, exit code 
 - Without `Content-Length`, there is no check before reading. `guard.tick()` protects the render exactly as for a large local file: it settles and stops with `html: page too large for available memory (rendered N lines before stopping)`.
 - A response that is longer than its `Content-Length` is read to its end. The guard still applies.
 - These rules apply to an error body too.
-- The wait loop sleeps, which also gives the kernel its 10th-resume GC. The guard needs no change.
+- The wait loop sleeps (in the viewer path, it yields and the loop pulls events), which also gives the kernel its 10th-resume GC (measured for the coroutine pattern too: `docs/probe/FACTS.md` "Coroutines (coprobe v1)"). The guard needs no change.
 - The handle closes when the load ends, before scrolling starts. So after the load, the viewer has the same memory as for a local file.
 
 ## Stats
