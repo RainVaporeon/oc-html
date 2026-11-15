@@ -525,26 +525,28 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
   end
 
   -- One Down (dir 1) or Up (dir -1) from the state t (top), s (sel). It
-  -- selects the next link on screen whose start line is below the selected
-  -- one (above it for Up). With no such link it scrolls one page and selects
-  -- the first (last for Up) link that starts in the new rows. At the end of
-  -- the page it does nothing. Returns the new top and selection.
+  -- selects the next (previous) link in document order when its start line
+  -- is on screen, also on the same line as the selection. With no visible
+  -- selection, Down starts at the top and Up at the bottom of the screen.
+  -- With no such link on screen it scrolls one page and selects the first
+  -- (last for Up) link that starts in the new rows. At the end of the page
+  -- it does nothing. Returns the new top and selection.
   local function link_move(t, s, dir)
     local bottom = t + rows - 1
-    local ref
-    if s and visible(t, s) then
-      ref = from_line[s]
-    else
-      ref = dir > 0 and t - 1 or bottom + 1
-    end
     local pick
-    for _, i in ipairs(valid) do
-      local n = from_line[i]
-      if dir > 0 and n > ref and n <= bottom then
-        pick = i
-        break
-      elseif dir < 0 and n < ref and n >= t then
-        pick = i
+    if s and visible(t, s) then
+      local n = valid[pos[s] + dir]
+      if n and visible(t, n) then
+        pick = n
+      end
+    else
+      for _, i in ipairs(valid) do
+        if visible(t, i) then
+          pick = i
+          if dir > 0 then
+            break
+          end
+        end
       end
     end
     if pick then

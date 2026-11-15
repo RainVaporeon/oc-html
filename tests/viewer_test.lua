@@ -2093,6 +2093,70 @@ t.cases(T, "links_up_down", {
   return link_run(input)
 end)
 
+-- Links given as { line, first column, last column } in document order. The
+-- hrefs are l1.html, l2.html and so on.
+local function multi(list)
+  local out = { span = {}, href = {}, count = #list }
+  for i, v in ipairs(list) do
+    out.span[i] = span(v[1], v[2], v[1], v[3])
+    out.href[i] = "l" .. i .. ".html"
+  end
+  return out
+end
+
+local TWO = multi({ { 3, 1, 1 }, { 3, 3, 3 }, { 10, 1, 4 } })
+local THREE = multi({ { 3, 1, 1 }, { 3, 3, 3 }, { 3, 6, 6 }, { 10, 1, 4 } })
+local MIXED = multi({ { 3, 1, 1 }, { 3, 3, 3 }, { 10, 1, 4 }, { 30, 1, 4 },
+  { 30, 6, 7 } })
+
+t.cases(T, "links_up_down_same_line", {
+  { "two on a line: Down goes right",
+    { events = { key(DOWN), key(DOWN) }, links = TWO },
+    sel_row(1, { "3:3-3" }, "-> R:l2.html") },
+  { "two on a line: Up goes left",
+    { events = { key(DOWN), key(DOWN), key(UP) }, links = TWO },
+    sel_row(1, { "3:1-1" }, "-> R:l1.html") },
+  { "two on a line then a lower line: Down leaves the line",
+    { events = { key(DOWN), key(DOWN), key(DOWN) }, links = TWO },
+    sel_row(1, { "10:1-4" }, "-> R:l3.html") },
+  { "Up from the lower line goes to the last link of the line above",
+    { events = { key(DOWN), key(DOWN), key(DOWN), key(UP) }, links = TWO },
+    sel_row(1, { "3:3-3" }, "-> R:l2.html") },
+  { "three on a line: Down reaches the third",
+    { events = { key(DOWN), key(DOWN), key(DOWN) }, links = THREE },
+    sel_row(1, { "3:6-6" }, "-> R:l3.html") },
+  { "three on a line: Up twice from the third reaches the first",
+    { events = { key(DOWN), key(DOWN), key(DOWN), key(UP), key(UP) },
+      links = THREE },
+    sel_row(1, { "3:1-1" }, "-> R:l1.html") },
+  { "three on a line: Up with no selection picks the last on screen",
+    { events = { key(UP) }, links = multi({ { 3, 1, 1 }, { 3, 3, 3 },
+      { 3, 6, 6 } }) },
+    sel_row(1, { "3:6-6" }, "-> R:l3.html") },
+  { "three on a line then one lower: Down past the last scrolls a page, no new link",
+    { events = { key(DOWN), key(DOWN), key(DOWN), key(DOWN), key(DOWN) },
+      links = THREE },
+    sel_row(24, {}, "T") },
+  { "mixed: Down over a line with two links and a lower line",
+    { events = { key(DOWN), key(DOWN), key(DOWN), key(DOWN) },
+      links = MIXED },
+    sel_row(24, { "7:1-4" }, "-> R:l4.html") },
+  { "mixed: Down reaches the second link on a line after the scroll",
+    { events = { key(DOWN), key(DOWN), key(DOWN), key(DOWN), key(DOWN) },
+      links = MIXED },
+    sel_row(24, { "7:6-7" }, "-> R:l5.html") },
+  { "mixed: Up goes back left on the same line",
+    { events = { key(DOWN), key(DOWN), key(DOWN), key(DOWN), key(DOWN),
+      key(UP) }, links = MIXED },
+    sel_row(24, { "7:1-4" }, "-> R:l4.html") },
+  { "mixed: Down at the last link does nothing",
+    { events = { key(END), NOOP2, key(DOWN), key(DOWN), key(DOWN) },
+      links = MIXED },
+    sel_row(77, {}, "T") },
+}, function(input)
+  return link_run(input)
+end)
+
 function T.help_popup_ctrl_c_quits()
   t.eq((run({ lines = make_lines(100), events = { HELP, CTRL_C } })),
     "interrupted")

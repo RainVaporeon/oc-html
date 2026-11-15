@@ -26,7 +26,7 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
   - At the end of the page (`top` is the last top line), Down does nothing when no link is below on screen. It does not wrap. Tab keeps its wrap.
   - Up mirrors Down. It selects the previous link on screen (with no visible selection, the last link whose start line is at or above the bottom row). Else it scrolls one page up and selects the last link whose start line is in the newly shown rows. At the start of the page it does nothing and does not wrap.
   - On a page with no links, Up and Down scroll one page like PgUp and PgDn.
-  - Several links that start on one line are reached with Tab. Up and Down go to another line.
+  - Links on one line are reached with Up and Down in document order: Down goes right, Up goes left.
   - NumPad 8 and 2 with char 0 act as Up and Down (see "Key codes"). Queued Up and Down keys apply in order, with one redraw.
 - Key repeat sends about 28 events per second after 500 ms (measured). Before a redraw, the viewer takes all queued scroll, Up, Down and Tab events in order and applies them, so one redraw covers them.
 
