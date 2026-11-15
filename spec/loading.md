@@ -9,7 +9,7 @@ Source: `bin/html.lua`, `lib/html/viewer.lua`, `lib/html/guard.lua`. Index: `SPE
 3. It opens the TUI at once. It sets the resolution (see `spec/viewer.md` "Resolution"), draws the frame and a status line. This happens before it loads the heavy modules (`tokenizer`, `layout`, `fetch` and their dependencies) and before any network request.
 4. It loads the modules, opens the source and renders. The status line shows the phase.
 
-- This section describes the first load of a session. A later load (a link, Back, Forward, go, reload) reuses the same phases and status texts, with two phases and the commit (`spec/navigation.md` "Two phases of a load"). For a later load, the size check comes after the commit, because the old page must be released before the free memory is measured. On the first load there is no old page.
+- This section describes the first load of a session. A later load (a link, Back, Forward, go, reload) reuses the same phases and status texts, with two phases and the commit (`spec/navigation.md` "Two phases of a load"). For a later load, the size check comes after the commit, because the old page must be released before the free memory is measured. On the first load there is no old page. At the commit of a later load, after a last stop check (`z` still aborts in phase 1), the line rows go blank and the status line keeps the loading text.
 - Print mode and the no-screen path do not open the TUI. They keep the order of `spec/cli.md`.
 - `html.url` (small, no dependencies) loads during the argument checks for a URL or a missing local path. It parses the URL and decides the host rule. An invalid URL (exit code 2) stops here, before the TUI opens, with no draw call. `html.fetch` loads after the TUI opens, only for a URL.
 
@@ -33,6 +33,7 @@ Source: `bin/html.lua`, `lib/html/viewer.lua`, `lib/html/guard.lua`. Index: `SPE
 ## Keys during load
 
 - The program checks for key events during load. The check is cheap: an event pull costs about 15 ms in game. It does not pull per token. It pulls about every 0.25 s.
+- A key poll with no time gate runs once before the commit of a later load. A `z` that it finds is a phase 1 abort.
 - `z` during load aborts the load (`spec/navigation.md` "Abort"). On the first load, with no page to go back to, it shows an empty page with the status `[aborted] <target>`.
 - Ctrl+C during load exits at once: `html: interrupted`, exit code 130.
 - `q` during load shows the quit confirmation (`spec/viewer.md` "Quit"). Loading continues while the prompt shows.

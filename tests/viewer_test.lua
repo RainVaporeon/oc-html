@@ -973,11 +973,15 @@ t.cases(T, "session_draw_lines", {
   { "more lines than rows: only the first rows draw",
     { 30, 30 }, { rows = { "line 1", "line 2", "line 3", "line 4", "line 5",
       "line 6", "line 7", "line 8", "line 9" }, status = "load" } },
+  { "count 0 over a full screen: every row is blank", { 20, 0 },
+    { rows = { "", "", "", "", "", "", "", "", "" }, status = "load" } },
   { "fewer lines than rows: the rest is blank", { 3, 3 },
     { rows = { "line 1", "line 2", "line 3", "", "", "", "", "", "" },
       status = "load" } },
 }, function(input)
   local s, ctl = open_session({}, { status = "load" })
+  -- A full screen first, so a blank row is a redraw.
+  s.draw_lines(make_lines(20), 20)
   local lines = make_lines(input[1])
   s.draw_lines(lines, input[2])
   local rows = {}
@@ -1260,10 +1264,14 @@ t.cases(T, "links_select", {
   { "Tab on the last visible link wraps to the first link",
     { events = { key(END), NOOP2, TAB, TAB } },
     sel_row(3, { "1:1-4" }, "-> R:a3.html") },
-  { "Tab with no selection and no link below does nothing",
+  { "Tab with no selection and no link below wraps to the first link",
     { events = { key(END), NOOP2, TAB }, links = { span = { span(3, 1, 3, 4) },
       href = { "a3.html" }, count = 1 } },
-    sel_row(77, {}, "T") },
+    sel_row(3, { "1:1-4" }, "-> R:a3.html") },
+  { "Tab with no selection and no link below scrolls the least amount",
+    { events = { key(END), NOOP2, TAB }, links = { span = { span(60, 1, 60, 4),
+      span(70, 1, 70, 4) }, href = { "a60.html", "a70.html" }, count = 2 } },
+    sel_row(60, { "1:1-4" }, "-> R:a60.html") },
   { "Tab with no links does nothing",
     { events = { TAB }, links = { span = {}, href = {}, count = 0 } },
     sel_row(1, {}, "T") },
@@ -1285,10 +1293,14 @@ t.cases(T, "links_select", {
   { "Shift+Tab after the wrap goes to the link before the last",
     { events = { TAB, LSHIFT_DOWN, TAB, TAB } },
     sel_row(60, { "1:1-4" }, "-> R:a60.html") },
-  { "Shift+Tab with no link at or before the bottom does nothing",
+  { "Shift+Tab with no link at or before the bottom wraps to the last link",
     { events = { LSHIFT_DOWN, TAB }, links = { span = { span(40, 1, 40, 4) },
       href = { "x" }, count = 1 } },
-    sel_row(1, {}, "T") },
+    sel_row(17, { "24:1-4" }, "-> R:x") },
+  { "Shift+Tab with no link at or above the bottom picks the last link",
+    { events = { LSHIFT_DOWN, TAB }, links = { span = { span(40, 1, 40, 4),
+      span(50, 1, 50, 4) }, href = { "a40.html", "a50.html" }, count = 2 } },
+    sel_row(27, { "24:1-4" }, "-> R:a50.html") },
   { "Shift by the left Shift key tracking",
     { events = { LSHIFT_DOWN, TAB, key_up(42, 0), TAB } },
     sel_row(7, { "24:1-4" }, "-> R:a30.html") },

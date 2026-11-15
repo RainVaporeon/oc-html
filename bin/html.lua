@@ -640,12 +640,7 @@ local function load_page(target, ctx)
     in_body, phase_text = false, text
     draw_status()
   end
-  local function tick_load()
-    local t = now()
-    if t - last_tick < LOAD_TICK then
-      return
-    end
-    last_tick = t
+  local function poll_keys()
     local key = session.poll()
     if key == "interrupted" then
       interrupted = true
@@ -654,6 +649,14 @@ local function load_page(target, ctx)
     elseif key == "quit" then
       quit_requested = true
     end
+  end
+  local function tick_load()
+    local t = now()
+    if t - last_tick < LOAD_TICK then
+      return
+    end
+    last_tick = t
+    poll_keys()
     draw_status()
   end
   -- The phases of the fetch (see fetch.open).
@@ -770,11 +773,23 @@ local function load_page(target, ctx)
       arm_guard()
     end
     local source = open_source()
+    -- A key that came while the response opened still counts for phase 1.
+    -- The poll has no LOAD_TICK gate.
+    if session then
+      poll_keys()
+    end
+    if stop_flag() then
+      error(INTERRUPTED, 0)
+    end
     -- The commit: phase 1 is over. The caller releases the old page here,
-    -- before the size check measures the free memory.
+    -- before the size check measures the free memory. The old page leaves the
+    -- screen, and the status line keeps the loading text.
     committed = true
     if ctx.on_commit then
       ctx.on_commit()
+    end
+    if session then
+      session.draw_lines({}, 0)
     end
     active = source
     in_body = true

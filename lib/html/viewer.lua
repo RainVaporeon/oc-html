@@ -195,9 +195,9 @@ local function wrap(text, width)
     part = part:gsub("%c", " ")
     while wlen(part) > width do
       local head = fit(part, width)
-      local cut = head:match("^(.*[^ ]) ")
-      if cut then
-        head = cut
+      local trimmed = head:match("^(.*[^ ]) ")
+      if trimmed then
+        head = trimmed
       elseif head == "" then
         head = usub(part, 1, 1)
       end
@@ -495,6 +495,8 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
           break
         end
       end
+      -- No link at or below the top: wrap to the first link.
+      pick = pick or valid[1]
     else
       for k = #valid, 1, -1 do
         if from_line[valid[k]] <= t + rows - 1 then
@@ -502,6 +504,8 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
           break
         end
       end
+      -- No link at or above the bottom: wrap to the last link.
+      pick = pick or valid[#valid]
     end
     if not pick then
       return t, s
@@ -769,7 +773,8 @@ end
 --   rows                     the number of line rows (the height minus 1)
 --   status(text)             redraws the status row only
 --   draw_lines(lines, count) draws the first screen from lines, which can
---                            still grow. It reads lines[1] to lines[rows]
+--                            still grow. It reads lines[1] to lines[rows].
+--                            With count 0 it blanks the line rows
 --   poll()                   takes the queued events without waiting. Returns
 --                            "interrupted", "quit" (the user confirmed the
 --                            quit prompt), "abort" (the user pressed z) or

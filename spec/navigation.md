@@ -23,8 +23,10 @@ Phase 1, open. The program checks and opens the target. The page on screen stays
 - The popup text is the error line, plus `Reload to try again.` for the errors in "Retry line".
 - On the first load of the session no page is on screen. A phase 1 failure there shows the broken page (an empty page with the title `[error] <target>`, the popup and the reload line for the retry errors). The session goes on, and `r` retries the target.
 
-Commit. When phase 1 succeeds, the program commits:
-1. It releases the old page: lines, links, anchors and base. No reference to them stays.
+Stop check. When phase 1 succeeds, the program polls the keys once more, with no time gate, and checks the stop flags. A `z` that came during phase 1 (for example while the connect or the response completed) still counts as a phase 1 abort: the handle closes, the commit does not happen, and the page on screen stays (`## Abort`). Ctrl+C and a confirmed quit stop the load in the same way.
+
+Commit. When the stop check passes, the program commits:
+1. It releases the old page: lines, links, anchors and base. No reference to them stays. It also blanks the line rows, so the old page does not look active. The status line keeps the loading text. The first screen of the new page draws when its lines fill it.
 2. It settles the memory (`guard.settled_free`) and runs the size check (`spec/guard.md` "Size check before reading") on the new source.
 3. It resets the guard and renders.
 
@@ -86,7 +88,7 @@ Commit. When phase 1 succeeds, the program commits:
 ## Abort
 
 - `z` stops a load at once. It works in phase 1 and after the commit. The handle closes.
-- Abort in phase 1: the page on screen was never released, so it stays. Nothing else changes.
+- Abort in phase 1: the page on screen was never released, so it stays. Nothing else changes. A `z` seen up to the stop check before the commit counts as phase 1 (`## Two phases of a load`): the previous page is not fetched again. After the commit the screen is blank, so the abort shows as a load of the previous page.
 - Abort after the commit of a new navigation (a link or a go): the old page is already released. `z` loads the previous history entry again (two phases). The aborted target gets no history entry: `z` drops the entry of the target that was loading. With no previous entry, the entry stays and the empty `[aborted] <target>` page shows.
 - Abort after the commit of a reload, back, forward or of the load of the previous entry: the entry of the page that was loading stays (the current index is unchanged). The old page is already released, so the program shows the empty page with the status `[aborted] <target>`. `r` reloads it.
 - Abort with no previous entry (the first page of the session): the program shows an empty page with the target and the status `[aborted] <target>`. `r` reloads it. This holds also for `z` in phase 1 of the very first load, when no page is on screen: the empty `[aborted] <target>` page shows, and `r` retries.

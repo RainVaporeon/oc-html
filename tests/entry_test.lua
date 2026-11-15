@@ -1211,7 +1211,7 @@ framed_cases("loading_quit_prompt", {
   { "q then y: loading stops, exit 0, no error line",
     { text = BIG, step = 0.3, ticks = { { KEY_Q }, { KEY_Y } } },
     { code = 0, err = {}, marks = { "restore" }, shown = false,
-      reads = 3 } },
+      reads = 2 } },
   { "q then Enter: loading stops",
     { text = BIG, step = 0.3, ticks = { { KEY_Q }, { KEY_ENTER } } },
     { code = 0, err = {}, marks = { "restore" }, shown = false } },
@@ -2010,7 +2010,52 @@ local function after_commit(rec)
     return KEY_Z
   end
 end
+-- z at the first phase 1 poll, while the connect still waits: the stop check
+-- before the commit sees it, however late the response comes.
+local function z_first_poll(rec, n)
+  if n == 1 then
+    return { KEY_Z }
+  end
+  return {}
+end
+-- Takes the first row and the status row at the first read of the load of B,
+-- before its first screen draws.
+local function snap_screen(rec)
+  if #rec.ctl.requests == 2 and not rec.snapped then
+    rec.snapped = true
+    rec.snaps[1] = (rec.gctl.row(1):gsub("%s+$", ""))
+    rec.snaps[2] = rec.status
+  end
+end
+local function race_row(polls)
+  return { "z in phase 1 with connect_polls " .. polls
+      .. ": the page stays, no second request for A",
+    { args = { URL_A }, routes = { [URL_A] = served(A_LINK, 10),
+        [URL_B] = served(BIG, 500, { connect_polls = polls }) },
+      ticks = { [2] = z_first_poll },
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, requests = { URL_A, URL_B }, titles = { "A", "A" },
+      errors = { false, false }, entries = { false, "AAA first" },
+      open_end = 0 } }
+end
 nav_cases("navigation_abort", {
+  race_row(1), race_row(2), race_row(3), race_row(4), race_row(5),
+  race_row(6),
+  { "z right before the commit: the page stays, no second request for A",
+    { args = { URL_A }, routes = { [URL_A] = served(A_LINK, 10),
+        [URL_B] = served(BIG, 500) },
+      ticks = { [2] = { { KEY_Z } } },
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, requests = { URL_A, URL_B }, titles = { "A", "A" },
+      errors = { false, false }, entries = { false, "AAA first" },
+      open_end = 0 } },
+  { "the commit blanks the line rows, the status keeps the loading text",
+    { args = { URL_A }, step = 0.3, routes = { [URL_A] = served(A_LINK, 10),
+        [URL_B] = served(BIG, 500) },
+      on_read = snap_screen,
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, requests = { URL_A, URL_B }, titles = { "A", "Big" },
+      snaps = { "", "Loading " .. URL_B .. "..." } } },
   { "z in phase 1: the page stays",
     { args = { URL_A }, routes = { [URL_A] = served(A_LINK, 10),
         [URL_B] = { connect_polls = 1e6 } },

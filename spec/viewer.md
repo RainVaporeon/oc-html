@@ -28,10 +28,10 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 - Tab selects the next link. Shift+Tab selects the previous link. Shift comes from `keyboard.isShiftDown`, given to the viewer as a dep. When the dep is missing, the viewer tracks `key_down` and `key_up` of the codes 42 and 54. A Shift held before the program starts is not seen by this fallback. This is accepted, because the main path asks `keyboard.isShiftDown`.
 - Enter follows the selected link, only when the link is visible.
 - Selection:
-  - Tab with no selection, or with the selection off screen, picks the first link whose start line is at or after `top`. When no such link is visible, it picks the next link below and scrolls to it.
+  - Tab with no selection, or with the selection off screen, picks the first link whose start line is at or after `top`. When no such link is visible, it picks the next link below and scrolls to it. When no link starts at or below `top`, it wraps to the first link of the page and scrolls the smallest amount that shows it.
   - Tab with a selection picks the next link. When that link is off screen, the viewer scrolls the smallest amount that shows its start line.
-  - Shift+Tab mirrors these rules, upward.
-  - The order of links wraps. Tab on the last link selects the first link. Shift+Tab on the first link selects the last link. The scroll rule is the same: the smallest scroll that shows the start line of the target. With one link, the selection stays. With no link, nothing happens. Wrapping applies only when a selection is visible; with no visible selection, the rules above apply and no link means nothing happens. "Link" means any entry the user can select. Entries of other kinds (input fields) will join the same order.
+  - Shift+Tab mirrors these rules, upward. With no selection and no link at or above the bottom row, it wraps to the last link of the page and scrolls the smallest amount that shows it.
+  - The order of links wraps. Tab on the last link selects the first link. Shift+Tab on the first link selects the last link. The scroll rule is the same: the smallest scroll that shows the start line of the target. With one link, the selection stays. With no link, nothing happens. With no visible selection, the rules above apply, including the wrap to the first or last link. With no link, nothing happens. "Link" means any entry the user can select. Entries of other kinds (input fields) will join the same order.
   - Scrolling keeps the selection. Enter acts only when the selected link is visible.
 - After a popup or a prompt closes on Enter, Enter is ignored until a `key_up` for code 28. A held Enter then cannot follow a link.
 
