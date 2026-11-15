@@ -15,13 +15,20 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 
 ## Keys
 
-- Up/Down one line, PgUp/PgDn one screen, `q` to quit. The keys for links and navigation follow below ("Link keys", "Navigation keys").
+- PgUp/PgDn one screen (h-2 lines), Home/End the first and the last screen, Up/Down between links (see "Link keys"), `q` to quit. The keys for links and navigation follow below ("Link keys", "Navigation keys").
 - Home shows line 1 at the top. End shows the last line on the last row above the status line.
 - Scrolling stops at the start and at the end. Up at the start and Down at the end do nothing. A page that fits on the screen does not scroll.
 - Key codes. The standard codes 199 (Home), 200 (Up), 201 (PgUp), 207 (End), 208 (Down) and 209 (PgDn) are always accepted. The NumPad codes 71 (Home), 72 (Up), 73 (PgUp), 79 (End), 80 (Down) and 81 (PgDn) are accepted only when the `key_down` char is 0. A NumPad digit (NumLock on, for example code 73 with char '9') never acts as a navigation key. Measurements behind the viewer rules: `docs/rationale.md` "Design: Viewer".
 - Other keys and other events (for example `touch`) are ignored.
-- Up and Down do not jump between links. They only scroll.
-- Key repeat sends about 28 events per second after 500 ms (measured). Before a redraw, the viewer takes all queued scroll events and adds them up, so one redraw covers them.
+- Up and Down move between links, in the style of `links` and `lynx`. They never scroll one line. There is no one-line scroll key.
+  - Down selects the next link whose start line is below the start line of the selected link and is on screen. When no link is selected, or the selection is off screen, it selects the first link whose start line is at or below `top` and on screen. The page does not scroll.
+  - When no such link is on screen, Down scrolls one page down (the same step as PgDn, h-2 lines), then selects the first link whose start line is in the newly shown rows. When there is none, the selection stays as it was.
+  - At the end of the page (`top` is the last top line), Down does nothing when no link is below on screen. It does not wrap. Tab keeps its wrap.
+  - Up mirrors Down. It selects the previous link on screen (with no visible selection, the last link whose start line is at or above the bottom row). Else it scrolls one page up and selects the last link whose start line is in the newly shown rows. At the start of the page it does nothing and does not wrap.
+  - On a page with no links, Up and Down scroll one page like PgUp and PgDn.
+  - Several links that start on one line are reached with Tab. Up and Down go to another line.
+  - NumPad 8 and 2 with char 0 act as Up and Down (see "Key codes"). Queued Up and Down keys apply in order, with one redraw.
+- Key repeat sends about 28 events per second after 500 ms (measured). Before a redraw, the viewer takes all queued scroll, Up, Down and Tab events in order and applies them, so one redraw covers them.
 
 ## Link keys
 

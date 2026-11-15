@@ -84,7 +84,8 @@ local HELP_TEXT = table.concat({
   "Right: forward",
   "r: reload",
   "g: go to a URL or a file",
-  "Up, Down, PgUp, PgDn, Home, End: scroll",
+  "Up, Down: move between links",
+  "PgUp, PgDn, Home, End: scroll",
   "q: quit",
   "?: this list",
 }, "\n")
@@ -523,6 +524,55 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
     return clamp_top(t), pick
   end
 
+  -- One Down (dir 1) or Up (dir -1) from the state t (top), s (sel). It
+  -- selects the next link on screen whose start line is below the selected
+  -- one (above it for Up). With no such link it scrolls one page and selects
+  -- the first (last for Up) link that starts in the new rows. At the end of
+  -- the page it does nothing. Returns the new top and selection.
+  local function link_move(t, s, dir)
+    local bottom = t + rows - 1
+    local ref
+    if s and visible(t, s) then
+      ref = from_line[s]
+    else
+      ref = dir > 0 and t - 1 or bottom + 1
+    end
+    local pick
+    for _, i in ipairs(valid) do
+      local n = from_line[i]
+      if dir > 0 and n > ref and n <= bottom then
+        pick = i
+        break
+      elseif dir < 0 and n < ref and n >= t then
+        pick = i
+      end
+    end
+    if pick then
+      return t, pick
+    end
+    local nt = clamp_top(t + dir * page)
+    if nt == t then
+      return t, s
+    end
+    -- The rows that the scroll shows.
+    local lo, hi = nt, nt + rows - 1
+    if dir > 0 then
+      lo = bottom + 1
+    else
+      hi = t - 1
+    end
+    for _, i in ipairs(valid) do
+      local n = from_line[i]
+      if n >= lo and n <= hi then
+        pick = i
+        if dir > 0 then
+          break
+        end
+      end
+    end
+    return nt, pick or s
+  end
+
   -- A scroll of 1 to rows - 1 lines moves the rest with copy. copy leaves
   -- the source rows as they were, so the exposed rows are always drawn.
   local function scroll_to(target)
@@ -713,7 +763,10 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
       -- Tab and Shift+Tab are moves too.
       local target, target_sel = top, sel
       local function take(a)
-        if SCROLL_KEYS[a] then
+        if a == "up" or a == "down" then
+          target, target_sel = link_move(target, target_sel,
+            a == "down" and 1 or -1)
+        elseif SCROLL_KEYS[a] then
           target = move(target, a)
         else
           target, target_sel = step(target, target_sel,

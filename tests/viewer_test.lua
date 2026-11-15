@@ -126,15 +126,16 @@ for _ = 1, 30 do
 end
 
 local QUEUED_DOWNS = {}
-for _ = 1, 20 do
+for _ = 1, 5 do
   QUEUED_DOWNS[#QUEUED_DOWNS + 1] = key(DOWN)
   QUEUED_DOWNS[#QUEUED_DOWNS + 1] = key_up(DOWN)
 end
 
 local KEYS = {
-  keys_row("Down moves one line", 100, { key(DOWN) }, { 2, 25 }),
-  keys_row("Up moves one line back", 100,
-    { key(DOWN), key(DOWN), key(UP) }, { 2, 25 }),
+  keys_row("Down scrolls a page when the page has no links", 100,
+    { key(DOWN) }, { 24, 47 }),
+  keys_row("Up scrolls a page back when the page has no links", 100,
+    { key(DOWN), key(DOWN), key(UP) }, { 24, 47 }),
   keys_row("PgDn moves h-2 lines", 100, { key(PGDN) }, { 24, 47 }),
   keys_row("PgUp moves h-2 lines back", 100,
     { key(PGDN), key(PGDN), key(PGUP) }, { 24, 47 }),
@@ -148,8 +149,8 @@ local KEYS = {
   keys_row("Up at the start does nothing", 100, { key(UP) }, { 1, 24 }),
   keys_row("PgUp at the start does nothing", 100, { key(PGUP) }, { 1, 24 }),
   keys_row("Home at the start does nothing", 100, { key(HOME) }, { 1, 24 }),
-  keys_row("PgUp near the start stops at line 1", 100,
-    { key(DOWN), key(DOWN), key(PGUP) }, { 1, 24 }),
+  keys_row("PgUp near the start stops at line 1", 30,
+    { key(END), key(PGUP) }, { 1, 24 }),
   keys_row("Down at the end does nothing", 100, { key(END), key(DOWN) },
     { 77, 100 }),
   keys_row("PgDn past the end stops at the end", 100,
@@ -162,9 +163,9 @@ local KEYS = {
     { key(DOWN), key(END) }, { 1, 24 }),
   keys_row("a page one line over a screen scrolls one line", 25,
     { key(END) }, { 2, 25 }),
-  keys_row("NumPad Down with char 0", 100, { key(NP_DOWN) }, { 2, 25 }),
+  keys_row("NumPad Down with char 0", 100, { key(NP_DOWN) }, { 24, 47 }),
   keys_row("NumPad Up with char 0", 100,
-    { key(NP_DOWN), key(NP_DOWN), key(NP_UP) }, { 2, 25 }),
+    { key(NP_DOWN), key(NP_DOWN), key(NP_UP) }, { 24, 47 }),
   keys_row("NumPad PgDn with char 0", 100, { key(NP_PGDN) }, { 24, 47 }),
   keys_row("NumPad PgUp with char 0", 100,
     { key(NP_PGDN), key(NP_PGDN), key(NP_PGUP) }, { 24, 47 }),
@@ -181,10 +182,10 @@ local KEYS = {
   keys_row("NumPad 7 is not Home", 100, { key(END), key(NP_HOME, 55) },
     { 77, 100 }),
   keys_row("other keys and events are ignored", 100,
-    { key(30, 97), TOUCH, key_up(DOWN), key(DOWN) }, { 2, 25 }),
-  keys_row("queued Down events add up", 200, QUEUED_DOWNS, { 21, 44 }),
+    { key(30, 97), TOUCH, key_up(DOWN), key(DOWN) }, { 24, 47 }),
+  keys_row("queued Down events add up", 200, QUEUED_DOWNS, { 116, 139 }),
   keys_row("queued mixed keys add up", 100,
-    { key(DOWN), key(DOWN), key(UP), key(PGDN) }, { 25, 48 }),
+    { key(DOWN), key(DOWN), key(UP), key(PGDN) }, { 47, 70 }),
 }
 
 t.cases(T, "keys", KEYS, function(input)
@@ -308,12 +309,12 @@ local STATUS = {
   status_row("0 percent at the top", { opts = { title = "T" }, n = 124 },
     "T", 0, HINT),
   status_row("50 percent in the middle",
-    { opts = { title = "T" }, n = 124, events = downs(50) }, "T", 50, HINT),
+    { opts = { title = "T" }, n = 70, events = downs(1) }, "T", 50, HINT),
   status_row("100 percent at the end",
     { opts = { title = "T" }, n = 124, events = { key(END) } }, "T", 100,
     HINT),
   status_row("percent rounds down",
-    { opts = { title = "T" }, n = 31, events = downs(3) }, "T", 42, HINT),
+    { opts = { title = "T" }, n = 78, events = downs(1) }, "T", 42, HINT),
   status_row("a short page shows 100 percent",
     { opts = { title = "T" }, n = 5 }, "T", 100, HINT),
   status_row("a page of exactly one screen shows 100 percent",
@@ -610,14 +611,14 @@ end)
 -- redraw).
 
 function T.coalesces_queued_scroll_events()
-  local events = { table.unpack(QUEUED_DOWNS) }
-  events[#events + 1] = Q
-  events[#events + 1] = Y
-  local _, ctl = run({ lines = make_lines(200), gpu = size(160, 50),
+  -- Down, Down and Up go from top 1 to 49, 52 and 4. One copy covers 3 lines.
+  local events = { key(DOWN), key_up(DOWN), key(DOWN), key_up(DOWN),
+    key(UP), key_up(UP), Q, Y }
+  local _, ctl = run({ lines = make_lines(100), gpu = size(160, 50),
     events = events })
   local copies = ctl.find("copy")
   t.eq(#copies, 1)
-  t.eq(copies[1], { "copy", 1, 21, 160, 29, 0, -20 })
+  t.eq(copies[1], { "copy", 1, 4, 160, 46, 0, -3 })
 end
 
 -- Lines with three styles and blank lines, for screen comparisons.
@@ -672,18 +673,17 @@ local THIRTY_DOWNS = downs(30)
 THIRTY_DOWNS[#THIRTY_DOWNS + 1] = NOOP
 
 local SCROLL = {
-  { "Down uses copy", { n = 100, events = { key(DOWN) } }, { 2, 1, true } },
-  { "three queued Downs use one copy",
-    { n = 100, events = { key(DOWN), key(DOWN), key(DOWN) } },
-    { 4, 1, true } },
+  { "Down uses copy", { n = 100, events = { key(DOWN) } }, { 24, 1, true } },
+  { "Down, Down and Up queued use one copy",
+    { n = 100, events = { key(DOWN), key(DOWN), key(UP) } },
+    { 24, 1, true } },
   { "PgDn uses copy", { n = 100, events = { key(PGDN) } }, { 24, 1, true } },
   { "Up after PgDn uses copy",
-    { n = 100, events = { key(PGDN), NOOP, key(UP) } }, { 23, 2, true } },
+    { n = 100, events = { key(PGDN), NOOP, key(UP) } }, { 1, 2, true } },
   { "PgUp after PgDn uses copy",
     { n = 100, events = { key(PGDN), NOOP, key(PGUP) } }, { 1, 2, true } },
   { "a short Home jump uses copy",
-    { n = 100, events = { key(DOWN), key(DOWN), key(DOWN), NOOP,
-      key(HOME) } }, { 1, 2, true } },
+    { n = 30, events = { key(END), NOOP, key(HOME) } }, { 1, 2, true } },
   { "a short End jump uses copy", { n = 30, events = { key(END) } },
     { 7, 1, true } },
   { "a long End jump redraws all rows", { n = 100, events = { key(END) } },
@@ -691,7 +691,7 @@ local SCROLL = {
   { "a long Home jump redraws all rows",
     { n = 100, events = { key(END), NOOP, key(HOME) } }, { 1, 0, true } },
   { "a queued burst over a screen redraws all rows",
-    { n = 100, events = THIRTY_DOWNS }, { 31, 0, true } },
+    { n = 100, events = THIRTY_DOWNS }, { 77, 0, true } },
 }
 
 t.cases(T, "scroll", SCROLL, function(input)
@@ -725,8 +725,9 @@ local DRAWN_PGDN = range(2, 24)
 DRAWN_PGDN[#DRAWN_PGDN + 1] = 25
 
 local DRAWN = {
-  { "Down draws the bottom row", { {}, { key(DOWN) } }, { 24, 25 } },
-  { "Up draws the top row", { { key(DOWN) }, { key(UP) } }, { 1, 25 } },
+  { "Down draws the bottom row", { {}, { key(DOWN) }, 25 }, { 24, 25 } },
+  { "Up draws the top row", { { key(DOWN) }, { key(UP) }, 25 }, { 1, 25 } },
+  { "Down draws the h-2 exposed rows", { {}, { key(DOWN) } }, DRAWN_PGDN },
   { "PgDn draws the h-2 exposed rows", { {}, { key(PGDN) } }, DRAWN_PGDN },
   { "a long End jump draws every row", { {}, { key(END) } }, range(1, 25) },
 }
@@ -757,7 +758,7 @@ t.cases(T, "drawn_rows", DRAWN, function(input)
   end
   events[#events + 1] = Q
   events[#events + 1] = Y
-  run({ lines = make_lines(100), events = events })
+  run({ lines = make_lines(input[3] or 100), events = events })
   return drawn
 end)
 
@@ -801,7 +802,7 @@ local POPUP = {
   popup_row("touch does not close the popup", { TOUCH, PROBE }, "quit",
     true, 1, false),
   popup_row("Down scrolls after the popup closes",
-    { ENTER, key(DOWN), PROBE }, "quit", false, 2, false),
+    { ENTER, key(DOWN), PROBE }, "quit", false, 24, false),
   popup_row("q opens the prompt after the popup closes",
     { ENTER, Q, PROBE }, "quit", false, 1, true),
   popup_row("Ctrl+C quits while the popup shows", { CTRL_C }, "interrupted"),
@@ -950,14 +951,14 @@ local function feed(hooks, events)
 end
 
 -- The text of the status row, without trailing spaces.
-local function status_row(ctl, h)
+local function session_status_row(ctl, h)
   return (ctl.row(h or 10):gsub("%s+$", ""))
 end
 
 function T.session_open_clears_and_draws_the_status_row()
   local s, ctl = open_session({}, { status = "Loading a.html..." })
   t.eq(s.rows, 9)
-  t.eq(status_row(ctl), "Loading a.html...")
+  t.eq(session_status_row(ctl), "Loading a.html...")
   local ch, fg, bg = ctl.cell(1, 10)
   t.eq({ ch, fg, bg }, { "L", 0x000000, WHITE_BG })
   for y = 1, 9 do
@@ -976,7 +977,7 @@ function T.session_status_redraws_only_the_status_row()
   local s, ctl = open_session({}, { status = "one" })
   ctl.clear_log()
   s.status("two")
-  t.eq(status_row(ctl), "two")
+  t.eq(session_status_row(ctl), "two")
   t.eq(ctl.count("fill"), 0)
   t.eq(ctl.count("copy"), 0)
   for _, c in ipairs(ctl.find("set")) do
@@ -1006,7 +1007,7 @@ t.cases(T, "session_draw_lines", {
   for y = 1, 9 do
     rows[y] = (ctl.row(y):gsub("%s+$", ""))
   end
-  return { rows = rows, status = status_row(ctl) }
+  return { rows = rows, status = session_status_row(ctl) }
 end)
 
 -- poll: the listener turns keys into intents and poll reads only them. "q"
@@ -1064,7 +1065,7 @@ t.cases(T, "session_poll", {
   s.listen()
   feed(hooks, events)
   local result = s.poll()
-  return { result, status_row(ctl) }
+  return { result, session_status_row(ctl) }
 end)
 
 -- poll reads the intents only: it never calls pull.
@@ -1123,7 +1124,7 @@ function T.session_intents_come_in_order()
   -- q opens the prompt, z cancels it, Ctrl+C is the third.
   feed(hooks, { Q, key(44, 122), CTRL_C })
   t.eq(s.poll(), "interrupted")
-  t.eq(status_row(ctl), "load")
+  t.eq(session_status_row(ctl), "load")
 end
 
 function T.session_intents_are_capped()
@@ -1149,10 +1150,10 @@ function T.session_status_keeps_the_prompt_until_the_user_answers()
   feed(hooks, { Q })
   t.eq(s.poll(), nil)
   s.status("load 12 KB")
-  t.eq(status_row(ctl), PROMPT_TEXT, "the prompt stays")
+  t.eq(session_status_row(ctl), PROMPT_TEXT, "the prompt stays")
   feed(hooks, { N })
   t.eq(s.poll(), nil)
-  t.eq(status_row(ctl), "load 12 KB", "the newest status comes back")
+  t.eq(session_status_row(ctl), "load 12 KB", "the newest status comes back")
 end
 
 function T.session_poll_without_on_key_returns_nil()
@@ -1170,7 +1171,7 @@ t.cases(T, "session_show_after_a_prompt", {
   { "n: the page stays, then q and y quit", { N, Q, Y }, "quit" },
   { "Ctrl+C at the prompt", { CTRL_C }, "interrupted" },
 }, function(events)
-  local s, ctl, _, _, hooks = open_session(events, { status = "load" })
+  local s, _, _, _, hooks = open_session(events, { status = "load" })
   s.listen()
   feed(hooks, { Q })
   s.poll()
@@ -1182,7 +1183,7 @@ end)
 function T.session_show_without_a_prompt_does_not_ask()
   local s, ctl = open_session({ key(DOWN), Q, Y }, { status = "load" })
   t.eq(s.show(make_lines(30), { title = "T" }), "quit")
-  t.eq(line_at(ctl, 1), 2, "scrolled by one line")
+  t.eq(line_at(ctl, 1), 9, "scrolled to the end")
 end
 
 function T.session_show_shows_the_error_popup()
@@ -1425,17 +1426,17 @@ t.cases(T, "links_select", {
   { "the dep wins over the key tracking",
     { events = { RSHIFT_DOWN, TAB }, shift_down = shift_no },
     sel_row(1, { "3:1-4" }, "-> R:a3.html") },
-  { "scrolling keeps the selection and moves its highlight",
+  { "Down selects the next link on screen",
     { events = { TAB, key(DOWN) } },
-    sel_row(2, { "2:1-4" }, "-> R:a3.html") },
+    sel_row(1, { "10:1-4" }, "-> R:a10.html") },
   { "a selection off screen shows no highlight and the title",
     { events = { TAB, key(PGDN) } }, sel_row(24, {}, "T") },
   { "the highlight is back when the link scrolls back",
     { events = { TAB, NOOP2, key(PGDN), NOOP2, key(PGUP) } },
     sel_row(1, { "3:1-4" }, "-> R:a3.html") },
-  { "Tab and scroll keys in one burst add up",
+  { "Tab and Down keys in one burst add up",
     { events = { TAB, TAB, TAB, key(DOWN), key(DOWN) } },
-    sel_row(9, { "22:1-4" }, "-> R:a30.html") },
+    sel_row(53, { "8:1-4" }, "-> R:a60.html") },
   { "depth 4 shows the same highlight",
     { events = { TAB }, depth = 4 },
     sel_row(1, { "3:1-4" }, "-> R:a3.html") },
@@ -1693,7 +1694,7 @@ t.cases(T, "links_enter", {
 end)
 
 -- Enter on a link that cannot be followed. The result is the status title
--- after Enter and after the next key (Down).
+-- after Enter and after the next key.
 t.cases(T, "links_enter_notice", {
   { "an href that is false", false,
     { "link too long", "-> (link too long)" } },
@@ -1705,7 +1706,7 @@ t.cases(T, "links_enter_notice", {
     links = { span = { span(3, 1, 3, 4) }, href = { href }, count = 1 },
     resolve = resolve }, events = { TAB, ENTER, function(ctl)
       out[1] = status_text(ctl)
-    end, key(DOWN), function(ctl)
+    end, key(30, 97), function(ctl)
       out[2] = parse_status(ctl.row(25)).title
     end, Q, Y } })
   t.eq(result, "quit")
@@ -1788,14 +1789,17 @@ t.cases(T, "navigation_keys", {
   { "F5 does nothing", { key(63, 0), Q, Y }, "quit" },
   { "z does nothing in the page", { key(44, 122), Q, Y }, "quit" },
   { "other keys do nothing", { key(30, 97), TOUCH, Q, Y }, "quit" },
-  { "the top is in the action", { key(DOWN), key(DOWN), key(203, 0) },
-    { kind = "back", top = 3 } },
+  { "the top is in the action", { key(PGDN), key(PGDN), key(203, 0) },
+    { kind = "back", top = 47 } },
   { "the selection is in the action", { TAB, TAB, key(205, 0) },
     { kind = "forward", top = 1, sel = 2 } },
   { "a burst of Tab and Left: the Tab events apply first",
     { TAB, TAB, key(203, 0) }, { kind = "back", top = 1, sel = 2 } },
-  { "a burst of Down and r: the scroll applies first",
-    { key(DOWN), key(DOWN), key(19, 114) }, { kind = "reload", top = 3 } },
+  { "a burst of PgDn and r: the scroll applies first",
+    { key(PGDN), key(PGDN), key(19, 114) }, { kind = "reload", top = 47 } },
+  { "a burst of Down and r: the selection applies first",
+    { key(DOWN), key(DOWN), key(19, 114) },
+    { kind = "reload", top = 1, sel = 2 } },
   { "Ctrl+C in a burst after Tab", { TAB, CTRL_C }, "interrupted" },
   { "the quit prompt works with links", { TAB, Q, Y }, "quit" },
   { "any other key cancels the quit prompt",
@@ -1919,8 +1923,8 @@ t.cases(T, "go_prompt", {
     { events = cat({ KEY_G }, chars("a"), { key(28, 0) }), after = {} },
     { result = { kind = "go", text = "a", top = 1 } } },
   { "the action has the top and the selection",
-    { events = { key(DOWN), TAB, KEY_G, key(30, 117), ENTER }, after = {} },
-    { result = { kind = "go", text = "u", top = 2, sel = 1 } } },
+    { events = { key(PGDN), TAB, KEY_G, key(30, 117), ENTER }, after = {} },
+    { result = { kind = "go", text = "u", top = 24, sel = 3 } } },
   { "a clipboard text submits",
     { events = { KEY_G, { "clipboard", "kbd", "http://x.org/", "p" }, ENTER },
       after = {} }, { result = { kind = "go", text = "http://x.org/",
@@ -1941,11 +1945,10 @@ end)
 -- A text longer than the row shows its end, with the cursor inside.
 function T.go_prompt_long_text_stays_inside_the_row()
   local text = string.rep("abcdefghij", 10)
-  local out, ctl_after
+  local out
   local _, ctl = run({ lines = make_lines(100), opts = { title = "T" },
     events = cat({ KEY_G }, chars(text), { function(c)
       out = (c.row(25):gsub("%s+$", ""))
-      ctl_after = c.cell(80, 25)
     end, ESC, Q, Y }) })
   t.ok(not ctl.overflow)
   t.eq(#out, 79)
@@ -1957,7 +1960,8 @@ local function help_state(ctl, h)
   local joined = table.concat(ctl.screen(), "\n", 1, h - 1)
   local shown = {}
   for _, word in ipairs({ "Tab", "Shift+Tab", "Enter", "Left", "Backspace",
-      "Right", "r: reload", "g: go", "Up, Down, PgUp, PgDn, Home, End",
+      "Right", "r: reload", "g: go", "Up, Down: move between links",
+      "PgUp, PgDn, Home, End: scroll",
       "q: quit", "?: this list", "[OK]" }) do
     shown[#shown + 1] = joined:find(word, 1, true) ~= nil
   end
@@ -1966,7 +1970,7 @@ end
 
 local ALL_SHOWN = {}
 local NONE_SHOWN = {}
-for i = 1, 12 do
+for i = 1, 13 do
   ALL_SHOWN[i] = true
   NONE_SHOWN[i] = false
 end
@@ -1982,7 +1986,7 @@ t.cases(T, "help_popup", {
   { "touch does not close it", { HELP, TOUCH }, ALL_SHOWN },
   { "Enter closes it", { HELP, ENTER }, NONE_SHOWN },
   { "it can open again", { HELP, ENTER, key_up(28, 13), HELP }, ALL_SHOWN },
-}, function(events, size_h)
+}, function(events)
   local out
   local list = {}
   for _, e in ipairs(events) do
@@ -1997,7 +2001,7 @@ t.cases(T, "help_popup", {
 end)
 
 function T.help_popup_fits_a_small_screen()
-  local out, ctl_out
+  local out
   local _, ctl = run({ lines = make_lines(100), opts = { title = "T" },
     gpu = size(50, 16), events = { HELP, function(c)
       out = help_state(c, 16)
@@ -2005,6 +2009,89 @@ function T.help_popup_fits_a_small_screen()
   t.eq(out, ALL_SHOWN)
   t.ok(not ctl.overflow)
 end
+
+-- Up and Down between links (spec/viewer.md "Link keys"). The fixture links
+-- are on the lines 3, 10, 30, 60 and 95. 80x25 shows 24 rows and scrolls
+-- 23 lines for a page.
+local function one_link(line)
+  return { span = { span(line, 1, line, 4) }, href = { "a.html" }, count = 1 }
+end
+
+local NO_LINKS = { span = {}, href = {}, count = 0 }
+local A3, A10, A30, A60, A95 = "-> R:a3.html", "-> R:a10.html",
+  "-> R:a30.html", "-> R:a60.html", "-> R:a95.html"
+
+t.cases(T, "links_up_down", {
+  { "Down with no selection picks the first link on screen",
+    { events = { key(DOWN) } }, sel_row(1, { "3:1-4" }, A3) },
+  { "Down picks the next visible link and does not scroll",
+    { events = { TAB, key(DOWN) } }, sel_row(1, { "10:1-4" }, A10) },
+  { "Down with no more visible link scrolls a page and picks the first new link",
+    { events = { TAB, key(DOWN), NOOP2, key(DOWN) } },
+    sel_row(24, { "7:1-4" }, A30) },
+  { "Down scrolls again with the next page",
+    { events = { TAB, key(DOWN), NOOP2, key(DOWN), NOOP2, key(DOWN) } },
+    sel_row(47, { "14:1-4" }, A60) },
+  { "Down scrolls a page and no new link: the selection stays",
+    { events = { TAB, key(DOWN) }, links = one_link(3) },
+    sel_row(24, {}, "T") },
+  { "Down with the selection off screen picks the first link at or below top",
+    { events = { TAB, key(PGDN), NOOP2, key(DOWN) } },
+    sel_row(24, { "7:1-4" }, A30) },
+  { "Down at the end of the page does nothing",
+    { events = { key(END), NOOP2, TAB, key(DOWN) },
+      links = { span = { span(3, 1, 3, 4), span(95, 1, 95, 4) },
+        href = { "a3.html", "a95.html" }, count = 2 } },
+    sel_row(77, { "19:1-4" }, A95) },
+  { "Down at the end does not wrap to the first link",
+    { events = { key(END), NOOP2, key(DOWN), key(DOWN) } },
+    sel_row(77, { "19:1-4" }, A95) },
+  { "Up with no selection picks the last link on screen",
+    { events = { key(END), NOOP2, key(UP) } },
+    sel_row(77, { "19:1-4" }, A95) },
+  { "Up picks the previous visible link and does not scroll",
+    { events = { TAB, TAB, key(UP) } }, sel_row(1, { "3:1-4" }, A3) },
+  { "Up with no more visible link scrolls a page and picks the last new link",
+    { events = { TAB, TAB, TAB, key(PGDN), NOOP2, key(UP) } },
+    sel_row(7, { "4:1-4" }, A10) },
+  { "Up scrolls a page and no new link: the selection stays",
+    { events = { TAB, key(UP) }, links = one_link(60) },
+    sel_row(14, {}, "T") },
+  { "Up at the start of the page does nothing",
+    { events = { TAB, key(UP) } }, sel_row(1, { "3:1-4" }, A3) },
+  { "Up with no selection at the start picks the last link on screen",
+    { events = { key(UP) } }, sel_row(1, { "10:1-4" }, A10) },
+  { "Up at the start does not wrap to the last link",
+    { events = { TAB, key(UP), key(UP) } }, sel_row(1, { "3:1-4" }, A3) },
+  { "a page with no links: Down scrolls a page",
+    { events = { key(DOWN) }, links = NO_LINKS }, sel_row(24, {}, "T") },
+  { "a page with no links: Up scrolls a page back",
+    { events = { key(DOWN), key(DOWN), key(UP) }, links = NO_LINKS },
+    sel_row(24, {}, "T") },
+  { "queued Down, Down and Down apply in order",
+    { events = { key(DOWN), key(DOWN), key(DOWN) } },
+    sel_row(24, { "7:1-4" }, A30) },
+  { "queued Down, Down and Up apply in order",
+    { events = { key(DOWN), key(DOWN), key(UP) } },
+    sel_row(1, { "3:1-4" }, A3) },
+  { "queued Tab and Down apply in order",
+    { events = { TAB, key(DOWN), TAB } }, sel_row(7, { "24:1-4" }, A30) },
+  { "NumPad Down with char 0",
+    { events = { key(NP_DOWN), key(NP_DOWN) } },
+    sel_row(1, { "10:1-4" }, A10) },
+  { "NumPad Up with char 0",
+    { events = { key(NP_DOWN), key(NP_DOWN), key(NP_UP) } },
+    sel_row(1, { "3:1-4" }, A3) },
+  { "NumPad 2 is not Down", { events = { key(NP_DOWN, 50) } },
+    sel_row(1, {}, "T") },
+  { "NumPad 8 is not Up", { events = { key(NP_DOWN), key(NP_UP, 56) } },
+    sel_row(1, { "3:1-4" }, A3) },
+  { "the highlight and the status line follow the selection",
+    { events = { key(DOWN), key(DOWN), key(DOWN), key(DOWN) } },
+    sel_row(47, { "14:1-4" }, A60) },
+}, function(input)
+  return link_run(input)
+end)
 
 function T.help_popup_ctrl_c_quits()
   t.eq((run({ lines = make_lines(100), events = { HELP, CTRL_C } })),
