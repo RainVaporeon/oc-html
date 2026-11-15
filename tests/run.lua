@@ -1,5 +1,7 @@
 -- Desktop test runner. Runs every tests/*_test.lua file in a sandbox env.
--- Run inside the container: lua5.3 tests/run.lua
+-- Run inside the container: lua5.3 tests/run.lua [FILE [NAME]]
+-- FILE and NAME are plain substrings of the test file path and of the test
+-- name. They run a part of the suite while a change is in progress.
 
 local real_open = io.open
 local real_loadfile = loadfile
@@ -439,14 +441,16 @@ local function run_file(path, report)
   end
   table.sort(names)
   for _, name in ipairs(names) do
-    reset()
-    local passed, result = pcall(tests[name])
-    if passed then
-      report(path, name, nil)
-    elseif type(result) == "table" and result[SKIP] then
-      report(path, name, nil, result[SKIP])
-    else
-      report(path, name, tostring(result))
+    if not arg[2] or name:find(arg[2], 1, true) then
+      reset()
+      local passed, result = pcall(tests[name])
+      if passed then
+        report(path, name, nil)
+      elseif type(result) == "table" and result[SKIP] then
+        report(path, name, nil, result[SKIP])
+      else
+        report(path, name, tostring(result))
+      end
     end
   end
 end
@@ -465,7 +469,9 @@ local function main()
     end
   end
   for _, path in ipairs(find_test_files()) do
-    run_file(path, report)
+    if not arg[1] or path:find(arg[1], 1, true) then
+      run_file(path, report)
+    end
   end
   local summary = passed .. " passed, " .. failed .. " failed"
   if skipped > 0 then

@@ -57,9 +57,12 @@ local DEFAULT_HOME = "/home"
 -- the worst case, so the check stops only a file that clearly cannot fit.
 -- The guard still protects the render of a smaller file.
 local SIZE_COST_MIN = 0.5
--- Seconds between two key polls and two byte counts while loading. An event
--- pull costs about 15 ms in game, so this is about 6% of the time.
+-- Seconds between two byte counts on the status line while loading.
 local LOAD_TICK = 0.25
+-- Seconds of work between two yields of the render to the viewer loop. An
+-- event pull costs about 15 ms in game, so this is about 15% of the time of
+-- a render that never waits for the network.
+local SLICE = 0.1
 -- Exit codes.
 local EXIT_ERROR = 1
 -- The second line of the popup of a broken page.
@@ -247,9 +250,10 @@ end
 -- Runs the tokenizer and layout over a reader. Returns the lines, the
 -- document title or nil, and page = { links = { span, href, count }, anchors
 -- = { list, count }, base = raw <base href> or nil }. before_read(lines,
--- count) is optional. It runs
--- before each read, with the live lines table and the number of finished
--- lines.
+-- count, lay) is optional. It runs
+-- before each read, with the live lines table, the number of finished
+-- lines and the layout object (its count(), links(), title() and the other
+-- accessors give the part that is laid out so far).
 function M.render(read, width, before_read)
   local loaded, why = load_modules()
   if not loaded then
@@ -259,7 +263,7 @@ function M.render(read, width, before_read)
   if before_read then
     local inner = read
     read = function()
-      before_read(lay.lines, lay.count())
+      before_read(lay.lines, lay.count(), lay)
       return inner()
     end
   end
@@ -490,29 +494,44 @@ end
 -- Runs one load inside the session. All the state of a load lives here. It
 -- never shows the page: the session loop does (see run_session).
 -- target: the result of classify. ctx: opts, deps, arg (the text of the
--- target), width, framed (the loading screen opens inside the load),
--- load_all() (loads the modules, returns true or nil and a message), nav
--- (true for a load after the first one), on_commit() (optional, called after
--- phase 1 and before the size check: the point where the old page goes).
--- The screen session opens here when framed, and is stored in ctx.session.
--- A later load uses it. The caller closes it. The listener and the file are
--- closed before this returns.
+-- target), width, session (the screen session of the viewer path, or nil),
+-- need_modules (true for the first load of a framed run: the load loads the
+-- modules after the frame opened), load_all() (loads the modules, returns
+-- true or nil and a message), modules_loaded() (optional, called after
+-- load_all), nav (true for a load after the first one), on_commit()
+-- (optional, called after phase 1 and before the size check: the point where
+-- the old page goes), state (optional table, filled for the viewer: see
+-- below).
+-- With a session the load is interactive: it must run in a coroutine that
+-- the viewer loop drives (spec/loading.md "Keys during load"). It never
+-- calls os.sleep. It yields "wait", seconds (a fetch wait), "slice" (CPU
+-- work or a phase change), and "commit" (once, after phase 1). The loop
+-- reads all keys and calls state.cancel() to stop the load: the next stop
+-- check raises, and the load ends with the aborted result after it closed
+-- everything. Without a session (print mode, the no-screen path) the load is
+-- synchronous and waits with deps.sleep or os.sleep.
+-- ctx.state gets: status() (the label and the tail of the status line:
+-- phase texts have no tail), cancel(), live (after the commit: the live
+-- source of the viewer, see below) and name().
+-- The live source: lines, count(), links() (the table { span, href, count }),
+-- title(), anchors() (list, count), base(), location, name and prefix.
 -- Returns one of:
 --   { ok = true, lines =, title =, page =, location = absolute path or final
 --     URL, show = { file =, error = popup text or nil } (nil in print mode) }
 --   { failed = true, committed = bool, text = popup text, reload = bool,
 --     name = text }  an error that keeps the session (spec/navigation.md
 --     "Two phases of a load"). committed is false for a phase 1 failure
---   { aborted = true, committed = bool, name = text }  the user pressed z
+--   { aborted = true, committed = bool, name = text }  the load was stopped
 --   { error = text, reload = bool, kind = "controlled" or "unexpected" }
 --   { interrupted = true, message = text or nil }
---   { quit = true }
 local function load_page(target, ctx)
   local opts, deps, arg = ctx.opts, ctx.deps, ctx.arg
-  local width, framed = ctx.width, ctx.framed
-  local load_all = ctx.load_all
+  local width = ctx.width
+  local session = ctx.session
+  local interactive = session ~= nil
   local url, path, guessed = target.url, target.path, target.guessed
   local f
+  local state = ctx.state or {}
   if path then
     -- Phase 1 of a local load. The first load was checked by classify. A
     -- later target (a link) is checked here.
@@ -536,7 +555,7 @@ local function load_page(target, ctx)
       end
     end
     if text then
-      if ctx.session or ctx.nav then
+      if interactive or ctx.nav then
         -- The session goes on: the loop shows a popup.
         return { failed = true, committed = false, name = arg,
           text = retry and (text .. "\n" .. RELOAD_LINE) or text,
@@ -561,38 +580,38 @@ local function load_page(target, ctx)
     end
   end
 
-  -- Ctrl+C or a confirmed quit during load: the flags are set by the
-  -- listener or by the screen poll, and the next guard.tick raises
-  -- INTERRUPTED. A confirmed quit exits with code 0 and no message.
-  -- z (abort) stops the load in the same way (spec/navigation.md "Abort").
-  local interrupted, quit_requested, remove = false, false, nil
-  local abort_requested, committed = false, false
+  -- Ctrl+C is a flag that the "interrupted" listener sets, and the next
+  -- guard.tick raises INTERRUPTED. cancel() (the viewer loop: abort, a link,
+  -- quit) stops the load in the same way (spec/navigation.md "Abort").
+  local interrupted, abort_requested, committed = false, false, false
+  local remove
   if deps.on_interrupt then
     remove = deps.on_interrupt(function() interrupted = true end)
   end
-  -- The key listener of the session feeds the intents. Each check takes them,
-  -- so a key counts at the next guard tick or fetch wait. poll_keys is set
-  -- below.
-  local poll_keys
   local function stop_flag()
-    if ctx.session then
-      poll_keys()
-    end
-    return interrupted or quit_requested or abort_requested
+    return interrupted or abort_requested
   end
-  -- The guard loads with the other modules, so a framed run arms it later.
+  function state.cancel()
+    abort_requested = true
+  end
+  local now = deps.uptime or deps.clock
+  -- The loop gets the control at every yield. The time of the last one lets
+  -- the render yield about every SLICE seconds, before a read.
+  local last_yield = now()
+  local function yield_to_loop(what, seconds)
+    coroutine.yield(what, seconds)
+    last_yield = now()
+  end
   local function arm_guard()
     guard.set_interrupt_check(stop_flag)
-  end
-  if not framed then
-    arm_guard()
+    if interactive then
+      guard.set_yield(function() yield_to_loop("slice") end)
+    end
   end
   local function stop_listening()
     if guard then
       guard.set_interrupt_check(nil)
-    end
-    if ctx.session then
-      pcall(ctx.session.unlisten)
+      guard.set_yield(nil)
     end
     if remove then
       local fn = remove
@@ -638,19 +657,23 @@ local function load_page(target, ctx)
     error(why, 0)
   end
 
-  -- The loading screen. The status line shows the phase (see
-  -- spec/loading.md). The status text is drawn only when it changes, and the
-  -- byte count at most once per LOAD_TICK. The keys are polled at every tick.
-  local session = ctx.session
+  -- The status line of the load (spec/loading.md "Status line during
+  -- load"). Before the commit it is the phase text. After it, the viewer
+  -- asks status() at each pass: it gives the label and the tail. A byte
+  -- count update is rate-limited to LOAD_TICK, and the last one is not.
   local name, total, bytes = arg, nil, 0
   if entry then
     name = entry.final_url or url
   end
-  local in_body, phase_text, shown = false, "", nil
-  local last_tick, first_drawn = 0, false
-  local now = deps.uptime or deps.clock
-  local function load_text()
-    local text = "Loading " .. name .. "..."
+  function state.name()
+    return name
+  end
+  local in_body, final = false, false
+  local phase_text = "Loading " .. name .. "..."
+  local shown_tail, shown_at
+  local live
+  local function load_tail()
+    local text = "Loading"
     if bytes > 0 then
       text = text .. " " .. kb(bytes)
       if type(total) == "number" then
@@ -659,35 +682,25 @@ local function load_page(target, ctx)
     end
     return text
   end
-  local function draw_status()
-    local text = in_body and load_text() or phase_text
-    if text ~= shown then
-      shown = text
-      session.status(text)
+  function state.status()
+    if not in_body then
+      return phase_text
     end
+    local title = live and live.title()
+    local label = (live and live.prefix or "")
+      .. (title and title ~= "" and title or name)
+    local t = now()
+    if final or not shown_tail or t - shown_at >= LOAD_TICK then
+      shown_tail, shown_at = load_tail(), t
+    end
+    return (gsub(label, "%c", " ")), shown_tail
   end
+  -- A phase text shows at once: the loop gets a slice to draw it.
   local function set_phase(text)
     in_body, phase_text = false, text
-    draw_status()
-  end
-  function poll_keys()
-    local key = session.poll()
-    if key == "interrupted" then
-      interrupted = true
-    elseif key == "abort" then
-      abort_requested = true
-    elseif key == "quit" then
-      quit_requested = true
+    if interactive then
+      yield_to_loop("slice")
     end
-  end
-  local function tick_load()
-    poll_keys()
-    local t = now()
-    if t - last_tick < LOAD_TICK then
-      return
-    end
-    last_tick = t
-    draw_status()
   end
   -- The phases of the fetch (see fetch.open).
   local function progress(phase, u)
@@ -697,19 +710,47 @@ local function load_page(target, ctx)
       set_phase("Waiting for response...")
     elseif phase == "redirect" then
       set_phase("Redirect to " .. u.url .. "...")
-    else
-      tick_load()
     end
   end
-  -- The first screen draws as soon as the lines fill it. After that only
-  -- the status line changes until the end of the input.
+
+  -- The live source of the viewer. lay is the layout of the render: it
+  -- exists from the first read on.
+  local lay, location
+  local EMPTY = { span = {}, href = {}, count = 0 }
+  local link_table = { span = EMPTY.span, href = EMPTY.href, count = 0 }
+  local function new_live(source)
+    return {
+      lines = nil,
+      count = function() return lay and lay.count() or 0 end,
+      links = function()
+        if not lay then
+          return EMPTY
+        end
+        link_table.span, link_table.href, link_table.count = lay.links()
+        return link_table
+      end,
+      title = function() return lay and lay.title() or nil end,
+      anchors = function()
+        if lay then
+          return lay.anchors()
+        end
+        return {}, 0
+      end,
+      base = function() return lay and lay.base() or nil end,
+      location = location, name = source.name, prefix = source.prefix,
+    }
+  end
+  -- The render reads through this hook. It gives the viewer the layout and
+  -- yields a slice about every SLICE seconds.
   local ui = {
-    before_read = function(lines, count)
-      if not first_drawn and count >= session.rows then
-        first_drawn = true
-        session.draw_lines(lines, count)
+    before_read = function(lines, _, layout_object)
+      if not lay then
+        lay = layout_object
+        live.lines = lines
       end
-      tick_load()
+      if now() - last_yield >= SLICE then
+        yield_to_loop("slice")
+      end
     end,
   }
 
@@ -750,10 +791,13 @@ local function load_page(target, ctx)
     end
     local why
     local retry
+    local sleep = deps.sleep or os.sleep
+    if interactive then
+      sleep = function(seconds) yield_to_loop("wait", seconds) end
+    end
     resp, why, retry = fetch.open(url, { internet = deps.internet,
-      clock = fetch_clock, sleep = deps.sleep or os.sleep,
-      interrupted = stop_flag, progress = session and progress or nil },
-      info)
+      clock = fetch_clock, sleep = sleep, interrupted = stop_flag,
+      progress = interactive and progress or nil }, info)
     if not resp then
       fetch_error(why, retry)
     end
@@ -798,51 +842,43 @@ local function load_page(target, ctx)
   end
 
   local ok, result, lines, title, page, shown_info = xpcall(function()
-    if session then
-      -- A later load: the session and the modules are there. The old page
-      -- stays on screen until the commit.
-      shown = "Loading " .. name .. "..."
-      session.status(shown)
-      last_tick = now()
-      session.listen()
-      arm_guard()
-    elseif framed then
-      session = deps.open_screen({ no_rescale = opts.no_rescale,
-        status = "Loading " .. name .. "..." })
-      ctx.session = session
-      session.listen()
-      shown = "Loading " .. name .. "..."
-      last_tick = now()
-      set_phase("Loading modules...")
-      local loaded, why = load_all()
-      if not loaded then
-        error(why, 0)
+    if interactive then
+      if ctx.need_modules then
+        -- The first load of a framed run: the frame is open, the modules
+        -- load now.
+        set_phase("Loading modules...")
+        local loaded, why = ctx.load_all()
+        if not loaded then
+          error(why, 0)
+        end
+        if ctx.modules_loaded then
+          ctx.modules_loaded()
+        end
       end
-      arm_guard()
     end
+    arm_guard()
     local source = open_source()
-    -- stop_flag takes the keys that came while the response opened, so they
-    -- still count for phase 1.
+    location = resp and resp.final_url or entry and name or path
     if stop_flag() then
       error(INTERRUPTED, 0)
     end
     -- The commit: phase 1 is over. The caller releases the old page here,
-    -- before the size check measures the free memory. The old page leaves the
-    -- screen, and the status line keeps the loading text.
+    -- before the size check measures the free memory. The loop then shows
+    -- the new, empty live page.
     committed = true
     if ctx.on_commit then
       ctx.on_commit()
     end
-    if session then
-      session.draw_lines({}, 0)
-    end
     active = source
     in_body = true
-    if session then
-      draw_status()
+    if interactive then
+      live = new_live(source)
+      state.live = live
+      yield_to_loop("commit")
     end
     return run(source, opts, deps, width, function()
       close_file()
+      final = true
       if stop_flag() then
         error(INTERRUPTED, 0)
       end
@@ -852,23 +888,18 @@ local function load_page(target, ctx)
         w.commit_complete({ final_url = resp.final_url, status = resp.status,
           content_type = resp.content_type, is_error = false })
       end
-      -- The viewer handles Ctrl+C itself. Print mode keeps the check for
-      -- the output loop.
+      -- Print mode keeps the guard checks for the output loop.
       if not opts.print then
         stop_listening()
       end
-      if session then
-        draw_status()
-      end
-    end, session and ui or nil)
+    end, interactive and ui or nil)
   end, handler)
   -- An error that keeps the session: a fetch error, a file read error or a
   -- memory stop after the frame opened. The caller shows a popup (over the
   -- old page after a phase 1 failure, else over an empty page). A broken
-  -- page is not rendered: the lines so far are dropped. Quit then gives
-  -- code 0.
+  -- page is not rendered: the lines so far are dropped.
   local failed
-  if not ok and (session or ctx.nav) and not opts.print
+  if not ok and (interactive or ctx.nav) and not opts.print
       and type(result) == "string"
       and (result == kept_error or find(result,
         "^html: %a+ too large for available memory")) then
@@ -896,13 +927,9 @@ local function load_page(target, ctx)
     -- A bare "interrupted" error is Ctrl+C from the event system.
     result = INTERRUPTED
   end
-  if not ok and result == INTERRUPTED and not interrupted then
-    if quit_requested then
-      -- The user confirmed the quit prompt during load.
-      ok, result = true, "quit"
-    elseif abort_requested then
-      return { aborted = true, committed = committed, name = name }
-    end
+  if not ok and result == INTERRUPTED and not interrupted
+      and abort_requested then
+    return { aborted = true, committed = committed, name = name }
   end
   if not ok then
     if result == INTERRUPTED then
@@ -913,12 +940,9 @@ local function load_page(target, ctx)
       kind = is_controlled(result) and "controlled" or "unexpected" }
   elseif failed then
     return failed
-  elseif result == "quit" then
-    return { quit = true }
   end
   return { ok = true, lines = lines, title = title, page = page,
-    location = resp and resp.final_url or entry and name or path,
-    show = shown_info }
+    location = location, show = shown_info }
 end
 
 M.load_page = load_page
@@ -1009,6 +1033,16 @@ end
 -- classify, with arg (the text of the target). ctx: see load_page. Returns
 -- the same kinds as load_page: { quit }, { interrupted, message } or
 -- { error, kind }.
+--
+-- With a screen session the loads are interactive: a load is a coroutine
+-- (the loader) that the viewer drives from its own loop (session.show with
+-- opts.load). The loop is the only reader of events. The loader is bg while
+-- it runs. The viewer returns the action "commit" when phase 1 is over (the
+-- loop then shows the live page), "done" when the load ended, "abort" for
+-- z, Backspace and Left, and any other action as usual. An action that is
+-- not "commit" or "done" stops the loader first. Without a session (the
+-- no-screen path with deps.view) a load runs to its end before the page
+-- shows.
 local function run_session(target, ctx)
   local deps, opts = ctx.deps, ctx.opts
   local loaded, why = load_url()
@@ -1019,6 +1053,18 @@ local function run_session(target, ctx)
     return { error = why, reload = false, kind = "controlled" }
   end
   local handler = error_handler(deps)
+  -- The screen opens before the modules load (spec/loading.md "Startup").
+  if ctx.framed and not ctx.session then
+    local opened, session = xpcall(deps.open_screen, handler,
+      { no_rescale = opts.no_rescale,
+        status = "Loading " .. ctx.arg .. "..." })
+    if not opened then
+      return { error = session, reload = false,
+        kind = is_controlled(session) and "controlled" or "unexpected" }
+    end
+    ctx.session = session
+    ctx.need_modules = true
+  end
   -- The disk cache of the session. The program clears it on every exit (see
   -- main). Without deps.cache, or without the module, nothing is cached.
   if deps.cache then
@@ -1037,6 +1083,9 @@ local function run_session(target, ctx)
   local top, sel = 1, nil
   -- The text of a popup for the next show.
   local popup
+  -- The loader that runs, or nil: { r, spec, had, state, committed,
+  -- finished, result, drive(), cancel() }.
+  local bg
   -- The next load: { spec, mode = "first" | "link" | "go" | "back" |
   -- "forward" | "reload" | "prev", top, sel, fragment }.
   local req = { spec = target, mode = "first", fragment = target.fragment }
@@ -1049,12 +1098,14 @@ local function run_session(target, ctx)
     return { lines = {}, title = title, name = name, broken = true }
   end
 
-  -- The resolver of the viewer for the page h: the text of the status line,
-  -- or nil and a notice. A link that cannot resolve gives its href, so that
-  -- Enter reaches the loop and the popup shows the reason.
-  local function make_resolve(h)
+  -- The resolver of the viewer: the text of the status line, or nil and a
+  -- notice. A link that cannot resolve gives its href, so that Enter
+  -- reaches the loop and the popup shows the reason. base_of() gives the
+  -- base of the page.
+  local function make_resolve(base_of)
     return function(href)
-      local r = urlmod.resolve(h.base, href)
+      local base = base_of()
+      local r = urlmod.resolve(base, href)
       if not r then
         return href
       elseif r.kind == "unsupported" then
@@ -1066,44 +1117,54 @@ local function run_session(target, ctx)
       elseif r.kind == "file" then
         return r.path .. frag
       end
-      return h.base .. frag
+      return base .. frag
     end
   end
 
-  -- Runs one load of r. Sets held, cur, top, sel, popup and req. Returns a
-  -- final result, or nil to show.
-  local function load(r)
+  -- Makes the page record from the result of a load that ended well.
+  local function page_of(res)
+    local h = { lines = res.lines, title = res.title, name = res.show.file,
+      page = res.page, location = res.location }
+    h.base = page_base(res.location, res.page.base)
+    h.resolve = make_resolve(function() return h.base end)
+    return h
+  end
+
+  -- The page that a stopped load had loaded, for the action that stopped
+  -- it: the complete lines, the links and the base so far.
+  local function snapshot(b)
+    local live = b.state.live
+    local lk = live.links()
+    local anc, anc_count = live.anchors()
+    local h = { lines = live.lines or {}, title = live.title(),
+      name = live.name,
+      page = { links = { span = lk.span, href = lk.href, count = lk.count },
+        anchors = { list = anc, count = anc_count }, base = live.base() },
+      location = live.location }
+    h.base = page_base(live.location, live.base())
+    h.resolve = make_resolve(function() return h.base end)
+    return h
+  end
+
+  -- Takes the result of a load. Sets held, cur, top, sel, popup and req.
+  -- Returns a final result, or nil to show. view_top and view_sel are the
+  -- position of the view at the end of an interactive load.
+  local function settle(r, had, res, view_top, view_sel)
     local spec = r.spec
-    local had = held ~= nil
-    ctx.arg = spec.arg or key_of(spec)
-    ctx.nav = r.mode ~= "first"
-    ctx.on_commit = function()
-      held = nil
-      if r.mode == "link" or r.mode == "go" or hist.size() == 0 then
-        hist.push(key_of(spec))
-      elseif r.mode == "reload" then
-        hist.replace({ target = key_of(spec), top = r.top, sel = r.sel })
-      end
-    end
-    -- Back, forward and the load of the previous page use the cached copy.
-    -- Reload, link and go fetch.
-    ctx.replay = r.mode == "back" or r.mode == "forward" or r.mode == "prev"
-    local res = load_page(spec, ctx)
-    ctx.on_commit = nil
-    ctx.replay = nil
     if res.quit or res.interrupted or res.error then
       return res
     end
     if res.ok then
       cur = spec
-      local h = { lines = res.lines, title = res.title, name = res.show.file,
-        page = res.page, location = res.location }
-      h.base = page_base(res.location, res.page.base)
-      h.resolve = make_resolve(h)
-      held = h
+      held = page_of(res)
       popup = res.show.error
-      if r.mode == "first" or r.mode == "link" or r.mode == "go" then
-        top, sel = anchor_line(h.page, r.fragment) or 1, nil
+      -- A user who did not move keeps the rules of a load that did not
+      -- show: the anchor, or the saved position.
+      local moved = view_top ~= 1 or view_sel ~= nil
+      if moved then
+        top, sel = view_top, view_sel
+      elseif r.mode == "first" or r.mode == "link" or r.mode == "go" then
+        top, sel = anchor_line(held.page, r.fragment) or 1, nil
       else
         top, sel = r.top, r.sel
       end
@@ -1150,18 +1211,120 @@ local function run_session(target, ctx)
     return nil
   end
 
+  -- Starts the load of r. Returns a final result, or nil to show. With a
+  -- session the loader starts as bg and the viewer drives it. Without one
+  -- the load runs to its end here.
+  local function start(r)
+    local spec = r.spec
+    local had = held ~= nil
+    -- A load has its own copy of the context, so a later change of the
+    -- fields does not reach a load that still runs.
+    local lctx = {}
+    for k, v in pairs(ctx) do
+      lctx[k] = v
+    end
+    lctx.arg = spec.arg or key_of(spec)
+    lctx.nav = r.mode ~= "first"
+    lctx.on_commit = function()
+      held = nil
+      if r.mode == "link" or r.mode == "go" or hist.size() == 0 then
+        hist.push(key_of(spec))
+      elseif r.mode == "reload" then
+        hist.replace({ target = key_of(spec), top = r.top, sel = r.sel })
+      end
+    end
+    -- Back, forward and the load of the previous page use the cached copy.
+    -- Reload, link and go fetch.
+    lctx.replay = r.mode == "back" or r.mode == "forward" or r.mode == "prev"
+    lctx.state = {}
+    lctx.modules_loaded = function()
+      ctx.need_modules = false
+    end
+    if not ctx.session then
+      return settle(r, had, load_page(spec, lctx), 1, nil)
+    end
+    local co = coroutine.create(load_page)
+    local b = { r = r, spec = spec, had = had, state = lctx.state,
+      committed = false, finished = false, started = false }
+    local first_text = "Loading " .. lctx.arg .. "..."
+    function b.status()
+      if b.state.status then
+        return b.state.status()
+      end
+      return first_text
+    end
+    function b.drive()
+      if b.finished then
+        return "done"
+      end
+      b.started = true
+      local ok, what, secs = coroutine.resume(co, spec, lctx)
+      if not ok then
+        b.finished = true
+        b.result = { error = what, reload = false,
+          kind = is_controlled(what) and "controlled" or "unexpected" }
+        return "done"
+      elseif coroutine.status(co) == "dead" then
+        b.finished = true
+        b.result = what
+        return "done"
+      end
+      if what == "commit" then
+        b.committed = true
+      end
+      return what, secs
+    end
+    -- Stops the load: raises the stop flag and runs the loader until it has
+    -- closed everything. The yields in between are not waited for.
+    function b.cancel()
+      if b.finished then
+        return
+      end
+      b.finished = true
+      if not b.started then
+        return
+      end
+      b.state.cancel()
+      for _ = 1, 10000 do
+        if coroutine.status(co) == "dead" then
+          break
+        end
+        coroutine.resume(co)
+      end
+    end
+    bg = b
+    return nil
+  end
+
   -- Shows the page. Returns ok and the result of the viewer.
   local function present()
     local h = held
-    local o = { title = h.title, file = h.name, no_rescale = opts.no_rescale,
-      error = popup, top = top, sel = sel }
-    if h.page then
-      o.links = h.page.links
-      o.resolve = h.resolve
+    local b = bg
+    local o = { no_rescale = opts.no_rescale, error = popup, top = top,
+      sel = sel }
+    local lines = {}
+    if b and b.committed then
+      local live = b.state.live
+      o.live = live
+      o.title = live.name and ((live.prefix or "") .. live.name) or nil
+      o.file = live.name
+      o.resolve = make_resolve(function()
+        return page_base(live.location, live.base())
+      end)
+    elseif h then
+      lines = h.lines
+      o.title, o.file = h.title, h.name
+      if h.page then
+        o.links = h.page.links
+        o.resolve = h.resolve
+      end
+    end
+    if b and not b.finished then
+      o.load = { drive = b.drive, status = b.status }
     end
     popup = nil
     local session = ctx.session
-    return xpcall(session and session.show or deps.view, handler, h.lines, o)
+    return xpcall(session and session.show or deps.view, handler, lines, o)
   end
 
   -- A same-document link: a new history entry and a jump to the anchor.
@@ -1171,11 +1334,50 @@ local function run_session(target, ctx)
     hist.set_pos(top, sel)
   end
 
+  -- The action of the user stops the load that runs. Returns true when the
+  -- action is used up here. A stop (z, Backspace, Left) is an abort with
+  -- the rules of spec/navigation.md "Abort". For any other action the page
+  -- that was loaded becomes the page on screen (after the commit), or the
+  -- old page stays (before it).
+  local function stop_load(kind)
+    local b = bg
+    if kind == "forward" and not hist.can_forward() then
+      -- Forward does nothing at the last entry: the load goes on.
+      return true
+    end
+    bg = nil
+    b.cancel()
+    local name = b.state.name and b.state.name() or b.spec.arg
+      or key_of(b.spec)
+    if kind == "abort" or not b.committed then
+      settle(b.r, b.had, { aborted = true, committed = b.committed,
+        name = name })
+      return kind == "abort"
+    end
+    held = snapshot(b)
+    cur = b.spec
+    return false
+  end
+
+  -- Handles "commit" and "done" from the viewer. Returns a final result, or
+  -- nil.
+  local function advance(kind, out)
+    local b = bg
+    if kind == "commit" then
+      -- The old page is gone. The new page starts at the top.
+      held = nil
+      top, sel = 1, nil
+      return nil
+    end
+    bg = nil
+    return settle(b.r, b.had, b.result, out.top, out.sel)
+  end
+
   while true do
     if req then
       local r = req
       req = nil
-      local final = load(r)
+      local final = start(r)
       if final then
         return final
       end
@@ -1183,65 +1385,87 @@ local function run_session(target, ctx)
     if not req then
       local ok, out = present()
       if not ok then
+        if bg then
+          bg.cancel()
+          bg = nil
+        end
         if out == "interrupted" or out == INTERRUPTED then
           return { interrupted = true, message = INTERRUPTED }
         end
         return { error = out, reload = false,
           kind = is_controlled(out) and "controlled" or "unexpected" }
-      elseif out == "quit" then
-        return { quit = true }
-      elseif out == "interrupted" then
-        return { interrupted = true }
+      elseif out == "quit" or out == "interrupted" then
+        -- Ctrl+C during a load prints the interrupted line, as a load that
+        -- the guard stops does.
+        local loading = bg ~= nil
+        if bg then
+          bg.cancel()
+          bg = nil
+        end
+        if out == "quit" then
+          return { quit = true }
+        end
+        return { interrupted = true, message = loading and INTERRUPTED or nil }
       end
-      -- An action: store the position before the page goes.
-      top, sel = out.top, out.sel
-      hist.set_pos(top, sel)
       local kind = out.kind
-      if kind == "link" then
-        local r, why_not = urlmod.resolve(held.base, out.href)
-        if not r then
-          popup = why_not
-        elseif r.kind == "same" then
-          jump(r.fragment)
-        elseif r.kind ~= "unsupported" then
-          local key = r.url or r.path
-          if key == key_of(cur) or key == held.location then
+      if bg and (kind == "commit" or kind == "done") then
+        local final = advance(kind, out)
+        if final then
+          return final
+        end
+      elseif bg and stop_load(kind) then
+        -- The action was used up by the stop.
+        kind = nil
+      else
+        -- An action: store the position before the page goes.
+        top, sel = out.top, out.sel
+        hist.set_pos(top, sel)
+        if kind == "link" then
+          local r, why_not = urlmod.resolve(held.base, out.href)
+          if not r then
+            popup = why_not
+          elseif r.kind == "same" then
             jump(r.fragment)
+          elseif r.kind ~= "unsupported" then
+            local key = r.url or r.path
+            if key == key_of(cur) or key == held.location then
+              jump(r.fragment)
+            else
+              req = { spec = spec_of(key, guesses), mode = "link",
+                fragment = r.fragment }
+            end
+          end
+        elseif kind == "back" or kind == "forward" then
+          local entry
+          if kind == "back" then
+            entry = hist.back()
           else
-            req = { spec = spec_of(key, guesses), mode = "link",
-              fragment = r.fragment }
+            entry = hist.forward()
           end
-        end
-      elseif kind == "back" or kind == "forward" then
-        local entry
-        if kind == "back" then
-          entry = hist.back()
-        else
-          entry = hist.forward()
-        end
-        if entry then
-          if not held.broken and entry.target == key_of(cur) then
-            top, sel = entry.top, entry.sel
+          if entry then
+            if not held.broken and entry.target == key_of(cur) then
+              top, sel = entry.top, entry.sel
+            else
+              req = { spec = spec_of(entry.target, guesses), mode = kind,
+                top = entry.top, sel = entry.sel }
+            end
+          end
+        elseif kind == "reload" then
+          req = { spec = cur, mode = "reload", top = top, sel = sel }
+          if held.broken then
+            req.top, req.sel = 1, nil
+          end
+        elseif kind == "go" then
+          local spec, msg = M.classify(out.text, deps)
+          if not spec then
+            popup = msg
           else
-            req = { spec = spec_of(entry.target, guesses), mode = kind,
-              top = entry.top, sel = entry.sel }
+            spec.arg = out.text
+            if spec.guessed then
+              guesses[key_of(spec)] = out.text
+            end
+            req = { spec = spec, mode = "go", fragment = spec.fragment }
           end
-        end
-      elseif kind == "reload" then
-        req = { spec = cur, mode = "reload", top = top, sel = sel }
-        if held.broken then
-          req.top, req.sel = 1, nil
-        end
-      elseif kind == "go" then
-        local spec, msg = M.classify(out.text, deps)
-        if not spec then
-          popup = msg
-        else
-          spec.arg = out.text
-          if spec.guessed then
-            guesses[key_of(spec)] = out.text
-          end
-          req = { spec = spec, mode = "go", fragment = spec.fragment }
         end
       end
     end
@@ -1270,10 +1494,9 @@ end
 --   open_screen(opts)      optional, opens the screen session with the
 --                          loading screen (see viewer.open). It takes
 --                          no_rescale and status. Without it, the viewer
---                          opens after the render, through view
---                          The viewer session takes deps.on_key from the
---                          caller (see viewer.open), so a test passes a
---                          viewer built on its own deps
+--                          opens after the render, through view. The
+--                          session runs the load as a coroutine and reads
+--                          the keys itself (see viewer.open)
 --   view(lines, opts)      optional, runs the viewer (see viewer.run).
 --                          Returns "quit", "interrupted" or an action table
 --   on_interrupt(fn)       optional, calls fn on Ctrl+C. Returns a function
@@ -1413,22 +1636,6 @@ function M.game_deps()
   if component.isAvailable("internet") then
     internet = component.internet
   end
-  -- Calls fn(name, char, code) for each key event until the returned function
-  -- runs. The listeners see the keys that os.sleep takes from the queue.
-  local function on_key(fn)
-    local function down(_, _, char, code)
-      fn("key_down", char, code)
-    end
-    local function up(_, _, char, code)
-      fn("key_up", char, code)
-    end
-    event.listen("key_down", down)
-    event.listen("key_up", up)
-    return function()
-      event.ignore("key_down", down)
-      event.ignore("key_up", up)
-    end
-  end
   return {
     out = function(line) io.write(line, "\n") end,
     err = function(line) io.stderr:write(line, "\n") end,
@@ -1458,8 +1665,7 @@ function M.game_deps()
     },
     open_screen = function(opts)
       local viewer = need("html.viewer")
-      return viewer.open({ gpu = gpu, pull = event.pull, term = term,
-        on_key = on_key }, opts)
+      return viewer.open({ gpu = gpu, pull = event.pull, term = term }, opts)
     end,
     view = function(lines, opts)
       local viewer = need("html.viewer")

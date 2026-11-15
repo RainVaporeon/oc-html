@@ -817,7 +817,8 @@ local function framed(o)
   local set = gpu.set
   gpu.set = function(x, y, s)
     if y == STATUS_ROW then
-      local text = s:gsub("%s+$", "")
+      -- The percent and the key hint on the right are not part of the text.
+      local text = s:gsub("^%s+", ""):gsub("%s+$", ""):gsub("%s+%d+%%.*$", "")
       trace("status")
       if not rec.shown then
         rec.statuses[#rec.statuses + 1] = text
@@ -834,10 +835,31 @@ local function framed(o)
   local term = { clear = function() trace("restore") end,
     setCursor = function() end }
 
-  -- The viewer events.
+  -- The viewer events. While a load runs (the show call has opts.load) the
+  -- viewer pulls the events of the load (ticks). Otherwise it pulls the
+  -- events of show. A pull of a load with no event waits: the clock moves by
+  -- the timeout, as event.pull does.
   local show_events = o.show or { KEY_Q, KEY_Y }
   local show_at = 1
-  local function pull(_)
+  local loading, idle, tick_queue = false, false, {}
+  local waits = 0
+  local function pull(timeout)
+    if loading then
+      local e = table.remove(tick_queue, 1)
+      if e then
+        return table.unpack(e)
+      end
+      if not idle then
+        waits = waits + 1
+        if waits > 100000 then
+          error("test: the viewer waits for an event that never comes", 0)
+        end
+        if timeout and timeout > 0 then
+          computer.test.advance(timeout)
+        end
+        return nil
+      end
+    end
     local e = show_events[show_at]
     show_at = show_at + 1
     if not e then
@@ -846,20 +868,16 @@ local function framed(o)
     return table.unpack(e)
   end
 
-  -- The key events of a load: o.ticks[n] goes to the listeners at the nth
-  -- wait or read, as os.sleep gives the events to event.listen listeners.
-  -- A key with no listener installed is lost. The interrupted event goes to
-  -- the interrupt listener.
-  local key_fn, int_fn
+  -- The key events of a load: o.ticks[n] reaches the viewer at the nth read
+  -- or the nth step of the loader. The interrupted event also goes to the
+  -- interrupt listener, as in OpenOS.
+  local int_fn
   local function pump()
     polls = polls + 1
     for _, e in ipairs((o.ticks or {})[polls] or {}) do
-      if e[1] == "interrupted" then
-        if int_fn then
-          int_fn()
-        end
-      elseif key_fn then
-        key_fn(e[1], e[3], e[4])
+      tick_queue[#tick_queue + 1] = e
+      if e[1] == "interrupted" and int_fn then
+        int_fn()
       end
     end
   end
@@ -900,13 +918,26 @@ local function framed(o)
       return function() int_fn = nil end
     end,
     open_screen = function(so)
-      local s = viewer.open({ gpu = gpu, pull = pull, term = term,
-        on_key = function(fn)
-          key_fn = fn
-          return function() key_fn = nil end
-        end }, so)
+      local s = viewer.open({ gpu = gpu, pull = pull, term = term }, so)
       local show = s.show
       s.show = function(lines, opts)
+        loading, idle = opts.load ~= nil, false
+        if loading then
+          local drive = opts.load.drive
+          opts.load.drive = function()
+            local what, secs = drive()
+            pump()
+            if what == "slice" then
+              rec.slices = (rec.slices or 0) + 1
+            end
+            -- A prompt that is open when the load ends is answered from
+            -- the events of show.
+            idle = what == "commit" or what == "done"
+            return what, secs
+          end
+          rec.live_shows = (rec.live_shows or 0) + 1
+          return show(lines, opts)
+        end
         trace("show")
         if not rec.shown then
           -- The screen the load left, before the viewer draws.
@@ -965,7 +996,14 @@ local function framed(o)
     args[i] = a
   end
   args.n = #args
+  rec.os_sleeps = 0
+  local real_sleep = os.sleep
+  os.sleep = function(...)
+    rec.os_sleeps = rec.os_sleeps + 1
+    return real_sleep(...)
+  end
   local ok, code = pcall(chunk.main, args, deps)
+  os.sleep = real_sleep
   _G.require = real_require
   if not ok then
     error(code, 0)
@@ -1079,6 +1117,8 @@ local function observe(rec)
     phases_before_body = not rec.late_phase,
     handles_closed = closed,
     sleeps = computer.test.sleeps(),
+    os_sleeps = rec.os_sleeps,
+    many_slices = (rec.slices or 0) >= 11,
     reads = rec.file.reads,
   }
 end
@@ -1125,20 +1165,20 @@ framed_cases("loading_startup_order_and_phases", {
     { text = PAGE },
     { code = 0, status_first = true, first_status = "Loading page.html...",
       phases = { "Loading page.html...", "Loading modules...",
-        "Loading page.html..." } } },
+        "page.html - Loading" } } },
   { "URL: status first, before the request and the modules",
     { args = { URL }, card = { default = served(PAGE, 10) } },
     { code = 0, status_first = true, first_status = URL_FIRST,
       phases = { URL_FIRST, "Loading modules...",
         "Connecting to example.com...", "Waiting for response...",
-        URL_FIRST } } },
+        URL .. " - Loading" } } },
   { "URL: the phases come before the body, also on a slow server",
     { args = { URL }, step = 0.1, card = { default = served(PAGE, 10,
       { connect_polls = 3, response_polls = 3 }) } },
     { code = 0, phases_before_body = true,
       phases = { URL_FIRST, "Loading modules...",
         "Connecting to example.com...", "Waiting for response...",
-        URL_FIRST } } },
+        URL .. " - Loading" } } },
   { "redirect: its target shows before the body",
     { args = { URL }, card = { routes = {
         [URL] = { code = 302, headers = { Location = { "/next" } } },
@@ -1148,7 +1188,7 @@ framed_cases("loading_startup_order_and_phases", {
       phases = { URL_FIRST, "Loading modules...",
         "Connecting to example.com...", "Waiting for response...",
         "Redirect to http://example.com/next...",
-        "Waiting for response...", "Loading http://example.com/next..." } } },
+        "Waiting for response...", "http://example.com/next - Loading" } } },
   { "guessed URL: the frame shows the argument",
     { args = { "example.com" }, deps = { exists = no },
       card = { routes = { ["http://example.com"] = served(PAGE, 10) } } },
@@ -1164,15 +1204,15 @@ framed_cases("loading_byte_counts", {
   { "file: the size is known, the last count is the size",
     { text = BIG, step = 0.1 },
     { code = 0, kb_rising = true, within_rate = true,
-      last_kb = "Loading page.html..." .. OF } },
+      last_kb = "Big - Loading" .. OF } },
   { "page with Content-Length: the last count is the size",
     { args = { URL }, step = 0.1, card = { default = with_length(BIG, 1000) } },
     { code = 0, kb_rising = true, within_rate = true,
-      last_kb = "Loading " .. URL .. "..." .. OF } },
+      last_kb = "Big - Loading" .. OF } },
   { "page without Content-Length: a count and no total",
     { args = { URL }, step = 0.1, card = { default = served(BIG, 1000) } },
     { code = 0, kb_rising = true, within_rate = true,
-      last_kb = "Loading " .. URL .. "... " .. KB .. " KB" } },
+      last_kb = "Big - Loading " .. KB .. " KB" } },
   { "a fast read: the counts do not run faster than the limit",
     { text = BIG, step = 0.01 },
     { code = 0, within_rate = true, updates = 1 } },
@@ -1181,23 +1221,23 @@ framed_cases("loading_byte_counts", {
     { code = 0, updates = 1 } },
 })
 
--- "Content during load": the first screen draws when the lines fill it, and
--- not before. A page with fewer lines than rows draws once, at the end.
+-- "Content during load": the viewer loop draws the rows of the lines that
+-- became complete, inside the window, at each pass. The loader yields about
+-- every 0.1 s, so a step of 0.05 s per read gives a pass every two reads.
 framed_cases("loading_first_screen", {
   { "file: draws before the end of input, rows equal the final rows",
-    { text = BIG, step = 0.01 },
+    { text = BIG, step = 0.05 },
     { code = 0, early_draw = true, early_rows_equal = true, shown = true,
       title = "Big" } },
   { "large page in small pieces: draws before the end of input",
     { args = { URL }, step = 0.01, card = { default = served(BIG, 100) } },
     { code = 0, early_draw = true, early_rows_equal = true, shown = true } },
-  { "small page: no draw before the viewer",
+  { "small page: its two lines draw in the live view, before the viewer",
     { text = PAGE },
-    { code = 0, early_draw = false, row_draws_before_show = 0,
-      shown = true } },
-  { "a page that does not fill the screen: no draw before the viewer",
+    { code = 0, row_draws_before_show = 2, shown = true } },
+  { "a page that does not fill the screen: its lines draw in the live view",
     { text = string.rep("<p>x</p>", 4), step = 0.01 },
-    { code = 0, early_draw = false, row_draws_before_show = 0 } },
+    { code = 0, row_draws_before_show = 4 } },
 })
 
 -- "Keys during load": Ctrl+C exits at once with code 130. The screen is
@@ -1229,7 +1269,7 @@ framed_cases("loading_quit_prompt", {
   { "q then y: loading stops, exit 0, no error line",
     { text = BIG, step = 0.3, ticks = { { KEY_Q }, { KEY_Y } } },
     { code = 0, err = {}, marks = { "restore" }, shown = false,
-      reads = 2 } },
+      reads = 0 } },
   { "q then Enter: loading stops",
     { text = BIG, step = 0.3, ticks = { { KEY_Q }, { KEY_ENTER } } },
     { code = 0, err = {}, marks = { "restore" }, shown = false } },
@@ -1246,9 +1286,9 @@ framed_cases("loading_quit_prompt", {
   { "other keys alone are dropped, no prompt",
     { text = BIG, step = 0.3, ticks = { { KEY_DOWN, KEY_N } } },
     { code = 0, shown = true, title = "Big" } },
-  { "the prompt is still open at the end of the load: the viewer asks",
+  { "the prompt is still open at the end of the load: the same view asks",
     { text = PAGE, step = 0.3, ticks = { { KEY_Q } }, show = { KEY_Y } },
-    { code = 0, shown = true, marks = { "restore" } } },
+    { code = 0, shown = false, marks = { "restore" } } },
   { "the prompt at the end of the load, cancelled: the page shows",
     { text = PAGE, step = 0.3, ticks = { { KEY_Q } },
       show = { KEY_N, KEY_Q, KEY_Y } },
@@ -1485,14 +1525,22 @@ t.cases(T, "loading_no_screen_draws_nothing", {
 }, function(args) return print_run(args, true) end)
 
 -- spec/guard.md "Size check before reading": with no known size there is no
--- check before reading, so no settle (each settle sleeps).
+-- check before reading, so no settle. A settle yields 11 times. In the viewer
+-- path every yield is a slice for the viewer loop, and nothing calls
+-- os.sleep.
 framed_cases("loading_settle_only_with_a_known_size", {
-  { "page without Content-Length: no settle sleeps",
+  { "page without Content-Length: no settle slices",
     { args = { URL }, card = { default = served(PAGE, 100) } },
-    { code = 0, sleeps = 0 } },
-  { "page with Content-Length: the settle sleeps",
+    { code = 0, many_slices = false, os_sleeps = 0 } },
+  { "page with Content-Length: the settle gives 11 slices to the loop",
     { args = { URL }, card = { default = with_length(PAGE, 100) } },
-    { code = 0, sleeps = 11 } },
+    { code = 0, many_slices = true, os_sleeps = 0 } },
+  { "a local file: the settle gives slices to the loop, no os.sleep",
+    { text = PAGE }, { code = 0, many_slices = true, os_sleeps = 0 } },
+  { "a slow page in pieces: no os.sleep for the waits",
+    { args = { URL }, step = 0.1, card = { default = served(BIG, 500,
+      { connect_polls = 3, response_polls = 3 }) } },
+    { code = 0, os_sleeps = 0, sleeps = 0 } },
 })
 
 -- Navigation (spec/navigation.md) --------------------------------------------
@@ -1561,7 +1609,7 @@ local function nav(o)
   require("event").test.reset()
   local rec = { shows = {}, snaps = {}, err = {}, opens = {}, loads = 0,
     reads_in_load = 0, load_polls = 0, status = "", files_open = 0,
-    key_listeners = 0 }
+    key_listeners = 0, live_shows = 0 }
   local gpu, gctl = fake_screen.new({ width = 80, height = STATUS_ROW,
     max_width = 80, max_height = STATUS_ROW })
   rec.gctl = gctl
@@ -1580,7 +1628,36 @@ local function nav(o)
     end }
 
   local items, at = o.show or {}, 1
+  -- While a load runs (the show call has opts.load) the viewer pulls the
+  -- events of the load: the queue that pump fills (ticks), or the event
+  -- module with o.event_keys. With no event it waits: the clock moves by the
+  -- timeout, as event.pull does.
+  local loading, idle, tick_queue = false, false, {}
+  local waits = 0
   local function pull(timeout)
+    if loading then
+      if o.event_keys then
+        local ev = table.pack(require("event").pull(timeout))
+        if ev.n > 0 and ev[1] ~= nil then
+          return table.unpack(ev, 1, ev.n)
+        end
+      else
+        local e = table.remove(tick_queue, 1)
+        if e then
+          return table.unpack(e)
+        end
+      end
+      if not idle then
+        waits = waits + 1
+        if waits > 100000 then
+          error("test: the viewer waits for an event that never comes", 0)
+        end
+        if timeout and timeout > 0 then
+          computer.test.advance(timeout)
+        end
+        return nil
+      end
+    end
     while true do
       local item = items[at]
       if item == nil then
@@ -1602,11 +1679,9 @@ local function nav(o)
     end
   end
 
-  -- The key events of a load. o.ticks[load][n] goes to the listeners at the
-  -- nth wait or read of the load, as os.sleep gives the events to
-  -- event.listen listeners. A key with no listener installed is lost. With
-  -- o.event_keys the listeners are the ones of game_deps over the event
-  -- module of the test, and the row queues the keys itself.
+  -- The key events of a load. o.ticks[load][n] reaches the viewer at the nth
+  -- read or step of the loader. With o.event_keys the row queues the keys in
+  -- the event module of the test itself, and the viewer pulls them there.
   local pump
   if o.event_keys then
     pump = function() end
@@ -1628,12 +1703,9 @@ local function nav(o)
         if not e then
           break
         end
-        if e[1] == "interrupted" then
-          if rec.interrupt then
-            rec.interrupt()
-          end
-        elseif rec.key_fn then
-          rec.key_fn(e[1], e[3], e[4])
+        tick_queue[#tick_queue + 1] = e
+        if e[1] == "interrupted" and rec.interrupt then
+          rec.interrupt()
         end
       end
     end
@@ -1705,15 +1777,24 @@ local function nav(o)
       rec.interrupt = fn
       return function() end
     end,
-    on_key = function(fn)
-      rec.key_fn = fn
-      return function() rec.key_fn = nil end
-    end,
     open_screen = function(so)
-      local s = viewer.open({ gpu = gpu, pull = pull, term = term,
-        on_key = deps.on_key }, so)
+      local s = viewer.open({ gpu = gpu, pull = pull, term = term }, so)
       local show = s.show
       s.show = function(lines, opts)
+        loading, idle = opts.load ~= nil, false
+        if loading then
+          local drive = opts.load.drive
+          opts.load.drive = function()
+            local what, secs = drive()
+            pump()
+            -- A prompt that is open when the load ends is answered from
+            -- the events of show.
+            idle = what == "commit" or what == "done"
+            return what, secs
+          end
+          rec.live_shows = rec.live_shows + 1
+          return show(lines, opts)
+        end
         rec.shows[#rec.shows + 1] = { title = opts.title or false,
           file = opts.file, error = opts.error or false, top = opts.top,
           sel = opts.sel or false, n = #lines, entry = gctl.screen() }
@@ -1739,29 +1820,24 @@ local function nav(o)
       event.listen("interrupted", fn)
       return function() event.ignore("interrupted", fn) end
     end
-    deps.on_key = function(fn)
-      local function down(_, _, char, code)
-        fn("key_down", char, code)
-      end
-      local function up(_, _, char, code)
-        fn("key_up", char, code)
-      end
-      event.listen("key_down", down)
-      event.listen("key_up", up)
-      rec.key_listeners = rec.key_listeners + 1
-      return function()
-        event.ignore("key_down", down)
-        event.ignore("key_up", up)
-        rec.key_listeners = rec.key_listeners - 1
-      end
-    end
   end
   local chunk = t.load_bin("html")({})
   local args = { n = #o.args }
   for i, a in ipairs(o.args) do
     args[i] = a
   end
-  rec.code = chunk.main(args, deps)
+  rec.os_sleeps = 0
+  local real_sleep = os.sleep
+  os.sleep = function(...)
+    rec.os_sleeps = rec.os_sleeps + 1
+    return real_sleep(...)
+  end
+  local ran, code = pcall(chunk.main, args, deps)
+  os.sleep = real_sleep
+  if not ran then
+    error(code, 0)
+  end
+  rec.code = code
   return rec
 end
 
@@ -1771,7 +1847,9 @@ local function observe_nav(rec)
     open_max = rec.ctl.max_open, open_end = rec.ctl.open,
     opens = rec.opens, files_open = rec.files_open, snaps = rec.snaps,
     shows = #rec.shows, titles = {}, files = {}, errors = {}, tops = {},
-    sels = {}, ns = {}, entries = {}, key_listeners = rec.key_listeners }
+    sels = {}, ns = {}, entries = {}, key_listeners = rec.key_listeners,
+    os_sleeps = rec.os_sleeps, live_shows = rec.live_shows,
+    events_left = require("event").test.size() }
   for i, s in ipairs(rec.shows) do
     out.titles[i], out.files[i], out.errors[i] = s.title, s.file, s.error
     out.tops[i], out.sels[i], out.ns[i] = s.top, s.sel, s.n
@@ -1887,7 +1965,7 @@ nav_cases("navigation_history", {
 -- A link that cannot load: the popup shows over the old page, and the old
 -- page cells stay (the status row is the only row that changed).
 local POPUP_A = { code = 0, titles = { "A", "A" }, shows = 2,
-  files = { URL_A, URL_A }, tops = { 1, 1 }, entries = { false,
+  files = { URL_A, URL_A }, tops = { 1, 1 }, entries = { "AAA first",
     "AAA first" }, open_max = 1, open_end = 0, opens = { 0, 0 } }
 local function popup_row(name, route, text, extra)
   local expected = {}
@@ -2074,8 +2152,10 @@ nav_cases("navigation_go", {
 })
 
 -- Abort (z) in the two phases and on the first load.
+-- One z for each load, after its first read.
 local function after_commit(rec)
-  if rec.reads_in_load >= 1 then
+  if rec.reads_in_load >= 1 and rec.z_sent ~= rec.loads then
+    rec.z_sent = rec.loads
     return KEY_Z
   end
 end
@@ -2093,7 +2173,7 @@ local function snap_screen(rec)
   if #rec.ctl.requests == 2 and not rec.snapped then
     rec.snapped = true
     rec.snaps[1] = (rec.gctl.row(1):gsub("%s+$", ""))
-    rec.snaps[2] = rec.status
+    rec.snaps[2] = (rec.status:gsub("^%s+", ""):gsub("%s+%d+%%.*$", ""))
   end
 end
 local function race_row(polls)
@@ -2104,7 +2184,7 @@ local function race_row(polls)
       ticks = { [2] = z_first_poll },
       show = events(KEY_TAB, KEY_ENTER, QUIT) },
     { code = 0, requests = { URL_A, URL_B }, titles = { "A", "A" },
-      errors = { false, false }, entries = { false, "AAA first" },
+      errors = { false, false }, entries = { "AAA first", "AAA first" },
       open_end = 0 } }
 end
 nav_cases("navigation_abort", {
@@ -2116,22 +2196,22 @@ nav_cases("navigation_abort", {
       ticks = { [2] = { { KEY_Z } } },
       show = events(KEY_TAB, KEY_ENTER, QUIT) },
     { code = 0, requests = { URL_A, URL_B }, titles = { "A", "A" },
-      errors = { false, false }, entries = { false, "AAA first" },
+      errors = { false, false }, entries = { "AAA first", "AAA first" },
       open_end = 0 } },
-  { "the commit blanks the line rows, the status keeps the loading text",
+  { "the commit blanks the line rows, the status shows the load",
     { args = { URL_A }, step = 0.3, routes = { [URL_A] = served(A_LINK, 10),
         [URL_B] = served(BIG, 500) },
       on_read = snap_screen,
       show = events(KEY_TAB, KEY_ENTER, QUIT) },
     { code = 0, requests = { URL_A, URL_B }, titles = { "A", "Big" },
-      snaps = { "", "Loading " .. URL_B .. "..." } } },
+      snaps = { "", URL_B .. " - Loading" } } },
   { "z in phase 1: the page stays",
     { args = { URL_A }, routes = { [URL_A] = served(A_LINK, 10),
         [URL_B] = { connect_polls = 1e6 } },
       ticks = { [2] = { { KEY_Z } } },
       show = events(KEY_TAB, KEY_ENTER, QUIT) },
     { code = 0, requests = { URL_A, URL_B }, titles = { "A", "A" },
-      errors = { false, false }, entries = { false, "AAA first" },
+      errors = { false, false }, entries = { "AAA first", "AAA first" },
       open_max = 1, open_end = 0, opens = { 0, 0 } } },
   { "z after the commit: the previous page loads again",
     { args = { URL_A }, step = 0.3, routes = { [URL_A] = served(A_LINK, 10),
@@ -2248,14 +2328,18 @@ end
 
 -- A page that reads in pieces with an empty read after each, so the body
 -- waits and sleeps between the pieces.
-local function gapped(body, size)
-  return { headers = { ["Content-Type"] = { "text/html" } },
+local function gapped(body, size, extra)
+  local s = { headers = { ["Content-Type"] = { "text/html" } },
     body = internet.pieces(body, size, true) }
+  for k, v in pairs(extra or {}) do
+    s[k] = v
+  end
+  return s
 end
 
 local STAYS = { code = 0, requests = { URL_A, URL_B },
   titles = { "A", "A" }, errors = { false, false },
-  entries = { false, "AAA first" }, open_end = 0, key_listeners = 0 }
+  entries = { "AAA first", "AAA first" }, open_end = 0, key_listeners = 0 }
 local AGAIN = { code = 0, requests = { URL_A, URL_B, URL_A },
   titles = { "A", "A", "A" }, shows = 3, open_end = 0, key_listeners = 0 }
 
@@ -2358,6 +2442,50 @@ nav_cases("navigation_load_keys", {
       routes = { [URL_A] = served(A_LINK, 10), [URL_B] = served(B, 10) },
       show = events(KEY_TAB, KEY_ENTER, QUIT) },
     { code = 0, titles = { "A", "B" }, key_listeners = 0 } },
+})
+
+-- The viewer loop owns the events during a load (spec/loading.md "Keys during
+-- load"): nothing calls os.sleep, and every key that the user pressed is
+-- pulled by the loop.
+local KEY_X = { "key_down", "kbd", 120, 45, "player" }
+local function many(key, n)
+  local out = {}
+  for i = 1, n do
+    out[i] = key
+  end
+  return out
+end
+nav_cases("navigation_loop_owns_events", {
+  { "a link load that waits and reads calls no os.sleep",
+    { args = { URL_A }, step = 0.1,
+      routes = { [URL_A] = served(A_LINK, 10),
+        [URL_B] = gapped(BIG, 500, { connect_polls = 3 }) },
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, titles = { "A", "Big" }, os_sleeps = 0, live_shows = 4 } },
+  { "a local load calls no os.sleep",
+    { args = { "/p/a.html" }, files = LOCAL, dirs = LOCAL_DIRS,
+      show = events(KEY_TAB, KEY_ENTER, QUIT) },
+    { code = 0, titles = { "A", false }, os_sleeps = 0 } },
+  { "40 keys during the body are all pulled by the loop",
+    { args = { URL_A }, event_keys = true, step = 0.1,
+      routes = { [URL_A] = gapped(BIG, 500) },
+      on_request = function()
+        for _, e in ipairs(many(KEY_X, 40)) do
+          push(e)
+        end
+      end,
+      show = QUIT },
+    { code = 0, titles = { "Big" }, events_left = 0, os_sleeps = 0 } },
+  { "keys during connect are pulled too",
+    { args = { URL_A }, event_keys = true, step = 0.1,
+      routes = { [URL_A] = gapped(BIG, 500, { connect_polls = 40 }) },
+      on_request = function()
+        for _, e in ipairs(many(KEY_X, 30)) do
+          push(e)
+        end
+      end,
+      show = QUIT },
+    { code = 0, titles = { "Big" }, events_left = 0 } },
 })
 
 -- Quit and exit.

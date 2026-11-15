@@ -4,9 +4,8 @@
 --   deps.gpu    a GPU component proxy
 --   deps.pull   event.pull: pull(timeout) returns name, ... or nil
 --   deps.term   a table with clear() and setCursor(x, y)
---   deps.on_key on_key(fn) calls fn(name, char, code) for each key_down and
---               key_up event and returns a function that stops it. A session
---               uses it during a load
+-- During a load the loop of the viewer is the only reader of events (see
+-- spec/loading.md "Keys during load").
 
 local unicode = require("unicode")
 
@@ -65,8 +64,7 @@ local CHAR_R, CHAR_UPPER_R, CHAR_G, CHAR_HELP = 114, 82, 103, 63
 
 -- event.pull with a timeout, so the program yields while it waits.
 local IDLE_TIMEOUT = 1
--- The most intents that wait for a poll.
-local INTENT_MAX = 32
+
 
 local HINT = "Tab:link Enter:open Bksp:back r:reload ?:keys q:quit"
 local SHORT_HINT = "?:keys q:quit"
@@ -101,7 +99,8 @@ local SCROLL_KEYS = {
 
 -- Returns "interrupted", "quit", a scroll name ("up" ... "end"), "tab",
 -- "shift_tab", "enter", "back", "forward", "backspace", "reload", "go",
--- "help", or nil for other events. shifted() tells whether Shift is down.
+-- "help", "abort" (z), or nil for other events. shifted() tells whether
+-- Shift is down.
 local function classify(name, char, code, shifted)
   if name == "interrupted" then
     return "interrupted"
@@ -139,6 +138,9 @@ local function classify(name, char, code, shifted)
   end
   if char == CHAR_R or char == CHAR_UPPER_R then
     return "reload"
+  end
+  if char == CHAR_Z or char == CHAR_UPPER_Z then
+    return "abort"
   end
   if char == CHAR_G then
     return "go"
@@ -301,14 +303,21 @@ local function draw_line(gpu, screen, color, w, line, y)
   end
 end
 
--- base: w, h, color and screen of the session (see M.open). start_prompt is
--- true when the quit prompt is still on screen from the load.
--- opts: title, file, error, links, resolve, top, sel (see M.run).
+-- base: w, h, color and screen of the session (see M.open).
+-- opts: title, file, error, links, resolve, top, sel, live, load (see M.run
+-- and M.open).
 -- Returns "quit", "interrupted" or an action table (see M.run).
-local function view(lines, opts, gpu, pull, base, start_prompt)
+local function view(lines, opts, gpu, pull, base)
   local w, h = base.w, base.h
   local rows = h - 1
-  local count = #lines
+  -- A live page: the lines and the links grow while the loader runs.
+  local live, load = opts.live, opts.load
+  local links = opts.links
+  if live then
+    lines = live.lines or lines
+    links = live.links()
+  end
+  local count = live and live.count() or #lines
   local max_top = math.max(1, count - rows + 1)
   -- One page is h-2 lines, the largest scroll that still uses copy.
   local page = math.max(1, rows - 1)
@@ -323,24 +332,37 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
   local http_prefix = title:match("^(%[HTTP [^%]]*%])")
 
   -- Links: the start and end of each span, and the list of the links that
-  -- start inside the page, in order. A span that starts past the last line
-  -- is ignored.
-  local links = opts.links
+  -- start inside the page, in order. A span that starts past the last
+  -- complete line is ignored. seen is the number of spans taken so far. The
+  -- last one taken can still grow while the page loads, so each call reads
+  -- it again.
   local from_line, from_col, to_line, to_col = {}, {}, {}, {}
   local valid, pos = {}, {}
-  if links and links.span then
-    for i = 1, links.count or #links.span do
+  local seen = 0
+  local function read_links()
+    if not (links and links.span) then
+      return
+    end
+    local last = links.count or #links.span
+    for i = math.max(seen, 1), last do
       local span = links.span[i]
       if span then
         local fl, fc, tl, tc = unpack_span(span)
-        from_line[i], from_col[i], to_line[i], to_col[i] = fl, fc, tl, tc
-        if fl >= 1 and fl <= count then
-          valid[#valid + 1] = i
-          pos[i] = #valid
+        if i > seen then
+          if fl > count then
+            break
+          end
+          if fl >= 1 then
+            valid[#valid + 1] = i
+            pos[i] = #valid
+          end
         end
+        from_line[i], from_col[i], to_line[i], to_col[i] = fl, fc, tl, tc
       end
+      seen = i
     end
   end
+  read_links()
 
   -- The selected link index, or nil.
   local sel
@@ -428,11 +450,27 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
     return label
   end
 
-  local function draw_status()
-    local pct = 100
+  local function percent()
     if max_top > 1 then
-      pct = (top - 1) * 100 // (max_top - 1)
+      return (top - 1) * 100 // (max_top - 1)
     end
+    return 100
+  end
+
+  -- The text that the last status draw used, so a pass redraws the row only
+  -- when something on it changed.
+  local shown_key
+  local function status_key()
+    local label, tail
+    if load then
+      label, tail = load.status()
+    end
+    return percent() .. "|" .. (label or "") .. "|" .. (tail or "")
+  end
+
+  local function draw_status()
+    local pct = percent()
+    shown_key = status_key()
     local right = format(" %3d%%  %s ", pct, HINT)
     if w - 1 - #right < TITLE_MIN then
       right = format(" %3d%%  %s ", pct, SHORT_HINT)
@@ -445,11 +483,25 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
       screen.status(" " .. notice)
       return
     end
-    local text = title
+    local text, tail = title, nil
+    if load then
+      text, tail = load.status()
+    end
     if sel and visible(top, sel) then
       text = (http_prefix and http_prefix .. " " or "") .. "-> " .. sel_label()
+      tail = nil
     end
-    local left = " " .. fit(text, w - 1 - #right)
+    local avail = w - 1 - #right
+    local left
+    if tail then
+      -- The loading part stays whole, the label is cut.
+      local keep = wlen(tail)
+      left = text == "" and tail
+        or fit(text, math.max(0, avail - keep - 3)) .. " - " .. tail
+      left = " " .. fit(left, avail)
+    else
+      left = " " .. fit(text, avail)
+    end
     screen.status(left .. rep(" ", w - #right - wlen(left)) .. right)
   end
 
@@ -468,6 +520,65 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
       notice_dirty = true
     end
     return name, a, b, c
+  end
+
+  -- Runs the loader one step. Returns the timeout for the next pull: the
+  -- wait of the loader, 0 after a slice of work, or IDLE_TIMEOUT when no
+  -- load runs. A "commit" or a "done" waits in pending_load, because a
+  -- prompt can be open when it comes.
+  local pending_load
+  local function step_load()
+    if not load or pending_load then
+      return IDLE_TIMEOUT
+    end
+    local what, secs = load.drive()
+    if what == "wait" then
+      return secs or IDLE_TIMEOUT
+    elseif what == "slice" then
+      return 0
+    end
+    pending_load = what
+    return 0
+  end
+
+  -- The pull of a prompt: the load goes on behind it.
+  local function pull_nested(timeout)
+    return pull_ev(math.min(timeout, step_load()))
+  end
+
+  -- Takes what the loader added since the last pass: draws the rows of the
+  -- lines that became complete (inside the window only), takes the new
+  -- links, draws the selected link again when it grew, and redraws the
+  -- status row when its text changed. The view does not scroll.
+  local function refresh()
+    if live then
+      lines = live.lines or lines
+      local n = live.count()
+      if n ~= count then
+        local old = count
+        local old_to, old_col
+        if sel then
+          old_to, old_col = to_line[sel], to_col[sel]
+        end
+        count = n
+        max_top = math.max(1, count - rows + 1)
+        links = live.links()
+        read_links()
+        for ln = math.max(old + 1, top), math.min(count, top + rows - 1) do
+          draw_row(ln - top + 1)
+        end
+        if sel and (to_line[sel] ~= old_to or to_col[sel] ~= old_col) then
+          -- The lines that the link already covered change their end.
+          for ln = math.max(from_line[sel], top),
+              math.min(old_to, old, top + rows - 1) do
+            draw_row(ln - top + 1)
+          end
+        end
+      end
+    end
+    if (live or load) and not notice and shown_key ~= status_key() then
+      draw_status()
+    end
   end
 
   local function move(target, action)
@@ -631,7 +742,7 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
   local function confirm_quit()
     screen.status(PROMPT)
     while true do
-      local name, _, char, code = pull_ev(IDLE_TIMEOUT)
+      local name, _, char, code = pull_nested(IDLE_TIMEOUT)
       if name == "interrupted" then
         return "interrupted"
       end
@@ -654,7 +765,7 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
   local function show_popup(text)
     local first, last = screen.popup(text .. "\n\n" .. POPUP_BUTTON)
     while true do
-      local name, _, char, code = pull_ev(IDLE_TIMEOUT)
+      local name, _, char, code = pull_nested(IDLE_TIMEOUT)
       if name == "interrupted" then
         return "interrupted"
       end
@@ -692,7 +803,7 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
     end
     draw()
     while true do
-      local name, _, b, c = pull_ev(IDLE_TIMEOUT)
+      local name, _, b, c = pull_nested(IDLE_TIMEOUT)
       if name == "interrupted" then
         return "interrupted"
       elseif name == "clipboard" and type(b) == "string" then
@@ -729,20 +840,18 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
   if opts.error and show_popup(opts.error) then
     return "interrupted"
   end
-  if start_prompt then
-    local result = confirm_quit()
-    if result then
-      return result
-    end
-  end
-
   local pending
   while true do
     local action
+    local timeout = step_load()
+    refresh()
+    if pending_load then
+      return act(pending_load)
+    end
     if pending then
       action, pending = pending, nil
     else
-      local name, _, char, code = pull_ev(IDLE_TIMEOUT)
+      local name, _, char, code = pull_ev(timeout)
       action = classify(name, char, code, base.shifted)
     end
     if action == "backspace" then
@@ -752,6 +861,14 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
       else
         action = "back"
       end
+    end
+    if action == "abort" or (action == "back" and load) then
+      -- Stops the load. Back, Backspace and Left do this too. With no load
+      -- z does nothing.
+      if load then
+        return act("abort")
+      end
+      action = nil
     end
     if action == "interrupted" then
       return "interrupted"
@@ -831,24 +948,23 @@ end
 -- opts.no_rescale) and reads the size. With opts.status it also clears the
 -- screen and draws that text on the status row. Returns a session:
 --   rows                     the number of line rows (the height minus 1)
---   status(text)             redraws the status row only
---   draw_lines(lines, count) draws the first screen from lines, which can
---                            still grow. It reads lines[1] to lines[rows].
---                            With count 0 it blanks the line rows
---   listen()                 starts the key listener (deps.on_key) and drops
---                            the old intents. A load calls it at its start
---   unlisten()               stops the listener. close calls it too
---   poll()                   takes the intents of the listener without
---                            waiting and never reads events. Returns
---                            "interrupted" (Ctrl+C), "quit" (the user
---                            confirmed the quit prompt), "abort" (z, Z,
---                            Backspace or Left) or nil. "q" shows the quit
---                            prompt and the status row keeps it until the
---                            user answers. Other keys are dropped
---   show(lines, opts)        the interactive loop (see M.run). A quit prompt
---                            still on screen is answered first
+--   show(lines, opts)        the interactive loop (see M.run). With opts.live
+--                            and opts.load it shows a page that is still
+--                            loading and drives its loader (see below)
 --   close()                  restores the screen. A second call does nothing
 -- An error inside open restores the screen and is raised again.
+--
+-- A page that loads. opts.live is the live source: lines (the layout
+-- lines, they only grow), count() (the number of complete lines), links()
+-- (the table { span, href, count } of the layout). opts.load is the loader:
+-- drive() runs it one step and returns "wait", seconds, or "slice", or
+-- "commit", or "done"; status() returns the label and the tail of the
+-- status line (the tail can be nil). opts.load without opts.live is phase 1
+-- of a load: the page is the fixed lines. A "commit" or a "done" makes show
+-- return the action table with that kind. "z", Backspace and Left return the
+-- kind "abort" while the load runs. Every other action returns as usual, and
+-- the caller stops the load. The loop drives the loader behind its prompts
+-- too, and it is the only reader of events.
 function M.open(deps, opts)
   opts = opts or {}
   local gpu, term, pull = deps.gpu, deps.term, deps.pull
@@ -869,7 +985,6 @@ function M.open(deps, opts)
   end
 
   local base, s
-  local prompt, text = false, ""
   local ok, err = pcall(function()
     if not opts.no_rescale then
       local max_w, max_h = gpu.maxResolution()
@@ -914,18 +1029,11 @@ function M.open(deps, opts)
     end
     s = { rows = h - 1 }
 
-    function s.status(t)
-      text = t
-      if not prompt then
-        base.screen.status(t)
-      end
-    end
-
     if opts.status then
       base.screen.fg(WHITE)
       base.screen.bg(BLACK)
       gpu.fill(1, 1, w, h, " ")
-      s.status(opts.status)
+      base.screen.status(opts.status)
     end
   end)
   if not ok then
@@ -933,98 +1041,13 @@ function M.open(deps, opts)
     error(err, 0)
   end
 
-  function s.draw_lines(lines, count)
-    for y = 1, s.rows do
-      draw_line(gpu, base.screen, base.color, base.w,
-        y <= count and lines[y] or "", y)
-    end
-  end
-
-  -- The key listener of a load (see listen). It turns each key into an
-  -- intent: "interrupted" (Ctrl+C), "abort" (z, Backspace, Left), "quit" (q),
-  -- "yes" (y or Enter) or "other". Repeats of "other" in a row count once.
-  local on_key, remove_key = deps.on_key, nil
-  local intents = {}
-
-  local function intent_of(char, code)
-    if char == CHAR_CTRL_C then
-      return "interrupted"
-    end
-    if char == CHAR_Z or char == CHAR_UPPER_Z or code == CODE_BACKSPACE
-        or char == CHAR_BACKSPACE or code == CODE_LEFT
-        or (char == 0 and code == NUMPAD_LEFT) then
-      return "abort"
-    end
-    if char == CHAR_Q or char == CHAR_UPPER_Q then
-      return "quit"
-    end
-    if char == CHAR_Y or char == CHAR_UPPER_Y or is_enter(char, code) then
-      return "yes"
-    end
-    return "other"
-  end
-
-  local function on_event(name, char, code)
-    base.track(name, char, code)
-    if name ~= "key_down" then
-      return
-    end
-    local intent = intent_of(char, code)
-    local n = #intents
-    if n < INTENT_MAX and not (intent == "other" and intents[n] == intent) then
-      intents[n + 1] = intent
-    end
-  end
-
-  -- Starts the key listener and drops the old intents. A second call restarts
-  -- it. Without deps.on_key nothing listens.
-  function s.listen()
-    s.unlisten()
-    if on_key then
-      remove_key = on_key(on_event)
-    end
-  end
-
-  -- Stops the listener and drops the intents. A second call does nothing.
-  function s.unlisten()
-    local remove = remove_key
-    remove_key = nil
-    intents = {}
-    if remove then
-      remove()
-    end
-  end
-
-  function s.poll()
-    while #intents > 0 do
-      local intent = table.remove(intents, 1)
-      if intent == "interrupted" then
-        return "interrupted"
-      end
-      if prompt then
-        if intent == "yes" then
-          return "quit"
-        end
-        prompt = false
-        base.screen.status(text)
-      elseif intent == "quit" then
-        prompt = true
-        base.screen.status(PROMPT)
-      elseif intent == "abort" then
-        return "abort"
-      end
-    end
-    return nil
-  end
-
   function s.show(lines, o)
-    return view(lines, o or {}, gpu, pull, base, prompt)
+    return view(lines, o or {}, gpu, pull, base)
   end
 
   function s.close()
     if not closed then
       closed = true
-      pcall(s.unlisten)
       restore()
     end
   end

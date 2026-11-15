@@ -214,11 +214,20 @@ local function run_view(doc, framed, size, source)
     return "quit"
   end
   if framed then
+    -- The stub drives the loader to its end, as the viewer loop does, and
+    -- keeps the lines of the final page.
     deps.open_screen = function()
-      return { rows = 24, status = function() end,
-        draw_lines = function() end, poll = function() end, show = keep,
-        listen = function() end, unlisten = function() end,
-        close = function() end }
+      return { rows = 24, close = function() end,
+        show = function(lines, opts)
+          if opts.load then
+            local what
+            repeat
+              what = opts.load.drive()
+            until what == "commit" or what == "done"
+            return { kind = what, top = 1 }
+          end
+          return keep(lines, opts)
+        end }
     end
   else
     deps.view = keep
