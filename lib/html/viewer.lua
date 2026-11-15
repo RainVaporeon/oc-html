@@ -64,7 +64,8 @@ local CHAR_R, CHAR_UPPER_R, CHAR_G, CHAR_HELP = 114, 82, 103, 63
 local IDLE_TIMEOUT = 1
 
 local HINT = "Tab:link Enter:open Bksp:back r:reload ?:keys q:quit"
-local SHORT_HINT = "q:quit"
+local SHORT_HINT = "?:keys q:quit"
+local TINY_HINT = "q:quit"
 -- The full hint is used only when the title keeps this many columns.
 local TITLE_MIN = 20
 local PROMPT = " Quit? (y/n)"
@@ -429,6 +430,9 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
     local right = format(" %3d%%  %s ", pct, HINT)
     if w - 1 - #right < TITLE_MIN then
       right = format(" %3d%%  %s ", pct, SHORT_HINT)
+      if w - 1 - #right < TITLE_MIN then
+        right = format(" %3d%%  %s ", pct, TINY_HINT)
+      end
     end
     if notice then
       -- A notice takes the whole row, with no percent and no hint.
@@ -482,7 +486,8 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
   local function step(t, s, dir)
     local pick
     if s and visible(t, s) then
-      pick = valid[pos[s] + dir]
+      -- The order wraps: after the last entry comes the first.
+      pick = valid[(pos[s] - 1 + dir) % #valid + 1]
     elseif dir > 0 then
       for _, i in ipairs(valid) do
         if from_line[i] >= t then
