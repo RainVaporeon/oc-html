@@ -3,7 +3,7 @@
 Spec: `SPEC.md` (index) and `spec/` (one file per component). Finished MVP plan and tasks: `tasks/archive/mvp-plan.md`, `tasks/archive/mvp-todo.md`.
 Test command for every task: `pwsh tests/docker/test.ps1`. Fuzz run: `pwsh tests/docker/test.ps1 fuzz 1000`.
 
-Current release: 0.4.0a (local and remote pages, loading screen, link following and navigation). The features below come from `AGENTS.md`. `SPEC.md` "Scope" lists them as in scope. Each feature needs a short spec section and the user's approval before code starts (`SPEC.md` "Boundaries": the ask-first rule for moving an item into scope covers only CSS and JS, so these features need no ask for scope, but each still needs its spec section and approval).
+Current release: 0.5.0a (local and remote pages, loading screen, link following and navigation, key handling during a load, disk cache). The features below come from `AGENTS.md`. `SPEC.md` "Scope" lists them as in scope. Each feature needs a short spec section and the user's approval before code starts (`SPEC.md` "Boundaries": the ask-first rule for moving an item into scope covers only CSS and JS, so these features need no ask for scope, but each still needs its spec section and approval).
 
 Sizes: S = one module and its tests, M = two or three modules, L = a new subsystem with in-game measurements.
 
@@ -189,4 +189,4 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 
 ## Next recommended step
 
-Run the in-game checklist `docs/ingame/0.4.0a.md`, then start item 3 (tabs).
+Run the in-game checklist `docs/ingame/0.5.0a.md` and the coroutine probe (`docs/ingame/coprobe.md`). Then interactive loading step 6. Then start item 3 (tabs).

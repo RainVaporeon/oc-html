@@ -2,7 +2,7 @@
 
 Source of intent: `docs/intent/mvp.md`.
 
-Status: release 0.4.0a renders local files, fetches remote pages and follows links. The MVP is finished (release 0.1.0a, fixed in 0.1.1a); its plan is in `tasks/archive/`. The roadmap is in `tasks/todo.md`.
+Status: release 0.5.0a renders local files, fetches remote pages and follows links. The MVP is finished (release 0.1.0a, fixed in 0.1.1a); its plan is in `tasks/archive/`. The roadmap is in `tasks/todo.md`.
 
 This file is the index. The rules of each component are in `spec/` (table below). Rationale, measurements, test coverage, the network probe plan, the project tree and examples are in `docs/` (list in `docs/HANDOFF.md` "Moved spec content").
 

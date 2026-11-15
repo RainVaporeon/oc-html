@@ -4,7 +4,7 @@ A minimalistic and lightweight HTML viewer, intended for OpenComputers running o
 
 ## status
 
-Release 0.4.0a renders local and remote pages (`http://` and `https://`, Internet Card) and follows links with history, reload, a go prompt and abort. Navigation is not yet verified in game. The subfeatures below are planned; see `tasks/todo.md`. Specification: `SPEC.md` (index) and `spec/` (one file per component). Handoff for a new session: `docs/HANDOFF.md`.
+Release 0.5.0a renders local and remote pages (`http://` and `https://`, Internet Card) and follows links with history, reload, a go prompt and abort. Navigation is not yet verified in game. The subfeatures below are planned; see `tasks/todo.md`. Specification: `SPEC.md` (index) and `spec/` (one file per component). Handoff for a new session: `docs/HANDOFF.md`.
 
 ## scope
 
