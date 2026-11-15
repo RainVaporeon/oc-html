@@ -54,6 +54,7 @@ Out of scope:
 | Errors, error log, file writes | `spec/errors.md` | `bin/html.lua` |
 | URL arguments, link resolution | `spec/url.md` | `lib/html/url.lua`, `bin/html.lua` |
 | Remote fetching | `spec/fetch.md` | `lib/html/fetch.lua`, `bin/html.lua` |
+| Disk page cache | `spec/cache.md` | `lib/html/cache.lua` |
 | Probe render stats | `spec/probe.md` | `tools/probe2.lua`, `lib/html/guard.lua` |
 | Installer | `spec/installer.md` | `tools/installer.lua`, `tools/mkinstall.lua` |
 | Releases | `spec/release.md` | `tools/release.ps1` |
