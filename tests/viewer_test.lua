@@ -29,7 +29,7 @@ local CTRL_C = key(46, 3)
 local INTERRUPTED = { "interrupted" }
 local TOUCH = { "touch", "screen", 1, 1, 0, "player" }
 
-local HINT = "Tab:link Enter:open Bksp:back r:reload q:quit"
+local HINT = "Tab:link Enter:open Bksp:back r:reload ?:keys q:quit"
 local SHORT_HINT = "q:quit"
 local ERROR_TEXT = "html: read error: closed"
 
@@ -279,7 +279,7 @@ end
 
 local function status_row(name, input, title, pct, hint, width)
   return { name, input,
-    { title = title, pct = pct, hint = hint, width = width or 80 } }
+    { title = title, pct = pct, hint = hint, width = width or 100 } }
 end
 
 local function downs(n)
@@ -318,13 +318,13 @@ local STATUS = {
   status_row("a page of exactly one screen shows 100 percent",
     { opts = { title = "T" }, n = 24 }, "T", 100, HINT),
   status_row("a long title is cut to fit", { opts = { title = LONG_TITLE } },
-    string.rep("abcdefghij", 2) .. "abcdef", 0, HINT),
+    string.rep("abcdefghij", 3) .. "abcdefghi", 0, HINT),
   status_row("20 title columns keep the full hint",
-    { opts = { title = "Title" }, size = size(74, 16) }, "Title", 0, HINT,
-    74),
+    { opts = { title = "Title" }, size = size(81, 16) }, "Title", 0, HINT,
+    81),
   status_row("19 title columns use the short hint",
-    { opts = { title = "Title" }, size = size(73, 16) }, "Title", 0,
-    SHORT_HINT, 73),
+    { opts = { title = "Title" }, size = size(80, 16) }, "Title", 0,
+    SHORT_HINT, 80),
   status_row("a narrow screen uses the short hint",
     { opts = { title = "Title" }, size = size(50, 16) }, "Title", 0,
     SHORT_HINT, 50),
@@ -341,7 +341,7 @@ t.cases(T, "status", STATUS, function(input)
   events[#events + 1] = Q
   events[#events + 1] = Y
   run({ lines = make_lines(input.n or 100), opts = input.opts,
-    events = events, gpu = input.size })
+    events = events, gpu = input.size or size(100, 25) })
   return out
 end)
 
@@ -1722,9 +1722,15 @@ t.cases(T, "go_prompt", {
   { "Backspace on an empty prompt does nothing",
     { events = cat({ KEY_G, BS, BS }, chars("a")), after = CANCEL_END },
     open_row("a", 10) },
-  { "a space and control characters are not appended",
+  { "a space is appended, control characters are not",
     { events = cat({ KEY_G }, chars("a b"), { key(30, 127), key(30, 1) }),
-      after = CANCEL_END }, open_row("ab", 11) },
+      after = CANCEL_END }, open_row("a b", 12) },
+  { "a space is the first character of the text",
+    { events = cat({ KEY_G, key(57, 32) }, chars("a")),
+      after = CANCEL_END }, open_row(" a", 11) },
+  { "a space submits as part of the text",
+    { events = cat({ KEY_G }, chars("my dir/a.html"), { ENTER }), after = {} },
+    { result = { kind = "go", text = "my dir/a.html", top = 1 } } },
   { "0x21 and 0x7E are appended",
     { events = { KEY_G, key(2, 33), key(41, 126) }, after = CANCEL_END },
     open_row("!~", 11) },

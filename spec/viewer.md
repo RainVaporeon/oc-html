@@ -7,7 +7,7 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 - The last screen row is a status line: page title (or file name, or URL), scroll position in percent, and a key hint. The status line is black on white.
 - For an error status of a remote page, `[HTTP <code>] ` comes before the title (see `spec/fetch.md` "HTTP status and content type").
 - The percent is `(top - 1) * 100 // (max_top - 1)`, where `top` is the first shown line and `max_top` the highest `top`. A page that fits on the screen shows 100%.
-- The key hint is `Tab:link Enter:open Bksp:back r:reload q:quit`. When the title would keep fewer than 20 columns, the hint is `q:quit`.
+- The key hint is `Tab:link Enter:open Bksp:back r:reload ?:keys q:quit`. When the title would keep fewer than 20 columns (a screen narrower than 81 columns with a short title), the hint is `q:quit`.
 - While a link is selected and visible, the left part shows `-> <resolved url or path>` in place of the title. On a short HTTP status page the `[HTTP ...]` prefix stays before it.
 - Status texts: `<scheme>: links are not supported` (`spec/url.md` "Link resolution") and `[aborted] <target>` (`spec/navigation.md` "Abort"). The first one stays until the next key.
 - A long title is cut so the status line fits the screen width. A wide character never goes past the right edge.
@@ -38,7 +38,7 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 
 - Left (code 203, or the NumPad code 75 with char 0) is Back. Right (205, or NumPad 77 with char 0) is Forward.
 - Backspace (code 14, char 8) is Back, but only when no input field has focus. When an input field has focus (forms, later), Backspace deletes a character and is not Back. Forms rely on this rule. Reason: `docs/rationale.md` "Navigation".
-- `g` opens the go prompt (`spec/navigation.md` "Go prompt").
+- `g` opens the go prompt (`spec/navigation.md` "Go prompt"). The prompt accepts the space key, so a path with spaces can be typed.
 - `r` and `R` reload the page (`spec/navigation.md` "Reload"). F5 does not reload.
 - `z` aborts a page load (`spec/navigation.md` "Abort").
 - `?` shows a key-list popup. It lists the keys of this section and of "Keys". Only Enter closes it.

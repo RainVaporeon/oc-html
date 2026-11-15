@@ -1052,9 +1052,10 @@ local function run_session(target, ctx)
         held = empty_page("[aborted] " .. res.name, res.name)
         top, sel = 1, nil
       end
-    elseif hist.can_back() then
+    elseif (r.mode == "link" or r.mode == "go") and hist.can_back() then
       -- The old page is gone: load the previous page again. The entry of the
-      -- aborted target goes.
+      -- aborted new target goes. An abort of a reload, back or forward keeps
+      -- its entry and shows the empty page, so r loads it again.
       local prev = hist.drop_current()
       req = { spec = spec_of(prev.target, guesses), mode = "prev",
         top = prev.top, sel = prev.sel }

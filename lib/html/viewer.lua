@@ -63,7 +63,7 @@ local CHAR_R, CHAR_UPPER_R, CHAR_G, CHAR_HELP = 114, 82, 103, 63
 -- event.pull with a timeout, so the program yields while it waits.
 local IDLE_TIMEOUT = 1
 
-local HINT = "Tab:link Enter:open Bksp:back r:reload q:quit"
+local HINT = "Tab:link Enter:open Bksp:back r:reload ?:keys q:quit"
 local SHORT_HINT = "q:quit"
 -- The full hint is used only when the title keeps this many columns.
 local TITLE_MIN = 20
@@ -650,7 +650,7 @@ local function view(lines, opts, gpu, pull, base, start_prompt)
         elseif char == CHAR_BACKSPACE or code == CODE_BACKSPACE then
           text = sub(text, 1, -2)
           draw()
-        elseif char >= 0x21 and char <= 0x7E and #text < GO_MAX then
+        elseif char >= 0x20 and char <= 0x7E and #text < GO_MAX then
           text = text .. string.char(char)
           draw()
         end

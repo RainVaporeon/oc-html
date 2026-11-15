@@ -2026,6 +2026,51 @@ nav_cases("navigation_abort", {
       show = events(KEY_TAB, KEY_ENTER, KEY_RIGHT, QUIT) },
     { code = 0, requests = { URL_A, URL_B, URL_A }, titles = { "A", "A", "A" },
       shows = 3, open_max = 1, open_end = 0, opens = { 0, 0, 0 } } },
+  { "z after the commit of a reload: the entry stays, r reloads it",
+    { args = { URL_A }, step = 0.3, routes = { [URL_A] = served(A_LINK, 10) },
+      on_request = function(rec, url, routes)
+        local n = #rec.ctl.requests
+        if n == 1 then
+          routes[URL_A] = served(BIG, 500)
+        elseif n == 2 then
+          routes[URL_A] = served(A_LINK, 10)
+        end
+      end,
+      ticks = { [2] = function() return { after_commit } end },
+      show = events(KEY_R, KEY_R, QUIT) },
+    { code = 0, requests = { URL_A, URL_A, URL_A },
+      titles = { "A", "[aborted] " .. URL_A, "A" }, ns = { 2, 0, 2 },
+      open_end = 0 } },
+  { "z after the commit of a back: the entry stays, r reloads it",
+    { args = { URL_A }, step = 0.3, routes = ROUTES_AB(),
+      on_request = function(rec, url, routes)
+        local n = #rec.ctl.requests
+        if n == 2 then
+          routes[URL_A] = served(BIG, 500)
+        elseif n == 3 then
+          routes[URL_A] = served(A_LINK, 10)
+        end
+      end,
+      ticks = { [3] = function() return { after_commit } end },
+      show = events(KEY_TAB, KEY_ENTER, KEY_LEFT, KEY_R, KEY_RIGHT, QUIT) },
+    { code = 0, requests = { URL_A, URL_B, URL_A, URL_A, URL_B },
+      titles = { "A", "B", "[aborted] " .. URL_A, "A", "B" },
+      open_end = 0 } },
+  { "z after the commit of a forward: the entry stays, r reloads it",
+    { args = { URL_A }, step = 0.3, routes = ROUTES_AB(),
+      on_request = function(rec, url, routes)
+        local n = #rec.ctl.requests
+        if n == 3 then
+          routes[URL_B] = served(BIG, 500)
+        elseif n == 4 then
+          routes[URL_B] = served(B, 10)
+        end
+      end,
+      ticks = { [4] = function() return { after_commit } end },
+      show = events(KEY_TAB, KEY_ENTER, KEY_LEFT, KEY_RIGHT, KEY_R, QUIT) },
+    { code = 0, requests = { URL_A, URL_B, URL_A, URL_B, URL_B },
+      titles = { "A", "B", "A", "[aborted] " .. URL_B, "B" },
+      open_end = 0 } },
   { "z on the first load: the [aborted] page, and r reloads it",
     { args = { URL_A }, routes = { [URL_A] = { connect_polls = 1e6 } },
       on_request = function(rec, url, routes)

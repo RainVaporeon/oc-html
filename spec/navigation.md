@@ -30,7 +30,7 @@ Commit. When phase 1 succeeds, the program commits:
 
 - The size check comes after the commit, because the old page must be gone before the free memory is measured.
 - A failure after the commit (size check, read error, timeout, memory stop) gives a broken page: an empty page, a popup with the error line and `Reload to try again.` (when the error has the line, see "Retry line"), and the status `[error] <target>`. The broken page keeps its target, so reload and the history work (`spec/loading.md` "Errors after the frame").
-- The page has its history entry from the commit on (see "History"): the commit appends the entry of a link or go load. An abort after the commit then drops it.
+- The page has its history entry from the commit on (see "History"): the commit appends the entry of a link or go load. An abort after the commit of a link or go load then drops it (`## Abort`).
 
 ## Targets
 
@@ -87,8 +87,8 @@ Commit. When phase 1 succeeds, the program commits:
 
 - `z` stops a load at once. It works in phase 1 and after the commit. The handle closes.
 - Abort in phase 1: the page on screen was never released, so it stays. Nothing else changes.
-- Abort after the commit: the old page is already released. `z` loads the previous history entry again (two phases). The aborted target gets no history entry: `z` after the commit drops the history entry of the target that was loading.
-- The history entry that `z` drops after the commit is the current entry, also for a reload, back or forward load. An abort after the commit with no previous entry keeps the current entry, so `r` reloads through it.
+- Abort after the commit of a new navigation (a link or a go): the old page is already released. `z` loads the previous history entry again (two phases). The aborted target gets no history entry: `z` drops the entry of the target that was loading. With no previous entry, the entry stays and the empty `[aborted] <target>` page shows.
+- Abort after the commit of a reload, back, forward or of the load of the previous entry: the entry of the page that was loading stays (the current index is unchanged). The old page is already released, so the program shows the empty page with the status `[aborted] <target>`. `r` reloads it.
 - Abort with no previous entry (the first page of the session): the program shows an empty page with the target and the status `[aborted] <target>`. `r` reloads it. This holds also for `z` in phase 1 of the very first load, when no page is on screen: the empty `[aborted] <target>` page shows, and `r` retries.
 - Ctrl+C still exits at once. `q` still asks to quit (`spec/viewer.md` "Quit").
 
@@ -107,7 +107,7 @@ Commit. When phase 1 succeeds, the program commits:
 ## Go prompt
 
 - `g` opens the go prompt on the status row: `Go to: <text>`. The text starts empty.
-- Printable ASCII 0x21 to 0x7E appends the character. Backspace deletes the last character. A clipboard event appends its text.
+- Printable ASCII 0x20 (space) to 0x7E appends the character, so a local path may hold spaces. Backspace deletes the last character. A clipboard event appends its text.
 - Enter submits. An empty Enter cancels. Esc cancels. Esc is an input here, not a popup.
 - Ctrl+C exits at once.
 - The text uses the CLI classification: local path or URL, or a guessed URL. A bad entry (an invalid URL, an unsupported scheme) gives a popup and the session stays on the current page.
