@@ -58,7 +58,7 @@ Commit. When the stop check passes, the program commits:
 - A new navigation (link, go, same-document link) cuts the entries after the current one and appends a new entry. When the list has 32 entries, the oldest entry drops.
 - Before the program leaves a page (link, go, back, forward), it stores the current `top` and `sel` in the current entry.
 - Back and Forward move the current index first. A phase 1 failure moves it back. A move to an entry with the same target as the page on screen (a same-document entry) loads nothing: it shows the page again at the saved `top`. A broken or aborted page is never the same document.
-- Back and Forward move the current index and load that entry's target again. They fetch the page again: no page content is kept. After the load, `top` and `sel` come from the entry, clamped to the new line and link counts.
+- Back and Forward move the current index and load that entry's target again. They use the cached copy of the page when the disk cache has one, and fetch it otherwise (`spec/cache.md`). A cached copy replays through the local-file path, but the page URL (its final URL, else the requested URL) is the base of its links and the name on the status line, not the path of the cache file. A copy that cannot be read is dropped, and the page is fetched. A re-visit of a history entry by Back or Forward is the only way to hit the cache: a new link or go always fetches. After the load, `top` and `sel` come from the entry, clamped to the new line and link counts.
 - Back at the first entry and Forward at the last entry do nothing.
 - A followed link whose target gives a mapped HTTP status (404 and others) shows the short page with its popup and becomes a new entry, like any page.
 - A phase 1 failure adds no entry and changes no entry. A broken page keeps its entry.
@@ -81,6 +81,7 @@ Commit. When the stop check passes, the program commits:
 - After the load, `top` and `sel` stay, clamped to the new line and link counts.
 - A broken page reloads with `top` 1 and no selection.
 - Reload replaces the current history entry. It adds no entry.
+- Reload never reads the cache. It fetches the page and replaces the cached copy.
 - After a redirect that the card followed, the history entry holds the requested URL, and reload requests that URL again. Known limit: the final URL is unknown (`spec/fetch.md` "Redirects").
 - For a guessed URL, the suffix ` (no local file named <arg>)` stays on the errors of every reload of that target (`spec/url.md`).
 - F5 does not reload.
@@ -89,7 +90,7 @@ Commit. When the stop check passes, the program commits:
 
 - `z`, `Z`, Backspace and Left (also NumPad Left with char 0) stop a load at once. They work in phase 1 and after the commit. The handle closes. Backspace and Left abort a load as `z` does, and they do not go back a second time. Right does nothing during a load.
 - Abort in phase 1: the page on screen was never released, so it stays. Nothing else changes. A `z` (or Backspace or Left) seen up to the stop check before the commit counts as phase 1 (`## Two phases of a load`): the previous page is not fetched again. After the commit the screen is blank, so the abort shows as a load of the previous page.
-- Abort after the commit of a new navigation (a link or a go): the old page is already released. `z` loads the previous history entry again (two phases). The aborted target gets no history entry: `z` drops the entry of the target that was loading. With no previous entry, the entry stays and the empty `[aborted] <target>` page shows.
+- Abort after the commit of a new navigation (a link or a go): the old page is already released. `z` loads the previous history entry again (two phases). The load takes the cached copy of that page when there is one, so it makes no request (`spec/cache.md`). An aborted load is never cached. The aborted target gets no history entry: `z` drops the entry of the target that was loading. With no previous entry, the entry stays and the empty `[aborted] <target>` page shows.
 - Abort after the commit of a reload, back, forward or of the load of the previous entry: the entry of the page that was loading stays (the current index is unchanged). The old page is already released, so the program shows the empty page with the status `[aborted] <target>`. `r` reloads it.
 - Abort with no previous entry (the first page of the session): the program shows an empty page with the target and the status `[aborted] <target>`. `r` reloads it. This holds also for `z` in phase 1 of the very first load, when no page is on screen: the empty `[aborted] <target>` page shows, and `r` retries.
 - Ctrl+C still exits at once. `q` still asks to quit (`spec/viewer.md` "Quit"): the load goes on while the prompt shows. The key listener catches all these keys during the sleeps of the load (`spec/loading.md` "Keys during load").

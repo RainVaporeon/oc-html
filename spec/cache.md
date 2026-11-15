@@ -2,9 +2,9 @@
 
 Source: `lib/html/cache.lua`. Index: `SPEC.md`. Tests: `tests/cache_test.lua`.
 
-Status: design approved by the user. This step builds the module alone. Navigation wiring comes later (`spec/navigation.md`).
+Status: design approved by the user. The module and the wiring in `bin/html.lua` (`run_session`, `load_page`) are built.
 
-Goal: a page fetched in this session is stored on disk. Back, forward and reload of that page read the stored copy. The memory holds an index only.
+Goal: a page fetched in this session is stored on disk. Back, Forward, the load of the previous page after an abort (`prev`) and history re-visits read the stored copy. Reload bypasses it and replaces the copy. A new link or go always fetches. The memory holds an index only.
 
 ## Scope
 
@@ -40,6 +40,13 @@ Taken once, at session start, after the leftovers are deleted.
 - The writer writes to `<n>.part`. `w.commit_complete(meta)` renames it to `<n>` and adds the entry. `w.abort()` deletes the `.part` file. A page that is not complete is never an entry.
 - A page larger than `bytes_cap` is not cached. `write` returns false when the size passes the cap, and the writer deletes the part file. The cache stays on.
 - Eviction is LRU (least recently used, by `last_used`). It runs before each new entry for the entry count, and while writing for the byte total. Each `get` that hits updates `last_used`.
+
+## Wiring
+
+- `run_session` makes the cache once per session from `deps.cache` (the filesystem links, built in `game_deps`). Without `deps.cache` nothing is cached.
+- A remote load stores a page only for a 2xx status. A load that is aborted, broken, short or failed calls `w.abort()`. The load calls `w.commit_complete` when the render ends and the stop check passes.
+- A cached page loads through the local-file source path. Its location is the final URL of the entry, else the requested URL, so the links and `<base>` resolve against the URL. A read error in `get` or `open()` drops the entry and the page is fetched. A read error during the read of a cached page gives a broken page and drops the entry, and Reload fetches.
+- `main` calls `cache.clear()` where it restores the screen, so every exit (quit, Ctrl+C, an error) empties the folder.
 
 ## Lookup
 

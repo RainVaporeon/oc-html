@@ -546,6 +546,21 @@ local function load_page(target, ctx)
     end
   end
 
+  -- A replay (back, forward, prev): a cached copy of a remote page loads
+  -- through the same path as a local file (spec/cache.md "Lookup"). A copy
+  -- that does not open is dropped, and the page is fetched.
+  local entry
+  if url and ctx.replay and ctx.cache then
+    entry = ctx.cache.get(url)
+    if entry then
+      f = entry.open()
+      if not f then
+        ctx.cache.drop(url)
+        entry = nil
+      end
+    end
+  end
+
   -- Ctrl+C or a confirmed quit during load: the flags are set by the
   -- listener or by the screen poll, and the next guard.tick raises
   -- INTERRUPTED. A confirmed quit exits with code 0 and no message.
@@ -611,6 +626,8 @@ local function load_page(target, ctx)
   -- active is the source of the render. It tells a size stop before reading
   -- (a retry does not help) from a memory stop during the render.
   local kept_error, offer_reload, active
+  -- The cache writer of a remote load, until the load completes or fails.
+  local writer
 
   local function fetch_error(why, reload)
     if why ~= INTERRUPTED then
@@ -626,6 +643,9 @@ local function load_page(target, ctx)
   -- byte count at most once per LOAD_TICK. The keys are polled at every tick.
   local session = ctx.session
   local name, total, bytes = arg, nil, 0
+  if entry then
+    name = entry.final_url or url
+  end
   local in_body, phase_text, shown = false, "", nil
   local last_tick, first_drawn = 0, false
   local now = deps.uptime or deps.clock
@@ -693,16 +713,25 @@ local function load_page(target, ctx)
     end,
   }
 
-  -- Returns the source for run: the file, or the response of url.
+  -- Returns the source for run: the file, the cached copy, or the response of
+  -- url.
   local function open_source()
-    if not url then
-      name, total = arg, file_size(f, path, deps)
+    if not url or entry then
+      local cached = entry ~= nil
+      if cached then
+        total = entry.bytes
+      else
+        name, total = arg, file_size(f, path, deps)
+      end
       return {
         read = function()
           local chunk, why = f:read(CHUNK)
           -- A plain nil is the end of the input. A nil with a message is an
           -- error.
           if chunk == nil and why then
+            if cached then
+              ctx.cache.drop(url)
+            end
             kept_error = "html: read error: " .. reason(why)
             offer_reload = true
             error(kept_error, 0)
@@ -712,7 +741,7 @@ local function load_page(target, ctx)
           end
           return chunk
         end,
-        size = total, kind = "file", name = arg,
+        size = total, kind = cached and "page" or "file", name = name,
       }
     end
     local fetch_loaded, fetch_why = load_fetch()
@@ -730,6 +759,10 @@ local function load_page(target, ctx)
     end
     open_file = resp
     name, total = resp.final_url, resp.length
+    -- Only a page with a 2xx status is stored (spec/cache.md "Storing").
+    if ctx.cache and not resp.is_error and not resp.notice then
+      writer = ctx.cache.begin(url)
+    end
     local status = "HTTP " .. int_text(resp.status)
     -- A notice, not an error: the body renders (decision D2). It prints
     -- after the render, so a broken page prints only its error line.
@@ -745,6 +778,9 @@ local function load_page(target, ctx)
           fetch_error(err, true)
         end
         bytes = resp.bytes
+        if chunk and writer then
+          writer.write(chunk)
+        end
         return chunk
       end,
       size = resp.length, kind = "page", name = resp.final_url,
@@ -810,6 +846,12 @@ local function load_page(target, ctx)
       if stop_flag() then
         error(INTERRUPTED, 0)
       end
+      if writer then
+        local w = writer
+        writer = nil
+        w.commit_complete({ final_url = resp.final_url, status = resp.status,
+          content_type = resp.content_type, is_error = false })
+      end
       -- The viewer handles Ctrl+C itself. Print mode keeps the check for
       -- the output loop.
       if not opts.print then
@@ -845,6 +887,10 @@ local function load_page(target, ctx)
   -- Each step runs alone, so a failure in one does not skip the other.
   pcall(stop_listening)
   pcall(close_file)
+  -- A load that did not complete leaves no cache entry.
+  if writer then
+    pcall(writer.abort)
+  end
 
   if not ok and result == "interrupted" then
     -- A bare "interrupted" error is Ctrl+C from the event system.
@@ -871,7 +917,8 @@ local function load_page(target, ctx)
     return { quit = true }
   end
   return { ok = true, lines = lines, title = title, page = page,
-    location = resp and resp.final_url or path, show = shown_info }
+    location = resp and resp.final_url or entry and name or path,
+    show = shown_info }
 end
 
 M.load_page = load_page
@@ -972,6 +1019,14 @@ local function run_session(target, ctx)
     return { error = why, reload = false, kind = "controlled" }
   end
   local handler = error_handler(deps)
+  -- The disk cache of the session. The program clears it on every exit (see
+  -- main). Without deps.cache, or without the module, nothing is cached.
+  if deps.cache then
+    local cache_ok, cache_mod = pcall(require, "html.cache")
+    if cache_ok then
+      ctx.cache = cache_mod.new(nil, deps.cache)
+    end
+  end
   local hist = history.new(HISTORY_CAP)
   local guesses = {}
   -- The page on screen: { lines, title, name, page, location, base, resolve,
@@ -1030,8 +1085,12 @@ local function run_session(target, ctx)
         hist.replace({ target = key_of(spec), top = r.top, sel = r.sel })
       end
     end
+    -- Back, forward and the load of the previous page use the cached copy.
+    -- Reload, link and go fetch.
+    ctx.replay = r.mode == "back" or r.mode == "forward" or r.mode == "prev"
     local res = load_page(spec, ctx)
     ctx.on_commit = nil
+    ctx.replay = nil
     if res.quit or res.interrupted or res.error then
       return res
     end
@@ -1221,6 +1280,10 @@ end
 --                          that removes the listener
 --   internet               optional, the internet card proxy (for a URL)
 --   sleep(seconds)         optional, os.sleep. The fetch waits with it
+--   cache                  optional, the filesystem links of the disk cache
+--                          (get, exists, makeDirectory, remove, rename, list,
+--                          open: see lib/html/cache.lua). Without it, the
+--                          session caches nothing
 -- Returns the exit code.
 function M.main(argv, deps)
   local opts, msg = M.parse_args(argv, max_width_of(deps.gpu))
@@ -1280,12 +1343,23 @@ function M.main(argv, deps)
   if opts.print then
     page = load_page(target, ctx)
   else
-    page = run_session(target, ctx)
+    local ran
+    ran, page = pcall(run_session, target, ctx)
+    if not ran then
+      ctx.raised = page
+    end
   end
-  -- The screen is restored before any error line prints.
+  -- The screen is restored before any error line prints. The cache folder is
+  -- emptied in the same place, on every exit path.
   local restored, restore_err = true, nil
   if ctx.session then
     restored, restore_err = pcall(ctx.session.close)
+  end
+  if ctx.cache then
+    pcall(ctx.cache.clear)
+  end
+  if ctx.raised ~= nil then
+    error(ctx.raised, 0)
   end
 
   local code = 0
@@ -1377,6 +1451,11 @@ function M.game_deps()
     gpu = gpu,
     internet = internet,
     sleep = os.sleep,
+    cache = {
+      get = filesystem.get, exists = filesystem.exists,
+      makeDirectory = filesystem.makeDirectory, remove = filesystem.remove,
+      rename = filesystem.rename, list = filesystem.list, open = io.open,
+    },
     open_screen = function(opts)
       local viewer = need("html.viewer")
       return viewer.open({ gpu = gpu, pull = event.pull, term = term,

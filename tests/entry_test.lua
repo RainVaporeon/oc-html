@@ -2382,4 +2382,246 @@ nav_cases("navigation_exit", {
     { code = 1, err = { "html: unexpected error: restore boom" } } },
 })
 
+-- The disk cache in the session (spec/cache.md, spec/navigation.md). A fake
+-- filesystem with the OpenOS handle contract: write returns the handle and
+-- close returns nothing on success. fs.writes counts the files opened for
+-- writing. o.fail_read makes every read open fail.
+local CACHE_DIR = "/home/.cache/html"
+local function fake_cache_fs(o)
+  o = o or {}
+  local fs = { files = {}, dirs = {}, writes = 0, o = o }
+  local proxy = {
+    isReadOnly = function() return false end,
+    spaceTotal = function() return 100 * 1024 * 1024 end,
+    spaceUsed = function() return 0 end,
+  }
+  fs.deps = {
+    get = function() return proxy, "/home" end,
+    exists = function(p) return fs.dirs[p] or fs.files[p] ~= nil end,
+    makeDirectory = function(p)
+      fs.dirs[p] = true
+      return true
+    end,
+    remove = function(p)
+      fs.files[p] = nil
+      return true
+    end,
+    rename = function(a, b)
+      fs.files[b] = fs.files[a]
+      fs.files[a] = nil
+      return true
+    end,
+    list = function()
+      local out = {}
+      for p in pairs(fs.files) do
+        out[#out + 1] = p:match("[^/]+$")
+      end
+      table.sort(out)
+      local i = 0
+      return function()
+        i = i + 1
+        return out[i]
+      end
+    end,
+    open = function(p, mode)
+      if mode == "rb" then
+        if o.fail_read or fs.files[p] == nil then
+          return nil, "cannot read"
+        end
+        local data, pos = fs.files[p], 1
+        return {
+          read = function(_, n)
+            if pos > #data then
+              return nil
+            end
+            local chunk = data:sub(pos, pos + n - 1)
+            pos = pos + n
+            return chunk
+          end,
+          close = function() end,
+        }
+      end
+      fs.writes = fs.writes + 1
+      local buf = {}
+      fs.files[p] = ""
+      local h = {}
+      h.write = function(self, chunk)
+        buf[#buf + 1] = chunk
+        return self
+      end
+      h.close = function()
+        if fs.files[p] ~= nil then
+          fs.files[p] = table.concat(buf)
+        end
+      end
+      return h
+    end,
+  }
+  return fs
+end
+
+local function file_count(fs)
+  local n = 0
+  for _ in pairs(fs.files) do
+    n = n + 1
+  end
+  return n
+end
+
+-- Runs nav over a fresh fake filesystem. Returns the observed values and the
+-- filesystem.
+local function cached(o)
+  local fs = fake_cache_fs(o.fs)
+  o.deps = o.deps or {}
+  o.deps.cache = fs.deps
+  local obs = observe_nav(nav(o))
+  return obs, fs
+end
+
+T["cache: back after a link makes no request"] = function()
+  local obs, fs = cached({ args = { URL_A }, routes = ROUTES_AB(),
+    show = events(KEY_TAB, KEY_ENTER, KEY_LEFT, QUIT) })
+  t.eq(obs.requests, { URL_A, URL_B }, "requests")
+  t.eq(obs.titles, { "A", "B", "A" }, "titles")
+  t.eq(obs.files, { URL_A, URL_B, URL_A }, "the status shows the URL")
+  t.eq(obs.open_end, 0, "handles closed")
+  t.eq(file_count(fs), 0, "empty after quit")
+end
+
+T["cache: forward after back makes no request"] = function()
+  local obs = cached({ args = { URL_A }, routes = { [URL_A] = served(A_TALL, 10),
+      [URL_B] = served(B, 10) },
+    show = events(KEY_TAB, KEY_ENTER, KEY_LEFT, KEY_RIGHT, QUIT) })
+  t.eq(obs.requests, { URL_A, URL_B }, "requests")
+  t.eq(obs.titles, { "A", "B", "A", "B" }, "titles")
+  t.eq(obs.tops, { 1, 1, 23, 1 }, "the saved top returns")
+end
+
+T["cache: reload makes a request and replaces the entry"] = function()
+  local obs = cached({ args = { URL_A }, routes = ROUTES_AB(),
+    on_request = function(rec, _, routes)
+      if #rec.ctl.requests == 1 then
+        routes[URL_A] = served(doc("A2", "<p>new</p>" .. link(URL_B)), 10)
+      end
+    end,
+    show = events(KEY_R, KEY_TAB, KEY_ENTER, KEY_LEFT, QUIT) })
+  t.eq(obs.requests, { URL_A, URL_A, URL_B }, "requests")
+  t.eq(obs.titles, { "A", "A2", "B", "A2" }, "the back shows the new copy")
+end
+
+T["cache: z after the commit restores the previous page from the cache"] = function()
+  local obs = cached({ args = { URL_A }, step = 0.3,
+    routes = { [URL_A] = served(A_LINK, 10), [URL_B] = served(BIG, 500) },
+    ticks = { [2] = function() return { after_commit } end },
+    show = events(KEY_TAB, KEY_ENTER, KEY_RIGHT, QUIT) })
+  t.eq(obs.requests, { URL_A, URL_B }, "no second request for A")
+  t.eq(obs.titles, { "A", "A", "A" }, "titles")
+  t.eq(obs.open_end, 0, "handles closed")
+end
+
+T["cache: a broken page is not cached"] = function()
+  local obs = cached({ args = { URL_A },
+    routes = { [URL_A] = served(A_LINK, 10),
+      [URL_B] = served(B, 4, { read_error = "reset" }) },
+    show = events(KEY_TAB, KEY_ENTER, KEY_ENTER, KEY_LEFT, KEY_RIGHT,
+      KEY_ENTER, QUIT) })
+  t.eq(obs.requests, { URL_A, URL_B, URL_B }, "forward to B fetches again")
+  t.eq(obs.titles[2], "[error] " .. URL_B, "B is broken")
+end
+
+T["cache: an error status is not cached"] = function()
+  local obs, fs = cached({ args = { URL_A },
+    routes = { [URL_A] = served(A_LINK, 10),
+      [URL_B] = { connect_error = internet.reason_404(URL_B) } },
+    show = events(KEY_TAB, KEY_ENTER, KEY_ENTER, KEY_LEFT, KEY_RIGHT,
+      KEY_ENTER, QUIT) })
+  t.eq(obs.requests, { URL_A, URL_B, URL_B }, "forward to B fetches again")
+  t.eq(fs.writes, 1, "only A was written")
+end
+
+T["cache: a local page is not cached"] = function()
+  local obs, fs = cached({ args = { "/p/a.html" },
+    files = { ["/p/a.html"] = link("b.html"), ["/p/b.html"] = B },
+    show = events(KEY_TAB, KEY_ENTER, KEY_LEFT, QUIT) })
+  t.eq(obs.titles, { false, "B", false }, "titles")
+  t.eq(fs.writes, 0, "nothing written")
+  t.ok(fs.dirs[CACHE_DIR], "the folder is made")
+end
+
+T["cache: a cache read error falls back to a fetch"] = function()
+  local obs, fs = cached({ args = { URL_A }, routes = ROUTES_AB(),
+    fs = { fail_read = true },
+    show = events(KEY_TAB, KEY_ENTER, KEY_LEFT, QUIT) })
+  t.eq(obs.requests, { URL_A, URL_B, URL_A }, "back fetches")
+  t.eq(obs.titles, { "A", "B", "A" }, "titles")
+  t.eq(file_count(fs), 0, "empty after quit")
+end
+
+T["cache: the folder is empty after Ctrl+C"] = function()
+  local obs, fs = cached({ args = { URL_A }, routes = ROUTES_AB(),
+    show = events(KEY_TAB, KEY_ENTER, KEY_CTRL_C) })
+  t.eq(obs.code, 130, "code")
+  t.eq(fs.writes, 2, "pages were written")
+  t.eq(file_count(fs), 0, "empty")
+end
+
+T["cache: the folder is empty after Ctrl+C during a load"] = function()
+  local obs, fs = cached({ args = { URL_A },
+    routes = { [URL_A] = served(A_LINK, 10),
+      [URL_B] = served(BIG, 500) },
+    step = 0.3,
+    ticks = { [2] = { { KEY_CTRL_C } } },
+    show = events(KEY_TAB, KEY_ENTER) })
+  t.eq(obs.code, 130, "code")
+  t.eq(file_count(fs), 0, "empty")
+end
+
+T["cache: the folder is empty after an unexpected error"] = function()
+  local obs, fs = cached({ args = { URL_A }, routes = ROUTES_AB(),
+    show = {} })
+  t.eq(obs.code, 1, "code")
+  t.eq(fs.writes, 1, "the page was written")
+  t.eq(file_count(fs), 0, "empty")
+end
+
+T["cache: the folder is empty after a screen restore error"] = function()
+  local obs, fs = cached({ args = { URL_A }, routes = ROUTES_AB(),
+    restore_error = true, show = QUIT })
+  t.eq(obs.code, 1, "code")
+  t.eq(file_count(fs), 0, "empty")
+end
+
+T["cache: print mode creates no cache folder"] = function()
+  local obs, fs = cached({ args = { "--print", URL_A }, routes = ROUTES_AB() })
+  t.eq(obs.code, 0, "code")
+  t.eq(fs.dirs, {}, "no folder")
+  t.eq(fs.writes, 0, "nothing written")
+end
+
+T["cache: links on a cached page resolve against the URL"] = function()
+  local base_a = "http://x.org/dir/a"
+  local obs = cached({ args = { base_a },
+    routes = { [base_a] = served(doc("A", link("b") .. link("c")), 10),
+      ["http://x.org/dir/b"] = served(B, 10),
+      ["http://x.org/dir/c"] = served(doc("C", "<p>c</p>"), 10) },
+    show = events(KEY_TAB, KEY_ENTER, KEY_LEFT, KEY_TAB, KEY_ENTER, QUIT) })
+  t.eq(obs.requests, { base_a, "http://x.org/dir/b", "http://x.org/dir/c" },
+    "requests")
+  t.eq(obs.titles, { "A", "B", "A", "C" }, "titles")
+end
+
+T["cache: <base> of a cached page resolves against the URL"] = function()
+  local url_a = "http://x.org/dir/a"
+  local obs = cached({ args = { url_a },
+    routes = { [url_a] = served(doc("A", '<base href="/base/">'
+        .. link("http://x.org/dir/b") .. link("c")), 10),
+      ["http://x.org/dir/b"] = served(B, 10),
+      ["http://x.org/base/c"] = served(doc("C", "<p>c</p>"), 10) },
+    show = events(KEY_TAB, KEY_ENTER, KEY_LEFT, KEY_TAB, KEY_ENTER,
+      QUIT) })
+  t.eq(obs.requests, { url_a, "http://x.org/dir/b", "http://x.org/base/c" },
+    "requests")
+  t.eq(obs.titles, { "A", "B", "A", "C" }, "titles")
+end
+
 return T
