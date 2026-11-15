@@ -164,7 +164,7 @@ The implementation chose the smallest change where a rule above was open or coul
 - Note 4: A `Location` that starts with `//` (scheme-relative) stops with `html: cannot follow redirect: <location>`. The rule "a path that starts with `/`" would join it as a path on the old host, which is wrong. An absolute `Location` that fails the URL parsing rules also gives this message. A `Location` with another scheme gives `html: unsupported URL scheme: <scheme>`.
 - Note 5: `html: too many redirects: <url>` names the URL that the user gave (after the scheme guess), not the last redirect target.
 - Note 6: `html: not an HTML page: <type>` shows the media type without parameters (for example `image/png`).
-- Note 7: The User-Agent version is the constant `VERSION` in `lib/html/fetch.lua` (now `0.3.0a`). Update it before each release.
+- Note 7: The User-Agent version is the constant `VERSION` in `lib/html/fetch.lua` (now `0.4.0a`). Update it before each release.
 - Note 8: Windows-1252 bytes with no character (0x81, 0x8D, 0x8F, 0x90, 0x9D) become the C1 code point. Text cleaning then removes them.
 - Note 9: For a guessed URL, the suffix ` (no local file named <arg>)` is also on the deferred read-error line of an error status. It is not on `html: interrupted` (the exit code stays 130) and not on the `html: HTTP <code>` notice.
 - Note 10: The interrupt flag is checked in each wait loop (connect, response, a `""` read). While data arrives, `guard.tick()` checks it per token.
