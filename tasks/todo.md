@@ -3,7 +3,7 @@
 Spec: `SPEC.md` (index) and `spec/` (one file per component). Finished MVP plan and tasks: `tasks/archive/mvp-plan.md`, `tasks/archive/mvp-todo.md`.
 Test command for every task: `pwsh tests/docker/test.ps1`. Fuzz run: `pwsh tests/docker/test.ps1 fuzz 1000`.
 
-Current release: 0.3.0a (local files, remote fetching and the loading screen). The features below come from `AGENTS.md`. `SPEC.md` "Scope" lists them as in scope. Each feature needs a short spec section and the user's approval before code starts (`SPEC.md` "Boundaries": the ask-first rule for moving an item into scope covers only CSS and JS, so these features need no ask for scope, but each still needs its spec section and approval).
+Current release: 0.4.0a (local and remote pages, loading screen, link following and navigation). The features below come from `AGENTS.md`. `SPEC.md` "Scope" lists them as in scope. Each feature needs a short spec section and the user's approval before code starts (`SPEC.md` "Boundaries": the ask-first rule for moving an item into scope covers only CSS and JS, so these features need no ask for scope, but each still needs its spec section and approval).
 
 Sizes: S = one module and its tests, M = two or three modules, L = a new subsystem with in-game measurements.
 
@@ -51,7 +51,7 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 - [x] The user approves the spec section and answers Q5 and Q6 (2026-11-14).
 - [x] Write `tools/netprobe.lua` (`docs/netprobe-plan.md` "Probe script plan"; tests in `tests/netprobe_test.lua`, in-game steps in `docs/ingame/netprobe.md`) (2026-11-15, done).
 - [x] The loading screen: the TUI opens at once, with phases and a byte count, and an invalid URL fails before it (`spec/loading.md`, 2026-11-15, released in 0.3.0a).
-- [ ] Next: run the in-game checklist `docs/ingame/0.3.0a.md`.
+- [ ] Run the in-game checklist `docs/ingame/0.3.0a.md` (the 0.4.0a checklist covers the same paths).
 - [x] Run `tools/netprobe.lua` in game and copy the report to `datacollection/netprobe.txt`. Record N1 to N15 in `docs/probe/FACTS.md` (2026-11-15, netprobe v1: the measured values are in `docs/probe/FACTS.md` "Internet card (netprobe v1)").
 - [x] Update the spec with the measured values (redirects, error statuses, limit, API shape). The error status is mapped from the connect failure, and errors after the frame keep the session (`spec/fetch.md`, `spec/loading.md`).
 - [ ] A second netprobe run after the push: N4 to N7 (large reads, memory, 1 MB page), N8, N12 under the default address config, N13 with `--leak`, and an https to https redirect. The probe now records `response()` after a connect error and the value of `n3.before_connect`.
@@ -73,9 +73,10 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 - [x] S4: viewer keys, cursor, reload, go prompt and the `?` popup.
 - [x] S5: refactor `bin/html.lua`.
 - [x] S6: the navigation loop with reload, back, forward, abort and anchors.
-- [ ] In game: follow links, back, forward, reload, `g`, `z` and anchors on real pages (the check list is not written yet).
+- [ ] In game: follow links, back, forward, reload, `g`, `z` and anchors on real pages (`docs/ingame/0.4.0a.md`).
+- [x] Released in 0.4.0a (2026-11-15). Next: the in-game checklist, then item 3 (tabs).
 
-**Result (2026-11-15):** Built and tested in the container (the suite and fuzz pass). The in-game check is open. The open design questions below are answered by `spec/navigation.md`, `spec/url.md` and `spec/viewer.md`.
+**Result (2026-11-15):** Released in 0.4.0a. Built and tested in the container (the suite and fuzz pass). The in-game check is open. The open design questions below are answered by `spec/navigation.md`, `spec/url.md` and `spec/viewer.md`.
 
 **Main files likely touched:** `lib/html/layout.lua` (keep the `href` of each link; today it only sets the link style), `lib/html/viewer.lua` (link selection keys, a back key), `bin/html.lua` (a page-load loop), a new URL resolver module and its tests.
 
@@ -98,7 +99,7 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 
 **Main files likely touched:** `lib/html/viewer.lua` (draw the cursor, move it with the selection keys), `lib/html/layout.lua` (positions of selectable items).
 
-**Status (2026-11-15):** Done, built with item 2, step S4 (reverse-video highlight of the selected link, `-> <target>` in the status line). Open: the in game check (depth 1, depth 4 and depth 8).
+**Status (2026-11-15):** Done, built with item 2, step S4 (reverse-video highlight of the selected link, `-> <target>` in the status line). Open: the in game check (`docs/ingame/0.4.0a.md`; depth 1, depth 4 and depth 8).
 
 **Dependencies:** 2 (link selection). Form input needs form support, which is not on the roadmap yet.
 
@@ -188,4 +189,4 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 
 ## Next recommended step
 
-Run `tools/netprobe.lua` in game (`docs/ingame/netprobe.md`) to measure N1 to N15.
+Run the in-game checklist `docs/ingame/0.4.0a.md`, then start item 3 (tabs).

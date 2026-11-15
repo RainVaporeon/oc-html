@@ -1,6 +1,6 @@
 # Handoff: oc-html
 
-Date: 2026-11-15. Branch: `master` (the only branch). Last release: 0.3.0a. Unreleased changes since 0.3.0a: the HTTP error status mapping and the "errors keep the session" rule (see "Status update 2026-11-15").
+Date: 2026-11-15. Branch: `master` (the only branch). Last release: 0.4.0a. No unreleased changes.
 
 ## Status update 2026-11-15 (netprobe v1)
 
@@ -20,7 +20,7 @@ Roadmap items 2 and 2a are built and tested in the container. Not verified in ga
 - The loop rules are in `spec/navigation.md`. Notes where the code settles a detail: a history entry of a link or go load is appended at the commit; a phase 1 failure with no page on screen (the first load) shows the broken page; a link that does not resolve gives a popup on Enter; the anchor lookup decodes `%XX`; `classify` returns the URL fragment (`parse_url` drops it).
 - `layout.lua`: the first `<base href>` anywhere counts (`spec/layout.md` "Links and anchors").
 - Tests: `tests/entry_test.lua` "Navigation" (the `nav` harness: real viewer, fake gpu, fake card, an event queue for the viewer and one for the key polls of each load). The sandbox has no `collectgarbage`, so no test checks that the old page is freed at the commit. The commit order is by code only.
-- Open: the in game check list for item 2 and 2a is not written. `--help` lists the new keys.
+- Open: the in game check list for item 2 and 2a is `docs/ingame/0.4.0a.md`. `--help` lists the new keys.
 
 ## Purpose
 
@@ -28,13 +28,14 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
 
 ## Current state
 
-- Release: 0.3.0a (`releases/0.3.0a/`, `releases/latest` points to it, built from commit 8e15ec6). It adds the loading screen (the TUI opens at once and shows the phases and a byte count), the error popup, the rendering rules of 2026-11-14, the URL check before the TUI (`lib/html/url.lua`) and `tools/netprobe.lua`. 0.2.0a added remote fetching: `html http(s)://...` streams the response into the renderer. Remote fetching and the loading screen are implemented and not yet verified in game.
+- Release: 0.4.0a (`releases/0.4.0a/`, `releases/latest` points to it, built from the commit before the release commit). 0.3.0a (commit 8e15ec6) added the loading screen (the TUI opens at once and shows the phases and a byte count), the error popup, the rendering rules of 2026-11-14, the URL check before the TUI (`lib/html/url.lua`) and `tools/netprobe.lua`. 0.2.0a added remote fetching: `html http(s)://...` streams the response into the renderer. Remote fetching and the loading screen are implemented and not yet verified in game.
+- Changes since 0.3.0a (release 0.4.0a): link following (Tab and Shift+Tab select links, the selected link shows in reverse video and its URL on the status line, Enter follows); Back (Left, Backspace), Forward (Right), reload (r), go-to prompt (g, spaces allowed), key list (?), abort a load (z); an #anchor link jumps without a refetch, the CLI URL fragment jumps too, and `<base href>` counts; links between local files, any local file opens as text when it is not HTML, remote `text/*` pages open; an error after the screen opens shows a popup and keeps the session, HTTP status popups show `[HTTP 404] Not Found` with the URL, a broken page is not rendered and offers a reload, a retryable error offers a reload; the measured internet card facts (netprobe v1) are in the code and the spec. An abort after the commit of a reload, back or forward keeps its history entry and shows the `[aborted]` page. The full status hint lists `?:keys`.
 - Changes since 0.2.0a: the TUI opens at once with the loading status and a byte count (Ctrl+C exits, `q` asks while loading goes on); an error popup with `[OK]` for an error page whose body breaks off; misnested inline tags keep their styles, the exact list of tags that close `p`, `option` is a block break, a `<` with no `>` shows as text, `pre` drops its first newline, a leading `br` gives no blank line, the widest line is width minus 1; `--width` is limited to 2 up to the GPU maximum (160 with no screen); `--stats` and `--stats-out` are removed; `html: file not found` for a missing file; the installer prints `; old files kept` only after writing starts; an invalid URL is a usage error before the TUI opens; new tool `tools/netprobe.lua`.
 - Older releases are frozen. 0.1.0a has a broken installer (OpenOS `file:close()` returns no values on success). 0.1.1a fixes it. 0.1.1a is the last local-only release.
 - Works: everything in 0.1.1a (tokenizer, entities, UTF-8 cleaning, layout, viewer, `--print`, `--width`, `--no-rescale`, guard v2, Ctrl+C, error log, one-file installer), plus `lib/html/fetch.lua` (internet card client, HTTP status handling, redirects, limits).
-- Verified in the container: `pwsh tests/docker/test.ps1` gives 190 passed, 0 failed, 0 skipped. `fuzz 1000` gives 0 failures. A static check with `luac5.3 -p` and `luac5.3 -l` on `bin/`, `lib/` and `tools/` found no syntax error and no global outside the standard Lua names. The tests use a fake internet card in `tests/shim/internet.lua`.
-- Verified in game: the probes (`docs/probe/`), the tracer bullet and memory runs up to 0.0.4a, the 0.1.0a viewer and exit paths, and `html --print` on the pages in `tests/real/` (2026-11-14).
-- Not verified in game: all remote fetching, the loading screen, the 0.3.0a installer and upgrade, `docs/ingame/mvp.md` sections 4 and 6, and a low-RAM machine. The 0.3.0a checklist is `docs/ingame/0.3.0a.md`.
+- Verified in the container: `pwsh tests/docker/test.ps1` gives 244 passed, 0 failed, 0 skipped. `fuzz 1000` gives 0 failures. (1000 documents, seed 1794710436) A static check with `luac5.3 -p` and `luac5.3 -l` on `bin/`, `lib/` and `tools/` found no syntax error and no global outside the standard Lua names. The tests use a fake internet card in `tests/shim/internet.lua`.
+- Verified in game: netprobe v1 (the card facts), the probes (`docs/probe/`), the tracer bullet and memory runs up to 0.0.4a, the 0.1.0a viewer and exit paths, and `html --print` on the pages in `tests/real/` (2026-11-14).
+- Not verified in game: link following, history, reload, go, abort, the key codes (Shift+Tab, NumPad 4 and 6), memory over many navigations, the popups, the 0.4.0a installer and upgrade, the loading screen, `docs/ingame/mvp.md` sections 4 and 6, and a low-RAM machine. The 0.4.0a checklist is `docs/ingame/0.4.0a.md`.
 - Risks in the fetch code (written before netprobe v1; the three marked N1, N3 and N10 are now measured, see "Status update 2026-11-15"). The fake card follows assumptions that no in-game measurement has confirmed yet.
   - N1: the exact methods of the internet component, the request handle and the `headers` type are unknown.
   - N3: it is unknown whether `response()` gives a value before the first `read`. The wait order in `fetch.open` depends on it.
@@ -96,7 +97,7 @@ On 2026-11-14, `SPEC.md` was cut down to its normative rules. The informative pa
 
 ## Next step
 
-Run the in-game checklist `docs/ingame/0.3.0a.md`, including `tools/netprobe.lua` (`docs/ingame/netprobe.md`), and copy the reports to `datacollection/`. Record N1 to N15 in `docs/probe/FACTS.md`. Then fix the fetch code where the measurements differ from the assumptions. The default `--base` of netprobe is not pushed yet, so its page gives a 404 until the push.
+Run the in-game checklist `docs/ingame/0.4.0a.md` and paste the results back. Then fix what it finds. Then start roadmap item 3 (tabs, `tasks/todo.md`). A second netprobe run is still open.
 
 ## Open questions for the user
 
