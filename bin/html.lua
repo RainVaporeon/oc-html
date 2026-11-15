@@ -718,7 +718,7 @@ local function load_page(target, ctx)
   local function open_source()
     if not url or entry then
       local cached = entry ~= nil
-      if cached then
+      if entry then
         total = entry.bytes
       else
         name, total = arg, file_size(f, path, deps)
@@ -846,7 +846,7 @@ local function load_page(target, ctx)
       if stop_flag() then
         error(INTERRUPTED, 0)
       end
-      if writer then
+      if writer and resp then
         local w = writer
         writer = nil
         w.commit_complete({ final_url = resp.final_url, status = resp.status,

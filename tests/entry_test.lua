@@ -837,7 +837,7 @@ local function framed(o)
   -- The viewer events.
   local show_events = o.show or { KEY_Q, KEY_Y }
   local show_at = 1
-  local function pull(timeout)
+  local function pull(_)
     local e = show_events[show_at]
     show_at = show_at + 1
     if not e then
@@ -1846,7 +1846,7 @@ nav_cases("navigation_history", {
       sels = { false, 1 }, open_max = 1, opens = { 0, 0 } } },
   { "reload of a shorter page: the top clamps",
     { args = { URL_A }, routes = { [URL_A] = served(A_TALL, 10) },
-      on_request = function(rec, url, routes)
+      on_request = function(rec, _, routes)
         if #rec.ctl.requests == 1 then
           routes[URL_A] = served(A_SHORT, 10)
         end
@@ -1857,7 +1857,7 @@ nav_cases("navigation_history", {
   { "reload of a broken page: it loads at the top, with no selection",
     { args = { URL_A },
       routes = { [URL_A] = served(A_TALL, 10, { read_error = "reset" }) },
-      on_request = function(rec, url, routes)
+      on_request = function(rec, _, routes)
         if #rec.ctl.requests == 1 then
           routes[URL_A] = served(A_TALL, 10)
         end
@@ -2142,7 +2142,7 @@ nav_cases("navigation_abort", {
       shows = 3, open_max = 1, open_end = 0, opens = { 0, 0, 0 } } },
   { "z after the commit of a reload: the entry stays, r reloads it",
     { args = { URL_A }, step = 0.3, routes = { [URL_A] = served(A_LINK, 10) },
-      on_request = function(rec, url, routes)
+      on_request = function(rec, _, routes)
         local n = #rec.ctl.requests
         if n == 1 then
           routes[URL_A] = served(BIG, 500)
@@ -2157,7 +2157,7 @@ nav_cases("navigation_abort", {
       open_end = 0 } },
   { "z after the commit of a back: the entry stays, r reloads it",
     { args = { URL_A }, step = 0.3, routes = ROUTES_AB(),
-      on_request = function(rec, url, routes)
+      on_request = function(rec, _, routes)
         local n = #rec.ctl.requests
         if n == 2 then
           routes[URL_A] = served(BIG, 500)
@@ -2172,7 +2172,7 @@ nav_cases("navigation_abort", {
       open_end = 0 } },
   { "z after the commit of a forward: the entry stays, r reloads it",
     { args = { URL_A }, step = 0.3, routes = ROUTES_AB(),
-      on_request = function(rec, url, routes)
+      on_request = function(rec, _, routes)
         local n = #rec.ctl.requests
         if n == 3 then
           routes[URL_B] = served(BIG, 500)
@@ -2187,7 +2187,7 @@ nav_cases("navigation_abort", {
       open_end = 0 } },
   { "z on the first load: the [aborted] page, and r reloads it",
     { args = { URL_A }, routes = { [URL_A] = { connect_polls = 1e6 } },
-      on_request = function(rec, url, routes)
+      on_request = function(rec, _, routes)
         if #rec.ctl.requests == 1 then
           routes[URL_A] = served(A_LINK, 10)
         end
@@ -2225,7 +2225,7 @@ end
 -- Queues the keys when the request of B starts: the load of B is in connect.
 local function at_connect_of_b(...)
   local keys = { ... }
-  return function(rec, url)
+  return function(_, url)
     if url == URL_B then
       for _, e in ipairs(keys) do
         push(e)
