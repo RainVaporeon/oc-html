@@ -316,8 +316,8 @@ end
 -- A source that breaks off raises instead: a broken page is not rendered.
 -- width is the output width: the
 -- layout wraps at width - 1 (see spec/cli.md "Output width"). done() is
--- called when the render ends. ui is optional, for the loading screen:
--- before_read(lines, count).
+-- called when the render ends. ui is optional, for the live page:
+-- before_read(lines, count, lay).
 -- Returns nil, the lines, the title (with the prefix, in the viewer) and the
 -- page table of M.render. In the viewer it adds a fifth value, the table
 -- { error = popup text or nil, file = source.name } for the viewer call.

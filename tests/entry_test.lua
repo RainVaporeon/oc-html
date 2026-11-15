@@ -1118,6 +1118,22 @@ local function observe(rec)
     handles_closed = closed,
     sleeps = computer.test.sleeps(),
     os_sleeps = rec.os_sleeps,
+    title_status = (function()
+      for _, st in ipairs(rec.statuses) do
+        if st:find("^Big %- Loading") then
+          return true
+        end
+      end
+      return false
+    end)(),
+    name_status = (function()
+      for _, st in ipairs(rec.statuses) do
+        if st:find("^page%.html %- Loading %d+ KB") then
+          return true
+        end
+      end
+      return false
+    end)(),
     many_slices = (rec.slices or 0) >= 11,
     reads = rec.file.reads,
   }
@@ -1213,6 +1229,11 @@ framed_cases("loading_byte_counts", {
     { args = { URL }, step = 0.1, card = { default = served(BIG, 1000) } },
     { code = 0, kb_rising = true, within_rate = true,
       last_kb = "Big - Loading " .. KB .. " KB" } },
+  { "the title replaces the name in the status once it is known",
+    { text = BIG, step = 0.1 }, { code = 0, title_status = true } },
+  { "a page with no title keeps the name in the status",
+    { text = string.rep("<p>word</p>", 3000), step = 0.1 },
+    { code = 0, name_status = true, title_status = false } },
   { "a fast read: the counts do not run faster than the limit",
     { text = BIG, step = 0.01 },
     { code = 0, within_rate = true, updates = 1 } },
@@ -2486,6 +2507,89 @@ nav_cases("navigation_loop_owns_events", {
       end,
       show = QUIT },
     { code = 0, titles = { "Big" }, events_left = 0 } },
+})
+
+-- The live page (spec/loading.md "Content during load"): the user scrolls,
+-- selects and follows links in the part that is loaded. The page comes in
+-- pieces of 40 bytes with a wait after each, so the lines complete slowly.
+-- ticks[load][poll] holds the events of the poll (a read or a loader step).
+local KEY_PGDN = { "key_down", "kbd", 0, 209, "player" }
+local KEY_END = { "key_down", "kbd", 0, 207, "player" }
+local KEY_ESC = { "key_down", "kbd", 27, 1, "player" }
+local KEY_END = { "key_down", "kbd", 0, 207, "player" }
+local LIVE_A = doc("A", link(URL_B) .. FILL .. FILL)
+local function live_routes()
+  return { [URL_A] = gapped(LIVE_A, 40), [URL_B] = served(B, 10) }
+end
+-- Events at a poll of the first load.
+local function at_poll(poll, ...)
+  return { [1] = { [poll] = { ... } } }
+end
+local function live_row(name, ticks, expected, extra)
+  local input = { args = { URL_A }, routes = live_routes(), ticks = ticks,
+    show = QUIT }
+  for k, v in pairs(extra or {}) do
+    input[k] = v
+  end
+  return { name, input, expected }
+end
+nav_cases("navigation_live_page", {
+  live_row("no key: the page loads and shows at the top",
+    {}, { code = 0, titles = { "A" }, tops = { 1 }, sels = { false },
+      ns = { 61 }, os_sleeps = 0 }),
+  live_row("PgDn during the load scrolls one page of the loaded part",
+    at_poll(24, KEY_PGDN),
+    { code = 0, titles = { "A" }, tops = { 9 }, sels = { false } }),
+  -- The final page has 61 lines (max_top 53). At the key 21 lines were
+  -- complete, so the last complete screen starts at line 13.
+  live_row("End during the load goes to the last complete screen",
+    at_poll(24, KEY_END),
+    { code = 0, titles = { "A" }, tops = { 13 } }),
+  live_row("Tab during the load selects the loaded link",
+    at_poll(12, KEY_TAB),
+    { code = 0, titles = { "A" }, tops = { 1 }, sels = { 1 } }),
+  live_row("Down during the load selects the loaded link",
+    at_poll(12, KEY_DOWN),
+    { code = 0, titles = { "A" }, tops = { 1 }, sels = { 1 } }),
+  { "Enter on a loaded link stops the load and follows it",
+    { args = { URL_A }, routes = live_routes(),
+      ticks = { [1] = { [12] = { KEY_TAB }, [14] = { KEY_ENTER } } },
+      show = QUIT },
+    { code = 0, requests = { URL_A, URL_B }, titles = { "B" },
+      open_max = 1, open_end = 0 } },
+  { "Back after that fetches the page that was left",
+    { args = { URL_A }, routes = live_routes(),
+      ticks = { [1] = { [12] = { KEY_TAB }, [14] = { KEY_ENTER } } },
+      show = events(KEY_LEFT, QUIT) },
+    { code = 0, requests = { URL_A, URL_B, URL_A }, titles = { "B", "A" },
+      ns = { 1, 61 }, open_end = 0 } },
+  { "r during the load stops it and loads the page again",
+    { args = { URL_A }, routes = live_routes(),
+      ticks = { [1] = { [12] = { KEY_R } } }, show = QUIT },
+    { code = 0, requests = { URL_A, URL_A }, titles = { "A" }, ns = { 61 },
+      open_end = 0, open_max = 1 } },
+  { "a memory stop during an interactive load gives the broken page",
+    { args = { URL_A }, routes = live_routes(), step = 0.01,
+      on_read = function(rec)
+        if rec.reads_in_load == 12 then
+          computer.test.set_free(100 * 1024)
+        end
+      end,
+      ticks = at_poll(6, KEY_TAB), show = events(KEY_ENTER, QUIT) },
+    { code = 0, titles = { "[error] " .. URL_A }, ns = { 0 }, open_end = 0,
+      errors = { "html: page too large for available memory (rendered 18 "
+        .. "lines before stopping)" .. RELOAD } } },
+  { "g during the load: the load goes on while the prompt is open",
+    { args = { URL_A }, routes = live_routes(),
+      ticks = { [1] = { [12] = { KEY_G }, [40] = { KEY_ESC } } },
+      show = QUIT },
+    { code = 0, requests = { URL_A }, titles = { "A" }, ns = { 61 } } },
+  { "g with a text during the load stops the load and goes there",
+    { args = { URL_A }, routes = live_routes(),
+      ticks = { [1] = { [12] = events(KEY_G, typed(URL_B), KEY_ENTER) } },
+      show = QUIT },
+    { code = 0, requests = { URL_A, URL_B }, titles = { "B" },
+      open_max = 1, open_end = 0 } },
 })
 
 -- Quit and exit.

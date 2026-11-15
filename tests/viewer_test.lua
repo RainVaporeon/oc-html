@@ -1941,4 +1941,370 @@ function T.help_popup_close_restores_the_page()
   t.eq(closed, plain)
 end
 
+-- A page that loads (spec/viewer.md "Live source") --------------------------
+-- The test is the loader: each call of drive runs the next step, which grows
+-- the page. The viewer loop refreshes after each step, then pulls the next
+-- event. A step returns the loader answer: "slice" by default. When the steps
+-- are over, drive answers "done".
+
+local SELECT_COLOR = 0x6699FF
+-- An event that no key uses: it only gives the loop one more pass.
+local NOEVENT = { "touch", "screen", 1, 1, 0, "player" }
+
+-- Packs a link span like lib/html/layout.lua.
+local function span_of(from_line, from_col, to_line, to_col)
+  return (from_line << 32) | (from_col << 24) | ((to_line - from_line) << 8)
+    | to_col
+end
+
+-- The live page: lines "\1line N", and links added by the steps.
+local function live_page()
+  local page = { lines = {}, n = 0, spans = {}, hrefs = {}, nl = 0 }
+  -- Completes lines up to n.
+  function page.grow(to)
+    for i = page.n + 1, to do
+      page.lines[i] = "\1line " .. i
+    end
+    page.n = to
+  end
+  function page.link(fl, fc, tl, tc, href)
+    page.nl = page.nl + 1
+    page.spans[page.nl] = span_of(fl, fc, tl, tc)
+    page.hrefs[page.nl] = href or ("h" .. page.nl)
+  end
+  function page.set_span(i, fl, fc, tl, tc)
+    page.spans[i] = span_of(fl, fc, tl, tc)
+  end
+  page.live = {
+    lines = page.lines,
+    count = function() return page.n end,
+    links = function()
+      return { span = page.spans, href = page.hrefs, count = page.nl }
+    end,
+  }
+  return page
+end
+
+-- Opens a session whose pull gives one event of the list for each pass of
+-- the loop: tick() (the loader calls it at each step) lets the next event
+-- through. Without an event the pull returns nil, also for a wait. Returns
+-- the session, the control, tick() and the list of the pull timeouts.
+local function pass_session(events, dims)
+  local gpu, ctl = fake_gpu.new(dims or size(80, 10))
+  local avail, at = 0, 1
+  local pulls = {}
+  local function pull(timeout)
+    pulls[#pulls + 1] = timeout
+    if avail > 0 and events[at] then
+      avail = avail - 1
+      at = at + 1
+      return table.unpack(events[at - 1])
+    end
+    return nil
+  end
+  local s = viewer.open({ gpu = gpu, pull = pull, term = fake_term() },
+    { status = "load" })
+  return s, ctl, function() avail = avail + 1 end, pulls
+end
+
+-- Runs show over a live page. steps: functions step(page, ctl). events: one
+-- event for each pass of the loop, after its step. o: status (a function
+-- returning the label and the tail), dims, opts. Returns the result, the
+-- control and the log of the answers of drive.
+local function run_live(page, steps, events, o)
+  o = o or {}
+  local s, ctl, tick = pass_session(events, o.dims)
+  local at = 0
+  local log = {}
+  local load = {
+    drive = function()
+      at = at + 1
+      tick()
+      local step = steps[at]
+      if not step then
+        log[#log + 1] = "done"
+        return "done"
+      end
+      local what, secs = step(page, ctl)
+      log[#log + 1] = what or "slice"
+      return what or "slice", secs
+    end,
+    status = o.status or function() return "Big", "Loading" end,
+  }
+  local opts = { title = "Big", live = page.live, load = load }
+  for k, v in pairs(o.opts or {}) do
+    opts[k] = v
+  end
+  local result = s.show({}, opts)
+  return result, ctl, log
+end
+
+-- The rows of the page area, without trailing spaces.
+local function rows_of(ctl, n)
+  local out = {}
+  for y = 1, n or 9 do
+    out[y] = (ctl.row(y):gsub("%s+$", ""))
+  end
+  return out
+end
+
+-- Draw calls on the line rows (not the status row).
+local function row_sets(ctl)
+  local n = 0
+  for _, c in ipairs(ctl.find("set")) do
+    if c[3] < 10 then
+      n = n + 1
+    end
+  end
+  return n
+end
+
+function T.live_rows_draw_as_their_lines_complete()
+  local page = live_page()
+  local result, ctl = run_live(page, {
+    function(p) p.grow(3) end,
+    function(p) p.grow(3) end,
+    function(p) p.grow(6) end,
+  }, {})
+  t.eq(result.kind, "done")
+  t.eq(rows_of(ctl), { "line 1", "line 2", "line 3", "line 4", "line 5",
+    "line 6", "", "", "" })
+  -- Each line was drawn once: no row was drawn again.
+  t.eq(row_sets(ctl), 6)
+end
+
+function T.live_a_row_outside_the_window_is_not_drawn()
+  local page = live_page()
+  local drawn_after_growth
+  local result, ctl = run_live(page, {
+    function(p) p.grow(20) end,
+    function() end,
+    function(p, c)
+      c.clear_log()
+      p.grow(40)
+    end,
+    function(_, c) drawn_after_growth = row_sets(c) end,
+  }, { NOEVENT, key(PGDN) })
+  t.eq(result.kind, "done")
+  -- The window shows the lines 9 to 17. The lines 21 to 40 are outside it.
+  t.eq(drawn_after_growth, 0)
+  t.eq(line_at(ctl, 1), 9)
+end
+
+function T.live_end_goes_to_the_last_complete_screen_and_stays()
+  local page = live_page()
+  local result, ctl = run_live(page, {
+    function(p) p.grow(20) end,
+    function() end,
+    function(p) p.grow(60) end,
+    function() end,
+  }, { NOEVENT, key(END) })
+  t.eq(result.kind, "done")
+  -- 20 complete lines give max_top 12. The view does not follow the growth.
+  t.eq(result.top, 12)
+  t.eq(line_at(ctl, 1), 12)
+  t.eq(line_at(ctl, 9), 20)
+end
+
+function T.live_pgdn_past_the_loaded_part_stops_at_the_last_screen()
+  local page = live_page()
+  local result = run_live(page, {
+    function(p) p.grow(12) end,
+    function() end,
+    function() end,
+  }, { NOEVENT, key(PGDN), key(PGDN) })
+  -- 12 complete lines and 9 rows: the last top is 4.
+  t.eq(result.top, 4)
+end
+
+function T.live_the_percent_counts_the_loaded_part()
+  local page = live_page()
+  local _, ctl = run_live(page, {
+    function(p) p.grow(30) end,
+    function() end,
+    function() end,
+  }, { NOEVENT, key(END) })
+  t.eq(ctl.row(10):match("^ Big %- Loading%s+100%%") ~= nil, true)
+end
+
+function T.live_a_link_joins_the_list_when_its_line_is_complete()
+  local page = live_page()
+  local result = run_live(page, {
+    function(p)
+      p.grow(3)
+      p.link(2, 1, 2, 4)
+      -- The second link starts in a line that is not complete yet.
+      p.link(4, 1, 4, 4)
+    end,
+    function() end,
+    function(p) p.grow(4) end,
+    function() end,
+  }, { key(15, 9), key(15, 9), NOEVENT, key(15, 9) })
+  -- Tab, Tab (the only link, so it stays), then the second link joins.
+  t.eq(result.sel, 2)
+end
+
+function T.live_down_selects_a_loaded_link_only()
+  local page = live_page()
+  local result = run_live(page, {
+    function(p)
+      p.grow(4)
+      p.link(2, 1, 2, 4)
+      p.link(30, 1, 30, 4)
+    end,
+    function() end,
+    function() end,
+  }, { key(DOWN), key(DOWN) })
+  -- The second link is not loaded, so Down does not select it. The second
+  -- Down scrolls instead (there is no other link on the screen).
+  t.eq(result.sel, 1)
+end
+
+function T.live_the_last_link_span_grows_after_the_selection()
+  local page = live_page()
+  local before, after
+  local result, ctl = run_live(page, {
+    function(p)
+      p.grow(2)
+      p.link(2, 1, 2, 4)
+    end,
+    function(_, c) before = { c.cell(5, 2) } end,
+    function(p)
+      -- The link now covers the rest of line 2 and line 3.
+      p.grow(3)
+      p.set_span(1, 2, 1, 3, 4)
+    end,
+    function(_, c) after = { c.cell(5, 2) } end,
+  }, { key(15, 9) })
+  t.eq(result.sel, 1)
+  -- Column 5 of line 2 was outside the first span and is inside the grown
+  -- one: it shows in reverse video.
+  t.eq(before[3] == SELECT_COLOR, false)
+  t.eq(after[3], SELECT_COLOR)
+  -- The new line is part of the selection too.
+  t.eq(({ ctl.cell(1, 3) })[3], SELECT_COLOR)
+end
+
+function T.live_the_status_row_changes_only_when_its_text_changes()
+  local page = live_page()
+  local text = { "Big", "Loading 1 KB" }
+  local function status()
+    return text[1], text[2]
+  end
+  local sets_before, sets_same, sets_changed
+  local _, ctl = run_live(page, {
+    function(p) p.grow(2) end,
+    function(_, c)
+      sets_before = #c.find("set")
+    end,
+    function(_, c)
+      sets_same = #c.find("set")
+      text = { "Big", "Loading 2 KB" }
+    end,
+    function(_, c)
+      sets_changed = #c.find("set")
+    end,
+  }, { NOEVENT, NOEVENT, NOEVENT, NOEVENT }, { status = status })
+  -- The percent did not change and the text did not change: no draw.
+  t.eq(sets_same, sets_before)
+  t.eq(sets_changed > sets_same, true)
+  t.eq(ctl.row(10):match("Loading 2 KB") ~= nil, true)
+end
+
+function T.live_a_long_label_is_cut_and_the_tail_stays_whole()
+  local page = live_page()
+  local label = string.rep("x", 200)
+  local _, ctl = run_live(page, { function(p) p.grow(2) end }, {},
+    { status = function() return label, "Loading 12 KB of 98 KB" end })
+  local row = ctl.row(10)
+  t.eq(row:find("%- Loading 12 KB of 98 KB") ~= nil, true)
+  t.eq(#row, 80)
+end
+
+function T.live_a_selected_link_shows_its_target_in_place_of_the_load_text()
+  local page = live_page()
+  local _, ctl = run_live(page, {
+    function(p)
+      p.grow(3)
+      p.link(2, 1, 2, 4, "next.html")
+    end,
+    function() end,
+  }, { key(15, 9) },
+    { opts = { resolve = function(h) return "R:" .. h end } })
+  t.eq(ctl.row(10):match("^ %-> R:next%.html") ~= nil, true)
+end
+
+-- The pull timeout follows the loader: a wait uses its seconds, a slice
+-- uses 0.
+function T.live_the_pull_timeout_follows_the_loader()
+  local page = live_page()
+  local s, _, _, pulls = pass_session({})
+  local answers = { { "wait", 0.5 }, { "slice" }, { "wait", 0.05 },
+    { "done" } }
+  local at = 0
+  s.show({}, { live = page.live, load = {
+    drive = function()
+      at = at + 1
+      return table.unpack(answers[at])
+    end,
+    status = function() return "x", nil end } })
+  -- The last answer is "done": the loop returns before it pulls.
+  t.eq(pulls, { 0.5, 0, 0.05 })
+end
+
+-- A "commit" that comes while the quit prompt is open waits until the prompt
+-- closes. The loader goes on behind the prompt.
+function T.live_a_commit_waits_for_the_quit_prompt()
+  local steps = { "slice", "commit" }
+  local at = 0
+  local s = open_session({ Q, N }, { status = "load" })
+  local result = s.show({ "\1old" }, { load = {
+    drive = function()
+      at = at + 1
+      return steps[at] or "done"
+    end,
+    status = function() return "Connecting...", nil end } })
+  t.eq(result.kind, "commit")
+end
+
+t.cases(T, "live_abort_keys", {
+  { "z while a load runs", { { key(44, 122) }, true }, "abort" },
+  { "Z while a load runs", { { key(44, 90) }, true }, "abort" },
+  { "Left while a load runs", { { key(203) }, true }, "abort" },
+  { "Backspace while a load runs", { { key(14, 8) }, true }, "abort" },
+  { "NumPad Left (char 0) while a load runs", { { key(75, 0) }, true },
+    "abort" },
+  { "Left with no load is Back", { { key(203) }, false }, "back" },
+  { "Backspace with no load is Back", { { key(14, 8) }, false }, "back" },
+  { "z with no load does nothing", { { key(44, 122), Q, Y }, false },
+    "quit" },
+}, function(input)
+  local s = open_session(input[1], { status = "load" })
+  local o = { title = "T" }
+  if input[2] then
+    o.load = { drive = function() return "slice" end,
+      status = function() return "x", nil end }
+  end
+  local result = s.show(make_lines(30), o)
+  return type(result) == "table" and result.kind or result
+end)
+
+-- Phase 1 of a load: the page on screen is the old page. It scrolls and
+-- the status row shows the phase.
+function T.live_phase_1_keeps_the_old_page_usable()
+  local s, ctl, tick = pass_session({ key(PGDN), key(PGDN) })
+  local at = 0
+  local result = s.show(make_lines(40), { title = "T", load = {
+    drive = function()
+      at = at + 1
+      tick()
+      return at < 4 and "wait" or "done", 0.05
+    end,
+    status = function() return "Connecting to x...", nil end } })
+  t.eq(result.kind, "done")
+  t.eq(result.top, 17)
+  t.eq(line_at(ctl, 1), 17)
+  t.eq(ctl.row(10):match("^ Connecting to x%.%.%.") ~= nil, true)
+end
+
 return T
