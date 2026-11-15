@@ -135,4 +135,49 @@ function T.os_sleep_advances_uptime()
   t.ok(computer.uptime() >= 1, "uptime moved")
 end
 
+-- OpenOS os.sleep pulls and discards the events that arrive during the
+-- sleep (boot/02_os.lua). Only event.listen listeners see them.
+local function sleep_seen(...)
+  local event = require("event")
+  event.test.reset()
+  local seen = {}
+  local function on(name, ...)
+    seen[#seen + 1] = { name, ... }
+  end
+  event.listen("key_down", on)
+  event.listen("interrupted", on)
+  event.test.push(...)
+  os.sleep(0)
+  event.ignore("key_down", on)
+  event.ignore("interrupted", on)
+  return seen, event
+end
+
+function T.os_sleep_removes_queued_events()
+  local _, event = sleep_seen("key_down", "kbd", 113, 16, "user")
+  t.eq(event.test.size(), 0)
+end
+
+function T.os_sleep_gives_events_to_listeners()
+  local seen = sleep_seen("key_down", "kbd", 113, 16, "user")
+  t.eq(seen, { { "key_down", "kbd", 113, 16, "user" } })
+end
+
+function T.pull_after_sleep_returns_nothing()
+  local _, event = sleep_seen("key_down", "kbd", 113, 16, "user")
+  t.eq(event.pull(0), nil)
+end
+
+function T.os_sleep_delivers_interrupted()
+  local seen = sleep_seen("interrupted", "interrupted")
+  t.eq(seen, { { "interrupted", "interrupted" } })
+end
+
+function T.pull_without_sleep_keeps_the_event()
+  local event = require("event")
+  event.test.reset()
+  event.test.push("key_down", "kbd", 113, 16, "user")
+  t.eq({ event.pull(0) }, { "key_down", "kbd", 113, 16, "user" })
+end
+
 return T

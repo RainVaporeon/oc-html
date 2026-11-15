@@ -230,9 +230,12 @@ local function build_env()
     return result
   end
 
-  -- OpenOS os.sleep yields. Here it advances the fake uptime.
+  -- OpenOS os.sleep yields and pulls every event until the deadline, so a
+  -- queued event is lost unless an event.listen listener sees it. Here it
+  -- advances the fake uptime and drains the shim event queue.
   function env.os.sleep(seconds)
     env.require("computer").test.sleep(seconds or 0)
+    env.require("event").test.drain()
   end
 
   function test_api.eq(actual, expected, msg)
