@@ -9,7 +9,7 @@ local DIR = "/home/.cache/html"
 local KB = 1024
 
 -- A fake filesystem. o.total and o.used set the disk, o.read_only the flag.
--- o.fail_write, o.fail_close, o.fail_rename and o.fail_read make that call fail.
+-- o.raise_write makes write raise. o.fail_write, o.fail_close, o.fail_rename and o.fail_read make that call fail.
 local function fake_fs(o)
   o = o or {}
   local fs = { files = {}, dirs = {}, o = o }
@@ -65,29 +65,32 @@ local function fake_fs(o)
         local data = fs.files[p]
         return {
           read = function() return data end,
-          close = function() return true end,
+          close = function() end,
         }
       end
+      -- Like OpenOS: write returns the handle, close returns nothing.
       local buf = {}
       fs.files[p] = ""
-      return {
-        write = function(_, chunk)
-          if o.fail_write then
-            return nil, "disk full"
-          end
-          buf[#buf + 1] = chunk
-          return true
-        end,
-        close = function()
-          if o.fail_close then
-            return nil, "flush failed"
-          end
-          if fs.files[p] ~= nil then
-            fs.files[p] = table.concat(buf)
-          end
-          return true
-        end,
-      }
+      local h = {}
+      h.write = function(self, chunk)
+        if o.raise_write then
+          error("write raised")
+        end
+        if o.fail_write then
+          return nil, "disk full"
+        end
+        buf[#buf + 1] = chunk
+        return self
+      end
+      h.close = function()
+        if o.fail_close then
+          return nil, o.fail_close == true and "flush failed" or o.fail_close
+        end
+        if fs.files[p] ~= nil then
+          fs.files[p] = table.concat(buf)
+        end
+      end
+      return h
     end,
   }
   fs.deps = deps
@@ -298,6 +301,33 @@ T["a flush error at close turns the cache off"] = function()
   t.eq(store(c, url(1), 10), false, "commit fails")
   t.eq(c.enabled(), false, "off")
   t.eq(count_files(fs), 0, "no files")
+end
+
+T["a write that raises turns the cache off"] = function()
+  local fs = fake_fs()
+  local c = cache.new({}, fs.deps)
+  fs.o.raise_write = true
+  t.eq(store(c, url(1), 10), false, "write fails")
+  t.eq(c.enabled(), false, "off")
+  t.eq(count_files(fs), 0, "no files")
+end
+
+T["a close that returns nothing is a success"] = function()
+  local fs = fake_fs()
+  local c = cache.new({}, fs.deps)
+  t.eq(store(c, url(1), 10), true, "commit succeeds")
+  t.eq(c.enabled(), true, "on")
+  t.eq(c.get(url(1)) ~= nil, true, "entry stored")
+  t.eq(c.stats().entries, 1, "one entry")
+end
+
+T["a close that returns nil and disk full turns the cache off"] = function()
+  local fs = fake_fs()
+  local c = cache.new({}, fs.deps)
+  fs.o.fail_close = "disk full"
+  t.eq(store(c, url(1), 10), false, "commit fails")
+  t.eq(c.enabled(), false, "off")
+  t.eq(c.get(url(1)), nil, "no entry")
 end
 
 T["a rename error turns the cache off"] = function()

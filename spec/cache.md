@@ -49,6 +49,7 @@ Taken once, at session start, after the leftovers are deleted.
 ## Failure
 
 - Any write, close (flush), rename or space error, or a read-only disk, turns the cache off for the rest of the session. The cache deletes its files. It shows no popup. The loader and the viewer keep working: `begin` returns nil, `get` returns nil, and a writer in flight returns false.
+- A handle call fails when it raises, or returns nil or false with a reason. A bare nil or no values is success: OpenOS `close()` returns nothing on success, and `write` returns the handle.
 - The cache never raises into the caller.
 
 ## Cleanup

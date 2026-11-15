@@ -40,6 +40,13 @@ local function join(dir, name)
   return (dir:gsub("/+$", "")) .. "/" .. name
 end
 
+-- True when a pcall of a handle call failed. A raised error fails. So does
+-- (nil|false, reason). A bare nil or no values is success: OpenOS close()
+-- returns nothing on success (docs/probe/FACTS.md).
+local function failed(ok, res, reason)
+  return not ok or ((res == nil or res == false) and reason ~= nil)
+end
+
 -- Returns the names in a folder as a list. Never raises.
 local function names(deps, dir)
   local ok, res = pcall(deps.list, dir)
@@ -236,8 +243,7 @@ function M.new(opts, deps)
           break
         end
       end
-      local wok, res = pcall(h.write, h, chunk)
-      if not wok or not res then
+      if failed(pcall(h.write, h, chunk)) then
         finish()
         turn_off()
         return false
@@ -251,10 +257,10 @@ function M.new(opts, deps)
         return false
       end
       meta = meta or {}
-      local cok, cres = pcall(h.close, h)
+      local cclosed = failed(pcall(h.close, h))
       writers[w] = nil
       w.stopped = true
-      if not cok or not cres then
+      if cclosed then
         remove(part)
         turn_off()
         return false
