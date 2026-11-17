@@ -24,6 +24,35 @@ Messages of link following (`spec/navigation.md`). In the viewer they show as a 
 - A retry error carries the second popup line `Reload to try again.` (`spec/navigation.md` "Retry line").
 - `link too long`: the status-line text for Enter on a link whose href was over 2048 bytes.
 
+## Tab, shell and download messages
+
+Messages of 0.7.0a (`spec/tabs.md`, `spec/shell.md`, `spec/download.md`).
+
+| Text | Kind |
+|---|---|
+| `tab limit: 8 tabs` | notice |
+| `last tab: q quits` | notice |
+| ` New tab: ` | prompt |
+| ` Quit and close <n> tabs? (y/n)` | prompt |
+| `html: shell started. Type exit to return to the browser.` | stdout line |
+| `html: already open; type exit to return to it` | stderr, exit code 1 |
+| `html: shell error: <reason>` | popup |
+| `html: cannot reopen the screen: <reason>` | stderr, exit code 1 |
+| ` Save to: ` | prompt |
+| ` Overwrite <name>? (y/n)` | prompt |
+| `d: only web files can be downloaded` | notice |
+| `wait for the load, or press z` | notice |
+| `download running: z stops it` | notice |
+| `Downloading <name> - <n> KB of <m> KB` / `Downloading <name> - <n> KB` | status |
+| `Saved <path> (<n> KB)` | notice |
+| `download stopped` | notice |
+| `html: no such directory: <dir>` | popup |
+| `html: not enough disk space: <n> KB needed, <m> KB free` | popup |
+| `html: cannot write <path>: <reason>` | popup |
+
+- Notices show in the status line until the next key. A popup has an `[OK]` button. A download error popup has no reload line (`spec/download.md` "Progress, keys and end").
+- The shell and the download write with the checks of "File writes".
+
 ## Error log
 
 - `/tmp` is only 64 KB. `/tmp/html-error.log` is capped at 8 KB. When the log would grow past the cap, the oldest content is dropped and the newest is kept.

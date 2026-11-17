@@ -8,8 +8,9 @@ Status: for roadmap items 2 (link following) and 2a (visible cursor), with reloa
 
 - One session loop runs in the viewer path. It loads a target, shows the page, and acts on the action that the viewer returns.
 - A target is a URL or an absolute local path. The first target comes from the command line (`spec/cli.md`).
-- The viewer returns one of these actions: `link` (with the resolved target), `back`, `forward`, `reload`, `go` (with the typed text), `abort`, `quit`, `interrupted`.
-- `quit` and `interrupted` end the loop (exit code 0 and 130). The other actions start a load.
+- The viewer returns one of these actions: `link` (with the resolved target), `back`, `forward`, `reload`, `go` (with the typed text), `abort`, `quit`, `interrupted`, and the actions of 0.7.0a: `tab_new` (with the resolved target or the typed text), `tab_prev`, `tab_next`, `tab_close`, `shell` and `download` (`spec/tabs.md`, `spec/shell.md`, `spec/download.md`).
+- `quit` and `interrupted` end the loop (exit code 0 and 130). `link`, `back`, `forward`, `reload`, `go`, `abort` (when it loads again) and `tab_new` start a load. `tab_prev`, `tab_next` and `tab_close` show another tab (`spec/tabs.md` "Showing a tab"). `shell` runs the tab-out (`spec/shell.md`). `download` starts a download job (`spec/download.md`).
+- The loop state of the active tab (`hist`, `guesses`, `held`, `cur`, `top`, `sel`, `popup` and the broken state) is one tab record (`spec/tabs.md` "Tab state model"). With one tab the behavior is the same as in 0.6.0a.
 - Print mode and the no-screen path load once and have no loop. They ignore the link data.
 
 ## Two phases of a load
@@ -60,6 +61,8 @@ Commit. When the stop check passes, the program commits:
 - Back and Forward move the current index first. A phase 1 failure moves it back. A move to an entry with the same target as the page on screen (a same-document entry) loads nothing: it shows the page again at the saved `top`. A broken or aborted page is never the same document.
 - Back and Forward move the current index and load that entry's target again. They use the cached copy of the page when the disk cache has one, and fetch it otherwise (`spec/cache.md`). A cached copy replays through the local-file path, but the page URL (its final URL, else the requested URL) is the base of its links and the name on the status line, not the path of the cache file. A copy that cannot be read is dropped, and the page is fetched. A re-visit of a history entry by Back or Forward is the only way to hit the cache: a new link or go always fetches. After the load, `top` and `sel` come from the entry, clamped to the new line and link counts.
 - Back at the first entry and Forward at the last entry do nothing.
+- The load mode `switch` (0.7.0a) loads the current entry of the arriving tab and changes no entry. It uses the cache first. The rules are in `spec/tabs.md` "The load mode `switch`". A Back or Forward that a tab switch stops in phase 1 keeps its history index move (`spec/tabs.md` "A load at a tab switch or at `!`").
+- `lib/html/history.lua` also has `h.export()`, which returns `{ entries = <copy>, pos = <int> }`, and `history.import(data, cap)`, which returns a history object. They keep the module pure.
 - A followed link whose target gives a mapped HTTP status (404 and others) shows the short page with its popup and becomes a new entry, like any page.
 - A phase 1 failure adds no entry and changes no entry. A broken page keeps its entry.
 - Reload keeps the current entry (see "Reload").
@@ -106,6 +109,8 @@ Commit. When the stop check passes, the program commits:
   - A stop before the commit leaves the old page as it was. A Back or Forward load that was in phase 1 moves the history index back, as an abort does.
   - Forward at the last history entry does nothing (`## History`), so it does not stop the load. This includes the first load of the session.
 - Enter on a link that is not complete yet is not possible: a link joins the selection when its start line is complete.
+- Tab keys and `!` (0.7.0a). `<`, `>`, `c`, `t` (after the link resolves, or after the prompt text is submitted) and `!` stop the load, as Enter on a link does. The tab record keeps the stopped load as `pending` when the stop comes before the commit, so the load starts again when the tab shows (`spec/tabs.md` "A load at a tab switch or at `!`"). `t` with the limit of 8 tabs, and `c` on the last tab, show a notice and do not stop the load.
+- `d` during a load shows `wait for the load, or press z` and does nothing else. `z` aborts the load (`## Abort`).
 - Back, Left, Backspace and `z` use the rules of `## Abort`. Enter on a link, `g`, `r` and Forward (with a later entry) leave the page: the loaded part is the page for the action, and the history entry that the commit appended stays.
 - A memory stop during the render (`guard.tick` raises inside the coroutine) ends the coroutine with an error. The session loop makes the broken page and the popup, as for any failure after the commit.
 - At most one connection is open at any time. Each phase 1 failure closes its handle. Each end of a load closes its handle. The card allows 4 open connections (`spec/fetch.md` "Internet card API"), so a leaked handle would break later loads.
@@ -118,7 +123,7 @@ Commit. When the stop check passes, the program commits:
 
 ## Go prompt
 
-- `g` opens the go prompt on the status row: `Go to: <text>`. The text starts empty.
+- `g` opens the go prompt on the status row: ` Go to: <text>`. The text starts empty. It is one use of the generic status-row prompt (`spec/viewer.md` "Status-row prompt").
 - Printable ASCII 0x20 (space) to 0x7E appends the character, so a local path may hold spaces. Backspace deletes the last character. A clipboard event appends its text.
 - Enter submits. An empty Enter cancels. This is the way to cancel in game. Esc also cancels in the code (an input here, not a popup), but Minecraft catches Esc in game and removes focus from the screen, so the program does not get it.
 - Ctrl+C exits at once.

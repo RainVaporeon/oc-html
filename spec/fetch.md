@@ -73,7 +73,8 @@ The handle closes on every exit path: normal end, controlled error, unexpected e
 - The card gives no error body (N10, measured). See "HTTP error statuses". The rules above for a readable error body stay for a card that gives one. Their tests are marked "not seen in game".
 - `Content-Type` with any `text/*` type (for example `text/html` or `text/plain`), `application/xhtml+xml`, or no `Content-Type`: the body renders (user decision, 2026-11-15). It goes through the same pipeline; at worst it shows as bare text, and a stray `<` in it renders as text or as an unknown tag.
   - The media type is compared without case. Parameters after `;` and spaces around the type are ignored. An empty `Content-Type` counts as no `Content-Type`.
-- Any other type with a 2xx status stops before the body with `html: not an HTML page: <type>`. This covers binary types: images, archives and `application/*` other than XHTML. Downloads come with roadmap item 4.
+- Any other type with a 2xx status stops before the body with `html: not an HTML page: <type>`. This covers binary types: images, archives and `application/*` other than XHTML. A download accepts every type with the `raw` option (`spec/download.md` "Content and transfer").
+- The `raw` option (0.7.0a, for downloads). `fetch.open` takes it as the field `raw = true` of its `links` argument. With it, every content type is accepted (no `html: not an HTML page: <type>` stop), the Latin-1 step of "Charset" is skipped, and `read()` returns the response bytes as they come. `html: compressed response not supported: <encoding>` and every other error stay. Without it, nothing changes.
 
 ## HTTP error statuses
 

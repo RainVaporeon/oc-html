@@ -26,6 +26,13 @@ Inside the container, the script runs `lua5.3 tests/run.lua` and `lua5.3 tests/f
 
 A test pins the probe seams listed in `spec/probe.md`.
 
+## Fakes for tabs, shell and download (0.7.0a)
+
+- The fake shell dep. `deps.shell` in a test is a function that records the call and can raise an error. A test checks that `!` closes the screen, calls the fake shell and opens the screen again, that the same tab and `top` come back, that a shell error shows the popup `html: shell error: <reason>`, and that a nested start (`HTML_TABOUT` set) refuses (`spec/shell.md`). The fake `os.getenv` and `os.setenv` come from `deps`.
+- The fake filesystem write links. `lib/html/download.lua` makes no `component` calls. A test gives it fake `open`, `space`, `remove`, `rename`, `exists`, `is_dir` and `cwd` links, so it can check the part file, a full-disk error at `flush` or `close`, the disk-space checks, an existing target after a failure, and no part file after a stop or an error (`spec/download.md`).
+- The fake internet card serves a binary file for the `raw` option (`image/png` is accepted, with no Latin-1 step) and counts the requests, so a test can check that a tab switch with a cache hit makes no request (`spec/tabs.md`).
+- Tests cover only user-facing behavior (keys, navigation), and only a few are added (`AGENTS.md` "testing").
+
 ## Sandbox
 
 Two layers protect the host.

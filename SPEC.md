@@ -2,7 +2,7 @@
 
 Source of intent: `docs/intent/mvp.md`.
 
-Status: release 0.6.0a renders local files, fetches remote pages, follows links and lets you browse while a page loads. The next step is the in-game checklist `docs/ingame/0.6.0a.md`, then 0.7.0a ("Roadmap"). The MVP is finished (release 0.1.0a, fixed in 0.1.1a); its plan is in `tasks/archive/`. The roadmap is in `tasks/todo.md`.
+Status: release 0.6.0a renders local files, fetches remote pages, follows links and lets you browse while a page loads. The in-game checklist `docs/ingame/0.6.0a.md` is done. The next release is 0.7.0a (utility tabs: tabs, shell tab-out, download). Its spec is written (`spec/tabs.md`, `spec/shell.md`, `spec/download.md`) and waits for the user's approval. The current release stays 0.6.0a ("Roadmap"). The MVP is finished (release 0.1.0a, fixed in 0.1.1a); its plan is in `tasks/archive/`. The roadmap is in `tasks/todo.md`.
 
 This file is the index. The rules of each component are in `spec/` (table below). Rationale, measurements, test coverage, the network probe plan, the project tree and examples are in `docs/` (list in `docs/HANDOFF.md` "Moved spec content").
 
@@ -22,7 +22,7 @@ In scope:
 - Scrolling viewer with a status line, a loading screen and a quit confirmation.
 - Remote fetching (`spec/fetch.md`, roadmap item 1, approved 2026-11-14).
 - Following links and navigation (link selection, back and forward, go to, reload, abort): specified in `spec/navigation.md`, approved on 2026-11-15 and done (roadmap items 2 and 2a).
-- Tabs, shell tab-out, downloads, sessions (save and resume). Planned, see "Roadmap" below.
+- Tabs, shell tab-out and downloads: `spec/tabs.md`, `spec/shell.md`, `spec/download.md` (0.7.0a, spec written, waiting for approval). Background loads: planned (`spec/background.md`, 0.7.1a). Sessions (save and resume): planned.
 - Images. Planned, see "Roadmap" below.
 - Data Card inflate and deflate. Future work, see "Roadmap" below.
 - Correct layout of tables, lists, forms, `<input>` and `<button>`. These render as plain text and must not break anything.
@@ -35,7 +35,7 @@ Out of scope:
 ## Tech stack
 
 - Lua 5.3 on OpenComputers, OpenOS.
-- OpenOS libraries only: `component`, `computer`, `term`, `event`, `keyboard`, `unicode`, `filesystem`, `serialization`, `shell`.
+- OpenOS libraries only: `component`, `computer`, `term`, `event`, `keyboard`, `unicode`, `filesystem`, `serialization`, `shell`, and `os.getenv` and `os.setenv` (the tab-out guard).
 - No other dependencies. The Internet Card is needed only for remote pages. The Data Card is optional.
 - Lua 5.3 in a Docker container for the automated tests (`spec/testing.md`).
 
@@ -59,6 +59,10 @@ Out of scope:
 | Probe render stats | `spec/probe.md` | `tools/probe2.lua`, `lib/html/guard.lua` |
 | Installer | `spec/installer.md` | `tools/installer.lua`, `tools/mkinstall.lua` |
 | Releases | `spec/release.md` | `tools/release.ps1` |
+| Tabs | `spec/tabs.md` | `bin/html.lua`, `lib/html/tabs.lua`, `lib/html/history.lua` |
+| Shell tab-out | `spec/shell.md` | `bin/html.lua`, `lib/html/viewer.lua` |
+| Download | `spec/download.md` | `lib/html/download.lua`, `bin/html.lua`, `lib/html/fetch.lua` |
+| Background loads (planned, 0.7.1a) | `spec/background.md` | - |
 | Testing and success criteria | `spec/testing.md` | `tests/`, `tests/docker/` |
 
 Code modules:
@@ -73,6 +77,8 @@ lib/html/viewer.lua     screen drawing, scrolling, keys, quit prompt
 lib/html/url.lua        URL parsing, the host rule and link resolution (loads during the argument checks)
 lib/html/history.lua    navigation history (pure, no page content)
 lib/html/fetch.lua      redirects, the internet card request and the body stream
+lib/html/tabs.lua       the tab list (pure, no page content)
+lib/html/download.lua   the file name, the part file, streaming to disk
 ```
 
 Tests, tools, docs, tasks and releases: `docs/structure.md`.
@@ -116,8 +122,9 @@ Tests, tools, docs, tasks and releases: `docs/structure.md`.
 
 Details and tasks: `tasks/todo.md`.
 
-- 0.6.0a: Loading while you browse (`spec/loading.md`). Current release. Next: its in-game checklist.
-- 0.7.0a: Utility tabs: browser tabs (open tabs and their state), shell tab-out (leave the browser for the shell, then return) and download (save a page or a file).
+- 0.6.0a: Loading while you browse (`spec/loading.md`). Current release. Its in-game checklist is done.
+- 0.7.0a: Utility tabs: browser tabs, shell tab-out, download (`spec/tabs.md`, `spec/shell.md`, `spec/download.md`). Spec written, waiting for approval.
+- 0.7.1a: Background loads: a tab keeps loading to disk when the user leaves it, when resources allow (`spec/background.md`). Planned.
 - 0.8.0a: Session retention: save the browsing state and resume it after a restart ("Later: sessions").
 - 0.9.0a: Images. PNG first. If other image formats have a similar structure, this version can include more media types.
 - 1.0.0b: Official beta release. `--stats` moves to `tools/probe2.lua`.
@@ -129,7 +136,7 @@ Planned, see `tasks/todo.md`. Agreed design, to be specified later:
 - Each session has an 8-digit lowercase hex ID, for example `4cb2faad`.
 - `html` with no arguments starts a new session.
 - `html -r <id>` resumes that session. `html -r` resumes the last session.
-- The stored content and the storage location are decided when this feature is specified.
+- The stored content is the tab snapshot of `spec/tabs.md` "Tab state model". The storage location is decided when this feature is specified.
 
 ## Decisions
 

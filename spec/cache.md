@@ -4,13 +4,14 @@ Source: `lib/html/cache.lua`. Index: `SPEC.md`. Tests: `tests/cache_test.lua`.
 
 Status: design approved by the user. The module and the wiring in `bin/html.lua` (`run_session`, `load_page`) are built.
 
-Goal: a page fetched in this session is stored on disk. Back, Forward, the load of the previous page after an abort (`prev`) and history re-visits read the stored copy. Reload bypasses it and replaces the copy. A new link or go always fetches. The memory holds an index only.
+Goal: a page fetched in this session is stored on disk. Back, Forward, the load of the previous page after an abort (`prev`), history re-visits and the `switch` load of a tab (`spec/tabs.md` "The load mode `switch`") read the stored copy. Reload bypasses it and replaces the copy. A new link or go always fetches. The memory holds an index only.
 
 ## Scope
 
 - Print mode and the no-screen path do not use the cache.
 - Local files are not cached. Only keys that start with `http://` or `https://` are stored.
-- Two html instances at once are not supported. They share the folder, and the start and exit cleanup of one deletes the files of the other.
+- Two html instances at once are not supported. They share the folder, and the start and exit cleanup of one deletes the files of the other. The tab-out shell enforces this: a nested `html` refuses to start (`spec/shell.md` "Behavior").
+- A download does not read or write the cache (`spec/download.md` "Content and transfer").
 
 ## Folder
 
@@ -47,6 +48,12 @@ Taken once, at session start, after the leftovers are deleted.
 - A remote load stores a page only for a 2xx status. A load that is aborted, broken, short or failed calls `w.abort()`. The load calls `w.commit_complete` when the render ends and the stop check passes.
 - A cached page loads through the local-file source path. Its location is the final URL of the entry, else the requested URL, so the links and `<base>` resolve against the URL. A read error in `get` or `open()` drops the entry and the page is fetched. A read error during the read of a cached page gives a broken page and drops the entry, and Reload fetches.
 - `main` calls `cache.clear()` where it restores the screen, so every exit (quit, Ctrl+C, an error) empties the folder.
+
+## Tabs
+
+- The cache is one for the session, shared by all tabs. It has 16 entries, which is about 2 per tab at the limit of 8 tabs.
+- A `switch` load reads the cache first and fetches when there is no entry. A tab that left a page before it finished has no entry for it, so its next show fetches (`spec/tabs.md` "A load at a tab switch or at `!`").
+- The cache does not pin pages. The LRU order can evict the page of an inactive tab, and the next show fetches it.
 
 ## Lookup
 

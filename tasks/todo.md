@@ -141,6 +141,43 @@ Each version below needs its own short spec section and the user's approval befo
 
 **Size:** L
 
+**Spec (2026-11-17):** `spec/tabs.md`, `spec/shell.md`, `spec/download.md`. The design questions above are answered there. The user decided on 2026-11-17: the releases are split (background loads are 0.7.1a), a tab switch or `!` during a load stops the load with the `pending` rule, the download prompt is plain text, the default download folder is the working directory. No feature uses Esc (Minecraft catches it in game), and a blank Enter cancels each prompt.
+
+**Steps:**
+- [x] Write the 0.7.0a spec (2026-11-17, waiting for approval).
+- [ ] S0: the user approves the 0.7.0a spec. No code before the approval.
+- [ ] S1: `history` export and import. New pure `lib/html/tabs.lua`: `new(cap)`, `add_after`, `close`, `next` and `prev` with wrap, `active`, `count`, `snapshot`, `restore`. Files: `lib/html/history.lua`, `lib/html/tabs.lua`, `tests/history_test.lua`, `tests/tabs_test.lua`. Tests: export and import round trip, wrap, close order, limit.
+- [ ] S2: refactor `run_session`: `hist`, `guesses`, `held`, `cur`, `top`, `sel`, `popup` and the broken state go into one active-tab record. No behavior change. File: `bin/html.lua`. Tests: the existing suite stays green.
+- [ ] S3: viewer. `classify` gets `t`, `c`, `<`, `>`, `!`, `d`. New options `opts.tab_label`, `opts.notice`, `opts.quit_text`, `enter_held` at open, and the job kind. The generic prompt (plain initial text, cursor at the end). The y-only confirm. The key list text. Files: `lib/html/viewer.lua`, `tests/viewer_test.lua`. Tests: each new key returns its action, the save prompt shows the default path, Backspace deletes one character, a blank Enter cancels, the prefix shows, the key list fits 16 rows.
+- [ ] S4: tabs in the session loop: `t` (link and prompt), `<`, `>`, `c`, the `switch` mode, the stop at a switch with `pending`, the broken and aborted tab state, the limit notice, the quit text, `M.USAGE`. Files: `bin/html.lua`, `tests/entry_test.lua`. Tests: open a tab, switch, and return at the saved `top` with no request; a switch in phase 1, then a return, loads the pending link; a switch after the commit, then a return, fetches.
+- [ ] S5: shell tab-out: `deps.shell`, the `HTML_TABOUT` guard in `main`, the screen reopen, the event drain, `enter_held`. Files: `bin/html.lua`, `lib/html/viewer.lua`, `types/openos.lua`, `tests/entry_test.lua`. Tests: `!` closes the screen, calls the fake shell and reopens; the same tab and `top` come back; a shell error shows a popup; a nested start refuses.
+- [ ] S6: fetch `raw` option. Files: `lib/html/fetch.lua`, `tests/fetch_test.lua`. Tests: `image/png` is accepted with `raw`, no Latin-1 step.
+- [ ] S7: download module: default name, path resolve, part file, streaming, the space checks, stop, and the `write`, `flush` and `close` checks. It makes no `component` calls. `game_deps` gets `space`, `remove`, `rename` and `cwd`. Files: `lib/html/download.lua`, `tests/download_test.lua`, `bin/html.lua`. Tests: default names, no part file after a stop or an error, an existing file stays after a failure, a full-disk flush error.
+- [ ] S8: download wiring: the `d` flow, the save prompt, the overwrite prompt, the job in the `bg` slot, the progress status, the end notices, the refused keys. Files: `bin/html.lua`, `lib/html/viewer.lua`, `tests/entry_test.lua`. Tests: `d` on a link saves the bytes, `d` during a load is refused, `z` stops, the overwrite prompt shows.
+- [ ] S9: release: `fetch.VERSION = "0.7.0a"`, `docs/ingame/0.7.0a.md`, `pwsh tools/release.ps1 0.7.0a`. The release has 13 files.
+- Each slice ends with `pwsh tests/docker/test.ps1` and `pwsh tests/docker/test.ps1 fuzz 1000`.
+- The in-game checklist outline for `docs/ingame/0.7.0a.md` has these parts: install and upgrade; tabs (open, switch, limit, close, switch during a load, memory over many switches, quit text, the key list on 50x16); shell tab-out (restore, `exit`, the held Enter, a changed resolution, the nested refusal, Ctrl+C, memory); download (text, raw HTML, binary, 1 MB, `z`, overwrite, directory, disk space, 404, local link, refused keys, `q`); regression.
+- In-game checks of the open risks: `os.setenv` inheritance in the nested shell, and Ctrl+C in the nested shell (`spec/shell.md` "Risks").
+
+**Open questions:** none.
+
+#### 0.7.1a: Background loads (planned)
+
+**Goal:** A tab keeps loading to disk when the user leaves it, when resources allow. **Spec:** `spec/background.md` (planned, not approved). It needs the probes P1 to P6 and the user's approval before code starts. User decisions (2026-11-17): background loads pause during the shell, and a resume without `ETag` or `Last-Modified` restarts from byte 0.
+
+**Steps:**
+- [ ] Probes P1 to P6 in game (`tools/netprobe.lua`, a new `tools/fileprobe.lua`, `docs/ingame/fileprobe.md`, `docs/netprobe-plan.md`, `tests/netprobe_test.lua` for the new groups). P1 to P4: the `Range` and `If-Range` headers, a redirect that keeps `Range`, `ETag` and `Last-Modified`, and an idle handle. P5: a second handle reads a file that another handle writes, and `"ab"` appends. P6: the memory of one background job. They gate B5 and B6. Results go into `datacollection/` and `docs/probe/FACTS.md`.
+- [ ] B1: cache: in-flight bytes, `suspend` and `resume`, `in_use`, suspended parts as entries. Files: `lib/html/cache.lua`, `tests/cache_test.lua`.
+- [ ] B2: loader detach exit. `lib/html/jobs.lua` (limit 2, round robin, oldest-first suspension). The detach checks. The `opts.background` hook in the viewer loop, prompts and popups. The prefix markers. Files: `bin/html.lua`, `lib/html/jobs.lua`, `lib/html/viewer.lua`, `tests/jobs_test.lua`, `tests/entry_test.lua`, `tests/viewer_test.lua`.
+- [ ] B3: the fallbacks: `guard.on_low`, the retry after `too many open connections`, writer false. Files: `lib/html/guard.lua`, `bin/html.lua`, `tests/guard_test.lua`, `tests/entry_test.lua`.
+- [ ] B4: the job state in the tab record; showing a tab with a job. Files: `lib/html/tabs.lua`, `bin/html.lua`, `tests/tabs_test.lua`.
+- [ ] B5: resume: the fetch option `range = { offset, validator }`, the 206 and 200 handling, a restart when there is no validator. Files: `lib/html/fetch.lua`, `tests/fetch_test.lua`, `tests/shim/internet.lua`.
+- [ ] B6: promote on return (only if P5 passes), else wait and then render. File: `bin/html.lua`.
+- [ ] B7: shell pause: jobs pause during the shell, and the timers reset at the return. Files: `bin/html.lua`, `tests/entry_test.lua`.
+- [ ] B8: release 0.7.1a: `fetch.VERSION`, `docs/ingame/0.7.1a.md`, `pwsh tools/release.ps1 0.7.1a`.
+
+**Size:** L
+
 #### 0.8.0a: Session retention
 
 **Goal:** Save the browsing state and resume it after a restart.
@@ -185,7 +222,7 @@ Each version below needs its own short spec section and the user's approval befo
 
 ## Next recommended step
 
-Write the 0.7.0a spec (utility tabs: browser tabs, shell tab-out, download). **In progress** (2026-11-17). It needs the user's approval before any code.
+User approval of the 0.7.0a spec, then slice S1 (`spec/tabs.md`, `spec/shell.md`, `spec/download.md`). The 0.7.0a spec is written (2026-11-17). No code before the approval.
 
 All in-game checks are done (2026-11-17; the user states that the 13 open 0.5.0a checks, the 0.4.0a `#fragment` check, the 0.3.0a checklist and the three real pages are done). The second netprobe run is done. Esc at the go prompt is closed: in game Minecraft catches Esc and removes focus from the screen, and a blank Enter cancels the prompt.
 

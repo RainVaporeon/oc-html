@@ -140,3 +140,37 @@ Explains `spec/loading.md` "Content during load" and "Keys during load", `spec/n
 - Phase 1 in the coroutine keeps the old page usable while the program connects (up to the 15 s timeout). The commit replaces the old page by the new empty live page at once, so the blank-screen gap of the old design is gone.
 - `g` keeps loading while the prompt is open, and stops the load when the user submits the text. A cancelled prompt must not cost the load. Enter on a link, Forward and `r` stop the load first, because they start another navigation, and the cache writer must not store a page that the user left.
 - A page that is left before it finished is not cached: the writer aborts, and Back to it fetches. A partial page in the cache would replay as a complete page.
+
+## Tabs drop the document
+
+Explains `spec/tabs.md`. Decided by the user (2026-11-17).
+
+- A tab keeps a record of plain data (history, position, a pending load) and drops its rendered document. The heap holds one page. A line costs about 66.5 scaled units, and the 1 MB page (11302 lines) used about 750 K of about 1.8 MB free, with a fixed overhead of about 280 K. Two kept documents can fill 2 MiB. A record of 32 history entries costs about 5 K, so 8 tabs cost about 40 K (about 2%).
+- A show renders the page again from the disk cache. The render speed is about 630 KB/s of CPU and a file read is 320 to 430 KB/s, so a Wikipedia page (182 lines) takes about 0.13 s. This is the same choice as Back (`docs/rationale.md` "Navigation": a history entry holds only the target, `top` and `sel`).
+- The limit is 8 tabs. The history, the cache (16 entries, about 2 per tab) and the prefix `[8/8] ` stay small. A limit that scales with the memory is not part of 0.7.0a.
+- A tab switch or `!` during a load stops the load (user decision, 2026-11-17). Before the commit the tab keeps the load as `pending`, so the user does not lose the link. After the commit the page is not cached, so the next show fetches it. A load that runs in the background needs the card connections, the disk and the memory budget to be measured first. It is planned for 0.7.1a (`spec/background.md`).
+- The record is plain data, so `serialization.serialize` can store it, and the session retention of 0.8.0a can reuse it as the tab snapshot.
+- The digit keys do not switch tabs, because a NumPad digit with NumLock on sends a char that must not act as a navigation key (`docs/probe/FACTS.md`). The keys `<`, `>`, `c`, `t`, `!` and `d` follow `links`, less, vi and lynx.
+
+## Shell tab-out is a nested shell
+
+Explains `spec/shell.md`. Decided by the user (2026-11-17).
+
+- `!` closes the screen session, runs a nested OpenOS shell and opens the screen again after `exit`. The alternative, a viewer that keeps running beside the shell, would make the shell and the viewer share one screen and one event queue. Save and resume is the work of 0.8.0a.
+- The html process stays in memory during the shell. The document is dropped, so the shell has about 1.4 MB. The modules (about 280 K) stay, because `run_session` holds them as locals.
+- Two html instances share the cache folder, and the start and exit cleanup of one deletes the files of the other. So a nested `html` refuses to start. The guard is the variable `HTML_TABOUT`. It is not verified in game that a child process inherits it. The fallback is a marker in `package.loaded`, a weaker guard.
+- The screen state is read again at the return. The user can change the resolution, the depth or the palette in the shell, and the final exit then restores the state of that moment.
+- The queued events are dropped at the return, and `enter_held` is set, so the `key_up` of the Enter that typed `exit` cannot follow a link.
+- Background loads pause during the shell (user decision, 2026-11-17, 0.7.1a). The html loop does not run while the shell runs, and nothing reads from the open handles.
+
+## Downloads stream to a part file
+
+Explains `spec/download.md`. Decided by the user (2026-11-17).
+
+- The download writes each chunk to `<path>.part` at once and renames it at the end. Nothing collects in memory, so the memory use stays flat for any file size, and a failed or stopped download leaves no half file under the real name. A rename over an existing file replaces it (measured).
+- It saves the raw bytes. The cache holds charset-converted bytes, so a download always fetches again and never touches the cache.
+- The write checks follow `M.write_text`: a full disk can show only at `flush` or `close` (measured on tmpfs), and `close` with no return values is a success.
+- The free-space check keeps a reserve of 64 KB, as the cache does. With `Content-Length` it runs before the first read, and without it, after each 64 KB.
+- The download is a job in the `bg` slot that the viewer loop drives, with the `wait` and `slice` yields of a load. At most one load or one download runs, so at most one card connection is open.
+- Only `z` stops a download. Backspace and Left are abort keys for a load, but a long download must not stop by accident.
+- The save prompt starts with the default path as plain text (user decision, 2026-11-17). The folder is the working directory, as `wget` does. The overwrite confirm accepts only `y`, because a held Enter must not overwrite a file. A blank Enter cancels each prompt, because Minecraft catches Esc in game.

@@ -2,6 +2,17 @@
 
 Date: 2026-11-17. Branch: `master` (the only branch). Last release: 0.6.0a. No unreleased changes.
 
+## Status update 2026-11-17 (0.7.0a spec)
+
+The 0.7.0a spec is written and waits for the user's approval. No code changed. The release stays 0.6.0a.
+
+- New spec files: `spec/tabs.md` (keys, 8-tab limit, status prefix, showing a tab, the `switch` load mode, the tab record, the `pending` rule at a switch), `spec/shell.md` (tab-out sequence, the `HTML_TABOUT` refusal, risks), `spec/download.md` (the `d` flow, plain-text prompt, working directory, part file, disk space, keys) and `spec/background.md` (planned, 0.7.1a).
+- User decisions (2026-11-17): the releases are split; in 0.7.0a a tab switch or `!` stops a load with the `pending` rule; background loads pause during the shell (0.7.1a); a resume without `ETag` or `Last-Modified` restarts from byte 0; the download prompt is plain text; the default download folder is the working directory.
+- Minecraft catches Esc in game. No new feature uses Esc. A blank Enter cancels each prompt.
+- Changed specs: `spec/viewer.md`, `spec/navigation.md`, `spec/loading.md`, `spec/fetch.md`, `spec/cache.md`, `spec/errors.md`, `spec/cli.md`, `spec/testing.md`, `SPEC.md`. Reasons: `docs/rationale.md` "Tabs drop the document", "Shell tab-out is a nested shell", "Downloads stream to a part file".
+- Open in-game checks: `os.setenv` inheritance in the nested shell, and Ctrl+C in the nested shell.
+- Roadmap entries: `tasks/todo.md` "0.7.0a: Utility tabs" (steps S0 to S9) and "0.7.1a: Background loads (planned)" (probes P1 to P6, slices B1 to B8).
+
 ## Status update 2026-11-17 (in-game check of 0.6.0a)
 
 The user ran `docs/ingame/0.6.0a.md` in game. All expected results match. Measured: about 9 to 10 KB/s; `wikipedia.com` needs about 90 KB of 120 KB (about 10 s) before the first screen is usable (a large head is a possible cause, not verified); keys react near immediately. See `docs/probe/FACTS.md` "Interactive loading (0.6.0a in game)". A todo item for a faster first screen is in `tasks/todo.md` Future work.
@@ -69,7 +80,7 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
 
 - `AGENTS.md`: project description and feature goals, for any agent.
 - `SPEC.md`: the spec index (objective, scope, tech stack, component table, global rules, code style, boundaries).
-- `spec/`: the normative rules, one file per component (`cli`, `pipeline`, `loading`, `tokenizer`, `text`, `layout`, `viewer`, `guard`, `errors`, `url`, `fetch`, `probe`, `installer`, `release`, `testing`). Informative content is in `docs/` (see "Moved spec content").
+- `spec/`: the normative rules, one file per component (`cli`, `pipeline`, `loading`, `tokenizer`, `text`, `layout`, `viewer`, `guard`, `errors`, `url`, `fetch`, `probe`, `installer`, `release`, `testing`, and the new `tabs`, `shell`, `download` and `background` (planned)). Informative content is in `docs/` (see "Moved spec content").
 - `bin/html.lua`: entry point (arguments, error boundary, screen restore).
 - `lib/html/`: `url.lua` (URL parsing, loads during the argument checks), `fetch.lua` (internet card client), `guard.lua` (yields, memory), `tokenizer.lua`, `entities.lua`, `text.lua` (UTF-8 cleaning), `layout.lua` (styled lines), `viewer.lua` (screen, keys).
 - `tests/`: `run.lua` (sandboxed runner), `*_test.lua` (unit tests), `shim/` (OpenOS fakes, including a fake internet card), `cases/` (HTML with expected text), `real/` (saved real pages), `pages/large.html` (about 1 MB, generated), `fuzz.lua` and `fuzz-corpus/`, `docker/` (Dockerfile and `test.ps1`).
@@ -118,7 +129,7 @@ On 2026-11-14, `SPEC.md` was cut down to its normative rules. The informative pa
 
 ## Next step
 
-Write the 0.7.0a spec (utility tabs: browser tabs, shell tab-out, download). In progress. Get the user's approval before any code.
+User approval of the 0.7.0a spec, then slice S1. The 0.7.0a spec is written (2026-11-17): `spec/tabs.md`, `spec/shell.md`, `spec/download.md`; the planned 0.7.1a spec is `spec/background.md`. No code before the approval. The slices S1 to S9 (0.7.0a) and the probes P1 to P6 with the slices B1 to B8 (0.7.1a) are in `tasks/todo.md`.
 
 ## Open questions for the user
 

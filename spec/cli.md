@@ -19,11 +19,21 @@ html-install [--prefix <dir>] [--dry-run]
                      install a release from its one-file installer (see spec/installer.md)
 ```
 
-- `--help` lists the URL forms too, and the keys of the viewer: scrolling (`Up Dn PgUp PgDn Home End`), links (`Tab`, `Shift+Tab`, `Enter`), history (`Left` or `Bksp` for back, `Right` for forward), `g` go to, `r` reload, `z` abort a load, `?` key list, `q` quit.
+- `--help` lists the URL forms too, and the keys of the viewer: scrolling (`Up Dn PgUp PgDn Home End`), links (`Tab`, `Shift+Tab`, `Enter`), history (`Left` or `Bksp` for back, `Right` for forward), `g` go to, `r` reload, `z` abort a load, `t` new tab, `c` close tab, `<` `>` switch tabs, `d` download, `!` shell, `?` key list, `q` quit, Ctrl+C exit. The exact text of the keys part of `M.USAGE` (0.7.0a):
+  ```
+  Viewer keys: Up Down PgUp PgDn Home End scroll, Tab Shift+Tab Enter links,
+  Left or Bksp back, Right forward, g go to, r reload, z abort a load,
+  t new tab, c close tab, < > switch tabs, d download, ! shell,
+  ? key list, q quit, Ctrl+C exit.
+  ```
 - The URL fragment of the argument (`html http://host/page#top`) is kept. After the first load, the viewer jumps to its anchor (`spec/navigation.md` "Same-document links"). An unknown fragment stays at the first `top`. A local file argument takes no fragment.
 - Every usage error (an unknown option, too many arguments, a bad `--width`) prints one line to stderr that ends with ` (see html --help)`, and exits with code 2.
 - A URL argument and an argument without a scheme follow `spec/url.md`.
 - Exit codes for a URL. In the viewer, a fetch error after the frame opened and a read error of the body, a timeout in the body and a memory stop show a popup and keep the session: the exit code is 0 when the user quits (`spec/loading.md` "Errors after the frame"). In print mode, with no screen, and for an error before the frame, the line goes to stderr, and no part of a broken page prints and the exit codes stay: 1 for an error, 2 for a bad argument, 130 for Ctrl+C. An HTTP error status that `fetch.open` maps (`spec/fetch.md` "HTTP error statuses") exits with 0 in every mode.
+
+## Nested start
+
+- While the tab-out shell runs (`spec/shell.md`), the environment variable `HTML_TABOUT` is set. `main` reads `os.getenv("HTML_TABOUT")` before the TUI opens. When it is set, `html` prints `html: already open; type exit to return to it` to stderr and exits with code 1. This holds for every argument, also `--help` and `--print`.
 
 ## Home directory
 
