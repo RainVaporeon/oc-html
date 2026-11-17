@@ -21,7 +21,7 @@ computerception browser for a block game
 
 check the release tab and navigate to the latest version, and pull `html-install.lua` onto your OpenComputers instance and run it.
 
-you can install it to the machine via `html --prefix /` to install on the root directory.
+you can install it to the machine via `html-install --prefix /` to install on the root directory.
 
 ## requirements
 
