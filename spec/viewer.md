@@ -12,7 +12,7 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 - Status texts: `<scheme>: links are not supported` (`spec/url.md` "Link resolution") and `[aborted] <target>` (`spec/navigation.md` "Abort"). The first one stays until the next key.
 - During a load the left part shows the phase or `<label> - Loading <n> KB of <m> KB` (exact texts and the rate limit: `spec/loading.md` "Status line during load"). The percent and the hint on the right stay. The percent counts the loaded part. A visible selected link still shows `-> <target>`.
 - Tab prefix. With 2 or more tabs open, the left part starts with `[<i>/<n>] ` (`spec/tabs.md` "Behavior"). It also comes before `-> <url>`, the loading texts, `[error]` and `[aborted]`. A notice replaces the whole left part, including the prefix. `TITLE_MIN` counts the prefix. The viewer gets the prefix as `opts.tab_label`.
-- Notices of 0.7.0a. They show in the left part until the next key, like `<scheme>: links are not supported`. The viewer gets one as `opts.notice`: `tab limit: 8 tabs`, `last tab: q quits`, `d: only web files can be downloaded`, `wait for the load, or press z`, `download running: z stops it`, `Saved <path> (<n> KB)` and `download stopped` (`spec/tabs.md`, `spec/download.md`).
+- Notices of 0.7.0a. They show in the left part until the next key, like `<scheme>: links are not supported`. The viewer gets one as `opts.notice`: `tab limit: <n> tabs`, `not enough memory for a new tab`, `last tab: q quits`, `Ctrl+S: only web files can be downloaded`, `wait for the load, or press z`, `download running: z stops it`, `Saved <path> (<n> KB)` and `download stopped` (`spec/tabs.md`, `spec/download.md`).
 - During a download the left part shows `Downloading <name> - <n> KB of <m> KB` (`spec/download.md` "Progress, keys and end").
 - A long title is cut so the status line fits the screen width. A wide character never goes past the right edge.
 - Control bytes in the title show as spaces.
@@ -23,7 +23,7 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 - Home shows line 1 at the top. End shows the last line on the last row above the status line.
 - Scrolling stops at the start and at the end. Up at the start and Down at the end do nothing. A page that fits on the screen does not scroll.
 - Key codes. The standard codes 199 (Home), 200 (Up), 201 (PgUp), 207 (End), 208 (Down) and 209 (PgDn) are always accepted. The NumPad codes 71 (Home), 72 (Up), 73 (PgUp), 79 (End), 80 (Down) and 81 (PgDn) are accepted only when the `key_down` char is 0. A NumPad digit (NumLock on, for example code 73 with char '9') never acts as a navigation key. Measurements behind the viewer rules: `docs/rationale.md` "Design: Viewer".
-- New keys of 0.7.0a: `t` (new tab), `c` (close tab), `<` and `>` (previous and next tab), `!` (shell tab-out) and `d` (download). They are lowercase only, like `g`: the uppercase letters stay free. `classify` returns the actions `tab_new`, `tab_close`, `tab_prev`, `tab_next`, `shell` and `download`. The rules are in `spec/tabs.md`, `spec/shell.md` and `spec/download.md`. The digit keys are not tab keys (see "Key codes").
+- New keys of 0.7.0a: `t` (new tab), `c` (close tab), `<` and `>` (previous and next tab), `!` (shell tab-out) and Ctrl+S (download). The letter keys are lowercase only, like `g`: the uppercase letters stay free, and `d` stays free. Ctrl+S is a `key_down` with char 19, or with code 31 while `keyboard.isControlDown()` is true (`spec/download.md` "Key"). `classify` returns the actions `tab_new`, `tab_close`, `tab_prev`, `tab_next`, `shell` and `download`. The rules are in `spec/tabs.md`, `spec/shell.md` and `spec/download.md`. The digit keys are not tab keys (see "Key codes").
 - Other keys and other events (for example `touch`) are ignored.
 - Up and Down move between links, in the style of `links` and `lynx`. They never scroll one line. There is no one-line scroll key.
   - Down selects the next link whose start line is below the start line of the selected link and is on screen. When no link is selected, or the selection is off screen, it selects the first link whose start line is at or below `top` and on screen. The page does not scroll.
@@ -55,7 +55,7 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 - `g` opens the go prompt (`spec/navigation.md` "Go prompt"). The prompt accepts the space key, so a path with spaces can be typed.
 - `r` and `R` reload the page (`spec/navigation.md` "Reload"). F5 does not reload.
 - `z` aborts a page load (`spec/navigation.md` "Abort"). During a load, Backspace and Left abort it too. Right, Enter on a link, `g` and `r` stop the load and act (`spec/navigation.md` "During a load"). `z` does nothing when no load runs.
-- `t`, `c`, `<`, `>`, `!` and `d` (see "Keys"). During a load they stop the load or are refused (`spec/navigation.md` "During a load"). During a download only `z` stops it (see "Job kind").
+- `t`, `c`, `<`, `>`, `!` and Ctrl+S (see "Keys"). During a load they stop the load or are refused (`spec/navigation.md` "During a load"). During a download only `z` stops it (see "Job kind").
 - `?` shows a key-list popup. It lists the keys of this section and of "Keys". Only Enter closes it.
 - Back, Forward, reload and `g` start a load through the session loop (`spec/navigation.md`).
 
@@ -88,7 +88,7 @@ Up, Down: move between links
 PgUp, PgDn, Home, End: scroll
 t, c: new tab, close tab
 <, >: previous, next tab
-d: download, !: shell
+Ctrl+S: download, !: shell
 q: quit, ?: this list
 ```
 - `s.popup` keeps at most `rows - 2` lines, and the blank line and `[OK]` count. On a tier 1 screen (50x16), `rows` is 15, so the text can have at most 11 lines. A test pins that the key list fits 16 rows.
@@ -103,12 +103,13 @@ q: quit, ?: this list
 ## Confirm prompt
 
 - ` Overwrite <name>? (y/n)` (the save prompt, `spec/download.md` "Prompt") answers `y` or `Y` only. Enter and every other key cancel. This differs from the quit prompt, where Enter confirms. Reason: a held Enter must not overwrite a file.
+- ` Close tab? (y/n)` (the `c` key, `spec/tabs.md` "Behavior") follows the rules of the quit prompt ("Quit"): `y`, `Y` or Enter confirms, any other key cancels, a `key_up` does not answer, and Ctrl+C exits at once. A "no" does nothing. The load goes on while it shows. The prompt does not show on the last tab (the notice `last tab: q quits` shows) and not during a download (the notice `download running: z stops it` shows). The viewer returns the action `tab_close` only after the user confirms.
 
 ## Job kind
 
 - The viewer drives one job: a page load or a download. `opts.load` carries a `kind`, `"page"` or `"download"` (default `"page"`).
 - With kind `"page"`, `z`, Backspace and Left return `abort`, and the keys of `spec/navigation.md` "During a load" apply.
-- With kind `"download"`, only `z` returns `abort`. Backspace, Left, Right, Enter on a link, `r`, `g`, `t`, `c`, `<`, `>`, `!` and `d` set the notice `download running: z stops it` and do nothing else. `q` and Ctrl+C work as in "Quit" (`spec/download.md` "Progress, keys and end").
+- With kind `"download"`, only `z` returns `abort`. Backspace, Left, Right, Enter on a link, `r`, `g`, `t`, `c`, `<`, `>`, `!` and Ctrl+S set the notice `download running: z stops it` and do nothing else. `q` and Ctrl+C work as in "Quit" (`spec/download.md` "Progress, keys and end").
 
 ## Open option `enter_held`
 

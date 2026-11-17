@@ -73,8 +73,9 @@ The handle closes on every exit path: normal end, controlled error, unexpected e
 - The card gives no error body (N10, measured). See "HTTP error statuses". The rules above for a readable error body stay for a card that gives one. Their tests are marked "not seen in game".
 - `Content-Type` with any `text/*` type (for example `text/html` or `text/plain`), `application/xhtml+xml`, or no `Content-Type`: the body renders (user decision, 2026-11-15). It goes through the same pipeline; at worst it shows as bare text, and a stray `<` in it renders as text or as an unknown tag.
   - The media type is compared without case. Parameters after `;` and spaces around the type are ignored. An empty `Content-Type` counts as no `Content-Type`.
-- Any other type with a 2xx status stops before the body with `html: not an HTML page: <type>`. This covers binary types: images, archives and `application/*` other than XHTML. A download accepts every type with the `raw` option (`spec/download.md` "Content and transfer").
+- Any other type with a 2xx status stops before the body with `html: not an HTML page: <type>`, unless the `file_ok` option is set (below). This covers binary types: images, archives and `application/*` other than XHTML. A download accepts every type with the `raw` option (`spec/download.md` "Content and transfer").
 - The `raw` option (0.7.0a, for downloads). `fetch.open` takes it as the field `raw = true` of its `links` argument. With it, every content type is accepted (no `html: not an HTML page: <type>` stop), the Latin-1 step of "Charset" is skipped, and `read()` returns the response bytes as they come. `html: compressed response not supported: <encoding>` and every other error stay. Without it, nothing changes.
+- The `file_ok` option (0.7.0a, for a followed link to a file, `spec/download.md` "Link to a file"). `fetch.open` takes it as the field `file_ok = true` of its `links` argument. A 2xx response with a content type that is not accepted, or with `Content-Disposition: attachment` (the disposition type compared without case, parameters ignored), is a file response: `fetch.open` does not stop and does not read the body. It returns the open response with `is_file = true` and `filename`. `filename` is the value of the `filename` parameter of `Content-Disposition` (quoted or not), or nil. `filename*` is ignored. A file response has no Latin-1 step: `read()` returns the bytes as they come, as with `raw`. `html: compressed response not supported: <encoding>` and every other error stay. An error status keeps its short page. Without `file_ok`, nothing changes.
 
 ## HTTP error statuses
 
@@ -108,7 +109,7 @@ All errors are controlled. Each is one line with the prefix `html: `, exit code 
 | Connect or first response takes longer than `CONNECT_TIMEOUT` | `html: timed out connecting to <url>` |
 | No new data for `READ_TIMEOUT` | `html: timed out reading <url> (<bytes> bytes received)` |
 | `read` returns nil and a reason (any status, after the first byte) | `html: read error: <reason>` |
-| Content type (2xx status): not `text/*`, not XHTML | `html: not an HTML page: <type>` |
+| Content type (2xx status): not `text/*`, not XHTML (not with `file_ok` or `raw`) | `html: not an HTML page: <type>` |
 | Ctrl+C | `html: interrupted`, exit code 130 |
 
 - Measured failure texts: `unknown host: <host>: Name or service not known`, `Connection reset`, and `(certificate_expired) PKIX path validation failed: ...`.
@@ -121,7 +122,7 @@ All errors are controlled. Each is one line with the prefix `html: `, exit code 
 ## Timeouts and yields
 
 - `CONNECT_TIMEOUT` is 15 s. It covers `finishConnect` and the wait for `response()`. Because `finishConnect` stays false until the response headers arrive (measured), it also bounds the time to the first header of a slow server. The card has no connect timeout of its own: a silent host was still pending after 20 s.
-- `READ_TIMEOUT` is 30 s without any new byte. Each received chunk restarts it.
+- `READ_TIMEOUT` is 30 s without any new byte. Each received chunk restarts it. For a file response that the program keeps open for a prompt (`is_file`), the timer starts at the first `read()` call and not when `fetch.open` returned, so the time at the prompts does not count (`spec/download.md` "Link to a file").
 - Wall time comes from `computer.uptime()` (50 ms steps are enough here).
 - Every wait loop calls `sleep(WAIT_STEP)`, so the program yields well inside the 5 s OpenOS limit. The loop also checks the interrupt flag, so Ctrl+C works during a slow server.
 - Every `request()` and every `read()` costs one tick (50 ms), so a loop of reads is slow even when data is ready. The timeouts are still first guesses. The second netprobe run (large reads, memory) decides them.

@@ -1,21 +1,28 @@
 # Download
 
-Source: `lib/html/download.lua` (the file name, the part file, streaming to disk), `bin/html.lua` (the `d` flow, the job), `lib/html/fetch.lua` (the `raw` option), `lib/html/viewer.lua` (prompts). Index: `SPEC.md`. Fetching: `spec/fetch.md`. File writes: `spec/errors.md` "File writes". Reasons: `docs/rationale.md` "Downloads stream to a part file".
+Source: `lib/html/download.lua` (the file name, the part file, streaming to disk), `bin/html.lua` (the Ctrl+S flow, the link to a file, the job), `lib/html/fetch.lua` (the `raw` and `file_ok` options), `lib/html/viewer.lua` (prompts). Index: `SPEC.md`. Fetching: `spec/fetch.md`. File writes: `spec/errors.md` "File writes". Reasons: `docs/rationale.md` "Downloads stream to a part file".
 
-Status: roadmap item 0.7.0a, spec written, waiting for the user's approval. The user decided on 2026-11-17: the download prompt is plain text, and the default download folder is the working directory.
+Status: roadmap item 0.7.0a, spec written, waiting for the user's approval. The user decided on 2026-11-17: the download prompt is plain text, and the default download folder is the working directory. The user revised the spec on 2026-11-17: Ctrl+S starts a download (not `d`), and a followed link to a file opens the save prompt.
 
 Doc rules: Minecraft catches Esc in game, so the prompts do not use Esc. A blank Enter cancels each prompt.
 
+## Key
+
+- Ctrl+S starts a download. The key `d` is not a download key and stays free.
+- Detection. OpenComputers sends Ctrl+S as a `key_down` with char 19 (0x13) on most clients. `classify` returns the action `download` for a `key_down` with char 19, or with key code 31 (S) while `keyboard.isControlDown()` is true. The viewer gets `isControlDown` as a dep, as `isShiftDown`. Without the dep, the viewer tracks `key_down` and `key_up` of the codes 29 and 157 (the Ctrl keys), as for Shift (`spec/viewer.md` "Link keys").
+- Ctrl+S is checked after Ctrl+C (char 3), so it does not collide with it.
+- The game may send char 19, or code 31 with a different char. The in-game check records which one the game sends (`tasks/todo.md` 0.7.0a, in-game checklist).
+
 ## Target
 
-- `d` with a visible selected link downloads the link target.
-- `d` with no visible selection downloads the URL of the current page. A broken or aborted page has a URL too. The program always fetches again, because the cache holds charset-converted bytes and not the raw bytes.
+- Ctrl+S with a visible selected link downloads the link target.
+- Ctrl+S with no visible selection downloads the URL of the current page. A broken or aborted page has a URL too. The program always fetches again, because the cache holds charset-converted bytes and not the raw bytes.
 - Refused cases. Each one shows a status notice until the next key:
-  - a local target: `d: only web files can be downloaded`
+  - a local target: `Ctrl+S: only web files can be downloaded`
   - an unsupported scheme: `<scheme>: links are not supported`
   - a link stored as false: `link too long`
-  - `d` during a page load: `wait for the load, or press z`
-  - `d` during a download: `download running: z stops it`
+  - Ctrl+S during a page load: `wait for the load, or press z`
+  - Ctrl+S during a download: `download running: z stops it`
 
 ## Prompt
 
@@ -30,16 +37,38 @@ Doc rules: Minecraft catches Esc in game, so the prompts do not use Esc. A blank
 ## Default path
 
 - The folder is the working directory, `shell.getWorkingDirectory()` (usually `/home`). This is what `wget` does.
-- The file name comes from the last segment of the URL path:
+- The file name comes from the `filename` parameter of the `Content-Disposition` header when the response has one and it gives a name (see "Link to a file"). Else it comes from the last segment of the URL path:
   1. Drop the query and the fragment.
   2. Decode each `%XX`.
   3. Replace each byte outside 0x20 to 0x7E, and each `/ \ : * ? " < > |`, with `_`.
   4. Cut the name to 64 bytes and keep the extension.
   5. An empty name, `.` or `..` becomes `index.html`.
+- A `Content-Disposition` name takes only the steps 3 to 5, after the program drops everything up to the last `/` or `\`. It takes the `filename` parameter (quoted or not, compared without case). It ignores `filename*`. When the cleaned name is empty, the name comes from the URL.
+
+## Link to a file
+
+A followed link can lead to a file. Then the program opens the save prompt and does not show an error.
+
+- Which navigations. Enter on a link, `t` (with a link or with the prompt text) and the `g` prompt text, to an `http://` or `https://` target. These are the load modes `link`, `go` and the first load of a new tab. Other loads keep today's rule: the start argument, `--print`, `r`, Back, Forward, a tab switch and a pending load of a history entry give `html: not an HTML page: <type>`, because such an entry was a page once.
+- A file download is a response with a 2xx status and one of:
+  - a content type that the viewer does not render (any type outside the accepted types of `spec/fetch.md` "HTTP status and content type": `text/*`, `application/xhtml+xml`, or no type), or
+  - the header `Content-Disposition` with the disposition type `attachment` (compared without case), also with an accepted type.
+  An error status keeps its short page. A `Content-Encoding` other than `identity` keeps `html: compressed response not supported: <encoding>`.
+- The load gives the response to the session loop and does not read the body. The program keeps this open response and does not fetch again. `fetch.open` takes the option `file_ok = true` for these loads and gives the response `is_file = true` and `filename` (`spec/fetch.md` "HTTP status and content type").
+- The default file name comes from `Content-Disposition` when it exists, else from the URL: the final URL of the response, after the redirects ("Default path").
+- The navigation does not change the history and does not change the current page. The current page, `top`, `sel` and the history stay as they were. The current page stays on screen during the prompt and the download. No history entry is pushed. The load starts no cache writer, and nothing is cached.
+  - With `t`, no new tab stays open: the tab that was active shows again (`spec/tabs.md` "Showing a tab") and the prompt opens in it.
+- The save prompt then shows (` Save to: <default path>`, "Prompt"). It opens at once, with the response still open.
+  - A blank Enter cancels. The response handle closes. The page and the status line are as before.
+  - Ctrl+C at the prompt closes the handle and exits with code 130.
+  - An accepted path starts a normal download job with this response (`bg` slot). It has the same progress, keys, end notices and errors as a download that Ctrl+S starts ("Progress, keys and end"). The overwrite prompt, the directory checks and the disk-space checks apply. An answer of "no" at ` Overwrite <name>? (y/n)`, and each other cancel, closes the handle.
+- Timeout rule. The response stays open while the prompts show, so the card read timeout must not count the prompt time. `READ_TIMEOUT` of a kept response starts at its first `read()` call, not when `fetch.open` returned (`spec/fetch.md` "Timeouts and yields"). `CONNECT_TIMEOUT` ended at the open. A server can still close the idle connection. Then the first read gives a read error, and the usual download error popup shows (the part file is deleted).
+- The card allows 4 open connections. The kept response is the one open connection: at most one load, one download or one kept response is open at any time.
+- A followed link while a download job runs shows the notice `download running: z stops it` and opens nothing ("Progress, keys and end").
 
 ## Content and transfer
 
-- A download saves the raw response bytes. It does not render the page or convert the charset. `fetch.open` gets the option `raw = true` (`spec/fetch.md` "HTTP status and content type"). With it, every content type is accepted and the Latin-1 step is skipped.
+- A download saves the raw response bytes. It does not render the page or convert the charset. A download that Ctrl+S starts fetches again: `fetch.open` gets the option `raw = true` (`spec/fetch.md` "HTTP status and content type"). With it, every content type is accepted and the Latin-1 step is skipped.
 - The error `html: compressed response not supported: ...` stays. The card does not inflate, so the saved bytes would be wrong.
 - Redirects work as they do for a page.
 - The download writes to `<path>.part`. A `<path>.part` that exists already is replaced.
@@ -66,7 +95,7 @@ Doc rules: Minecraft catches Esc in game, so the prompts do not use Esc. A blank
 - Keys during a download:
   - Scroll keys, Tab, Shift+Tab, Up, Down and `?` work.
   - `z` stops the download.
-  - Enter on a link, Back, Forward, Left, Backspace, `r`, `g`, `t`, `c`, `<`, `>`, `!` and `d` show the notice `download running: z stops it` and do nothing else. Backspace and Left do not stop a download, because a long download must not stop by accident.
+  - Enter on a link, Back, Forward, Left, Backspace, `r`, `g`, `t`, `c`, `<`, `>`, `!` and Ctrl+S show the notice `download running: z stops it` and do nothing else. Backspace and Left do not stop a download, because a long download must not stop by accident.
   - `q` shows the quit prompt, and the download goes on while it shows. A confirmed quit stops the download and deletes the part file.
   - Ctrl+C stops the download, deletes the part file and exits with code 130.
 - Success: the notice `Saved <path> (<n> KB)` shows until the next key.
@@ -87,7 +116,7 @@ Doc rules: Minecraft catches Esc in game, so the prompts do not use Esc. A blank
 |---|---|
 | ` Save to: ` | prompt |
 | ` Overwrite <name>? (y/n)` | prompt |
-| `d: only web files can be downloaded` | notice |
+| `Ctrl+S: only web files can be downloaded` | notice |
 | `wait for the load, or press z` | notice |
 | `download running: z stops it` | notice |
 | `Downloading <name> - <n> KB of <m> KB` / `Downloading <name> - <n> KB` | status |

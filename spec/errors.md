@@ -30,8 +30,10 @@ Messages of 0.7.0a (`spec/tabs.md`, `spec/shell.md`, `spec/download.md`).
 
 | Text | Kind |
 |---|---|
-| `tab limit: 8 tabs` | notice |
+| `tab limit: <n> tabs` | notice |
+| `not enough memory for a new tab` | notice (only with `--tabs`) |
 | `last tab: q quits` | notice |
+| ` Close tab? (y/n)` | prompt |
 | ` New tab: ` | prompt |
 | ` Quit and close <n> tabs? (y/n)` | prompt |
 | `html: shell started. Type exit to return to the browser.` | stdout line |
@@ -40,7 +42,7 @@ Messages of 0.7.0a (`spec/tabs.md`, `spec/shell.md`, `spec/download.md`).
 | `html: cannot reopen the screen: <reason>` | stderr, exit code 1 |
 | ` Save to: ` | prompt |
 | ` Overwrite <name>? (y/n)` | prompt |
-| `d: only web files can be downloaded` | notice |
+| `Ctrl+S: only web files can be downloaded` | notice |
 | `wait for the load, or press z` | notice |
 | `download running: z stops it` | notice |
 | `Downloading <name> - <n> KB of <m> KB` / `Downloading <name> - <n> KB` | status |
@@ -49,6 +51,7 @@ Messages of 0.7.0a (`spec/tabs.md`, `spec/shell.md`, `spec/download.md`).
 | `html: no such directory: <dir>` | popup |
 | `html: not enough disk space: <n> KB needed, <m> KB free` | popup |
 | `html: cannot write <path>: <reason>` | popup |
+| `html: --tabs needs a number from 1 to 32, or auto` | usage error (stderr, exit code 2) |
 
 - Notices show in the status line until the next key. A popup has an `[OK]` button. A download error popup has no reload line (`spec/download.md` "Progress, keys and end").
 - The shell and the download write with the checks of "File writes".

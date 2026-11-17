@@ -51,7 +51,7 @@ Taken once, at session start, after the leftovers are deleted.
 
 ## Tabs
 
-- The cache is one for the session, shared by all tabs. It has 16 entries, which is about 2 per tab at the limit of 8 tabs.
+- The cache is one for the session, shared by all tabs. It has 16 entries, which is about 2 per tab at the default limit of 8 tabs.
 - A `switch` load reads the cache first and fetches when there is no entry. A tab that left a page before it finished has no entry for it, so its next show fetches (`spec/tabs.md` "A load at a tab switch or at `!`").
 - The cache does not pin pages. The LRU order can evict the page of an inactive tab, and the next show fetches it.
 

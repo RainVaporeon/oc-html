@@ -22,7 +22,7 @@ In scope:
 - Scrolling viewer with a status line, a loading screen and a quit confirmation.
 - Remote fetching (`spec/fetch.md`, roadmap item 1, approved 2026-11-14).
 - Following links and navigation (link selection, back and forward, go to, reload, abort): specified in `spec/navigation.md`, approved on 2026-11-15 and done (roadmap items 2 and 2a).
-- Tabs, shell tab-out and downloads: `spec/tabs.md`, `spec/shell.md`, `spec/download.md` (0.7.0a, spec written, waiting for approval). Background loads: planned (`spec/background.md`, 0.7.1a). Sessions (save and resume): planned.
+- Tabs, shell tab-out and downloads: `spec/tabs.md`, `spec/shell.md`, `spec/download.md` (0.7.0a, spec written, waiting for approval). Ctrl+S downloads, `c` asks for a confirmation, and `--tabs` (experimental) sets the tab limit. Background loads: planned (`spec/background.md`, 0.7.1a). Sessions (save and resume): planned.
 - Images. Planned, see "Roadmap" below.
 - Data Card inflate and deflate. Future work, see "Roadmap" below.
 - Correct layout of tables, lists, forms, `<input>` and `<button>`. These render as plain text and must not break anything.
