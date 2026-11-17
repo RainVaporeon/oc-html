@@ -953,7 +953,7 @@ M.load_page = load_page
 local HISTORY_CAP = 32
 
 -- Loads html.history. Returns true, or nil and a controlled message.
-local history
+local history, tabs
 local function load_history()
   if history then
     return true
@@ -962,7 +962,11 @@ local function load_history()
   if not ok then
     return nil, "html: cannot load html.history: " .. reason(mod)
   end
-  history = mod
+  local ok2, mod2 = pcall(require, "html.tabs")
+  if not ok2 then
+    return nil, "html: cannot load html.tabs: " .. reason(mod2)
+  end
+  history, tabs = mod, mod2
   return true
 end
 
@@ -1073,29 +1077,36 @@ local function run_session(target, ctx)
       ctx.cache = cache_mod.new(nil, deps.cache)
     end
   end
-  local hist = history.new(HISTORY_CAP)
-  local guesses = {}
-  -- The page on screen: { lines, title, name, page, location, base, resolve,
-  -- broken } or nil. The commit of a load drops it.
-  local held
-  -- The target of the page on screen.
-  local cur
-  local top, sel = 1, nil
-  -- The text of a popup for the next show.
-  local popup
-  -- The loader that runs, or nil: { r, spec, had, state, committed,
-  -- finished, result, drive(), cancel() }.
-  local bg
+  -- The active tab: the record of spec/tabs.md (guesses, shown, pending, job)
+  -- plus the live objects of the page on screen:
+  --   hist     the history object
+  --   held     the page on screen: { lines, title, name, page, location,
+  --            base, resolve } or nil. The commit of a load drops it.
+  --   shown    nil, or { kind = "broken" | "aborted", name } while held is
+  --            the empty page of a failed or aborted load
+  --   cur      the target of the page on screen
+  --   top, sel the view position
+  --   popup    the text of a popup for the next show
+  --   bg       the loader that runs, or nil: { r, spec, had, state,
+  --            committed, finished, result, drive(), cancel() }
+  local tab = tabs.new_tab()
+  tab.hist = history.new(HISTORY_CAP)
+  tab.top = 1
+  local tab_list = tabs.new()
+  tab_list.add_after(tab)
   -- The next load: { spec, mode = "first" | "link" | "go" | "back" |
   -- "forward" | "reload" | "prev", top, sel, fragment }.
   local req = { spec = target, mode = "first", fragment = target.fragment }
   if target.guessed then
-    guesses[key_of(target)] = target.arg
+    tab.guesses[key_of(target)] = target.arg
   end
 
-  -- An empty page with a title: a broken or an aborted load.
-  local function empty_page(title, name)
-    return { lines = {}, title = title, name = name, broken = true }
+  -- An empty page with a title: a broken or an aborted load. It sets
+  -- tab.shown.
+  local function empty_page(kind, name)
+    tab.shown = { kind = kind, name = name }
+    return { lines = {}, title = "[" .. (kind == "broken" and "error" or kind)
+      .. "] " .. name, name = name }
   end
 
   -- The resolver of the viewer: the text of the status line, or nil and a
@@ -1155,18 +1166,18 @@ local function run_session(target, ctx)
       return res
     end
     if res.ok then
-      cur = spec
-      held = page_of(res)
-      popup = res.show.error
+      tab.cur = spec
+      tab.held = page_of(res)
+      tab.popup = res.show.error
       -- A user who did not move keeps the rules of a load that did not
       -- show: the anchor, or the saved position.
       local moved = view_top ~= 1 or view_sel ~= nil
       if moved then
-        top, sel = view_top, view_sel
+        tab.top, tab.sel = view_top, view_sel
       elseif r.mode == "first" or r.mode == "link" or r.mode == "go" then
-        top, sel = anchor_line(held.page, r.fragment) or 1, nil
+        tab.top, tab.sel = anchor_line(tab.held.page, r.fragment) or 1, nil
       else
-        top, sel = r.top, r.sel
+        tab.top, tab.sel = r.top, r.sel
       end
       return nil
     end
@@ -1174,17 +1185,17 @@ local function run_session(target, ctx)
     -- A back or forward move of the history goes back.
     local function undo()
       if r.mode == "back" then
-        hist.forward()
+        tab.hist.forward()
       elseif r.mode == "forward" then
-        hist.back()
+        tab.hist.back()
       end
     end
     if res.failed then
-      popup = res.text
+      tab.popup = res.text
       if res.committed or not had then
-        cur = spec
-        held = empty_page("[error] " .. res.name, res.name)
-        top, sel = 1, nil
+        tab.cur = spec
+        tab.held = empty_page("broken", res.name)
+        tab.top, tab.sel = 1, nil
       else
         undo()
       end
@@ -1192,21 +1203,21 @@ local function run_session(target, ctx)
       if had then
         undo()
       else
-        cur = spec
-        held = empty_page("[aborted] " .. res.name, res.name)
-        top, sel = 1, nil
+        tab.cur = spec
+        tab.held = empty_page("aborted", res.name)
+        tab.top, tab.sel = 1, nil
       end
-    elseif (r.mode == "link" or r.mode == "go") and hist.can_back() then
+    elseif (r.mode == "link" or r.mode == "go") and tab.hist.can_back() then
       -- The old page is gone: load the previous page again. The entry of the
       -- aborted new target goes. An abort of a reload, back or forward keeps
       -- its entry and shows the empty page, so r loads it again.
-      local prev = hist.drop_current()
-      req = { spec = spec_of(prev.target, guesses), mode = "prev",
+      local prev = tab.hist.drop_current()
+      req = { spec = spec_of(prev.target, tab.guesses), mode = "prev",
         top = prev.top, sel = prev.sel }
     else
-      cur = spec
-      held = empty_page("[aborted] " .. res.name, res.name)
-      top, sel = 1, nil
+      tab.cur = spec
+      tab.held = empty_page("aborted", res.name)
+      tab.top, tab.sel = 1, nil
     end
     return nil
   end
@@ -1216,7 +1227,7 @@ local function run_session(target, ctx)
   -- the load runs to its end here.
   local function start(r)
     local spec = r.spec
-    local had = held ~= nil
+    local had = tab.held ~= nil
     -- A load has its own copy of the context, so a later change of the
     -- fields does not reach a load that still runs.
     local lctx = {}
@@ -1226,11 +1237,12 @@ local function run_session(target, ctx)
     lctx.arg = spec.arg or key_of(spec)
     lctx.nav = r.mode ~= "first"
     lctx.on_commit = function()
-      held = nil
-      if r.mode == "link" or r.mode == "go" or hist.size() == 0 then
-        hist.push(key_of(spec))
+      tab.held = nil
+      tab.shown = nil
+      if r.mode == "link" or r.mode == "go" or tab.hist.size() == 0 then
+        tab.hist.push(key_of(spec))
       elseif r.mode == "reload" then
-        hist.replace({ target = key_of(spec), top = r.top, sel = r.sel })
+        tab.hist.replace({ target = key_of(spec), top = r.top, sel = r.sel })
       end
     end
     -- Back, forward and the load of the previous page use the cached copy.
@@ -1292,16 +1304,16 @@ local function run_session(target, ctx)
         coroutine.resume(co)
       end
     end
-    bg = b
+    tab.bg = b
     return nil
   end
 
   -- Shows the page. Returns ok and the result of the viewer.
   local function present()
-    local h = held
-    local b = bg
-    local o = { no_rescale = opts.no_rescale, error = popup, top = top,
-      sel = sel }
+    local h = tab.held
+    local b = tab.bg
+    local o = { no_rescale = opts.no_rescale, error = tab.popup, top = tab.top,
+      sel = tab.sel }
     local lines = {}
     if b and b.committed then
       local live = b.state.live
@@ -1322,16 +1334,16 @@ local function run_session(target, ctx)
     if b and not b.finished then
       o.load = { drive = b.drive, status = b.status }
     end
-    popup = nil
+    tab.popup = nil
     local session = ctx.session
     return xpcall(session and session.show or deps.view, handler, lines, o)
   end
 
   -- A same-document link: a new history entry and a jump to the anchor.
   local function jump(fragment)
-    top = anchor_line(held.page, fragment) or top
-    hist.push(key_of(cur))
-    hist.set_pos(top, sel)
+    tab.top = anchor_line(tab.held.page, fragment) or tab.top
+    tab.hist.push(key_of(tab.cur))
+    tab.hist.set_pos(tab.top, tab.sel)
   end
 
   -- The action of the user stops the load that runs. Returns true when the
@@ -1340,12 +1352,12 @@ local function run_session(target, ctx)
   -- that was loaded becomes the page on screen (after the commit), or the
   -- old page stays (before it).
   local function stop_load(kind)
-    local b = bg
-    if kind == "forward" and not hist.can_forward() then
+    local b = tab.bg
+    if kind == "forward" and not tab.hist.can_forward() then
       -- Forward does nothing at the last entry: the load goes on.
       return true
     end
-    bg = nil
+    tab.bg = nil
     b.cancel()
     local name = b.state.name and b.state.name() or b.spec.arg
       or key_of(b.spec)
@@ -1354,22 +1366,22 @@ local function run_session(target, ctx)
         name = name })
       return kind == "abort"
     end
-    held = snapshot(b)
-    cur = b.spec
+    tab.held = snapshot(b)
+    tab.cur = b.spec
     return false
   end
 
   -- Handles "commit" and "done" from the viewer. Returns a final result, or
   -- nil.
   local function advance(kind, out)
-    local b = bg
+    local b = tab.bg
     if kind == "commit" then
       -- The old page is gone. The new page starts at the top.
-      held = nil
-      top, sel = 1, nil
+      tab.held = nil
+      tab.top, tab.sel = 1, nil
       return nil
     end
-    bg = nil
+    tab.bg = nil
     return settle(b.r, b.had, b.result, out.top, out.sel)
   end
 
@@ -1385,9 +1397,9 @@ local function run_session(target, ctx)
     if not req then
       local ok, out = present()
       if not ok then
-        if bg then
-          bg.cancel()
-          bg = nil
+        if tab.bg then
+          tab.bg.cancel()
+          tab.bg = nil
         end
         if out == "interrupted" or out == INTERRUPTED then
           return { interrupted = true, message = INTERRUPTED }
@@ -1397,10 +1409,10 @@ local function run_session(target, ctx)
       elseif out == "quit" or out == "interrupted" then
         -- Ctrl+C during a load prints the interrupted line, as a load that
         -- the guard stops does.
-        local loading = bg ~= nil
-        if bg then
-          bg.cancel()
-          bg = nil
+        local loading = tab.bg ~= nil
+        if tab.bg then
+          tab.bg.cancel()
+          tab.bg = nil
         end
         if out == "quit" then
           return { quit = true }
@@ -1408,61 +1420,62 @@ local function run_session(target, ctx)
         return { interrupted = true, message = loading and INTERRUPTED or nil }
       end
       local kind = out.kind
-      if bg and (kind == "commit" or kind == "done") then
+      if tab.bg and (kind == "commit" or kind == "done") then
         local final = advance(kind, out)
         if final then
           return final
         end
-      elseif bg and stop_load(kind) then
+      elseif tab.bg and stop_load(kind) then
         -- The action was used up by the stop.
         kind = nil
       else
         -- An action: store the position before the page goes.
-        top, sel = out.top, out.sel
-        hist.set_pos(top, sel)
+        tab.top, tab.sel = out.top, out.sel
+        tab.hist.set_pos(tab.top, tab.sel)
         if kind == "link" then
-          local r, why_not = urlmod.resolve(held.base, out.href)
+          local r, why_not = urlmod.resolve(tab.held.base, out.href)
           if not r then
-            popup = why_not
+            tab.popup = why_not
           elseif r.kind == "same" then
             jump(r.fragment)
           elseif r.kind ~= "unsupported" then
             local key = r.url or r.path
-            if key == key_of(cur) or key == held.location then
+            if key == key_of(tab.cur) or key == tab.held.location then
               jump(r.fragment)
             else
-              req = { spec = spec_of(key, guesses), mode = "link",
+              req = { spec = spec_of(key, tab.guesses), mode = "link",
                 fragment = r.fragment }
             end
           end
         elseif kind == "back" or kind == "forward" then
           local entry
           if kind == "back" then
-            entry = hist.back()
+            entry = tab.hist.back()
           else
-            entry = hist.forward()
+            entry = tab.hist.forward()
           end
           if entry then
-            if not held.broken and entry.target == key_of(cur) then
-              top, sel = entry.top, entry.sel
+            if not tab.shown and entry.target == key_of(tab.cur) then
+              tab.top, tab.sel = entry.top, entry.sel
             else
-              req = { spec = spec_of(entry.target, guesses), mode = kind,
+              req = { spec = spec_of(entry.target, tab.guesses), mode = kind,
                 top = entry.top, sel = entry.sel }
             end
           end
         elseif kind == "reload" then
-          req = { spec = cur, mode = "reload", top = top, sel = sel }
-          if held.broken then
+          req = { spec = tab.cur, mode = "reload", top = tab.top,
+            sel = tab.sel }
+          if tab.shown then
             req.top, req.sel = 1, nil
           end
         elseif kind == "go" then
           local spec, msg = M.classify(out.text, deps)
           if not spec then
-            popup = msg
+            tab.popup = msg
           else
             spec.arg = out.text
             if spec.guessed then
-              guesses[key_of(spec)] = out.text
+              tab.guesses[key_of(spec)] = out.text
             end
             req = { spec = spec, mode = "go", fragment = spec.fragment }
           end
