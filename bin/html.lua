@@ -1662,6 +1662,13 @@ function M.game_deps()
     exists = filesystem.exists,
     is_dir = filesystem.isDirectory,
     size = filesystem.size,
+    space = function(path)
+      local proxy = filesystem.get(path)
+      return proxy.spaceTotal() - proxy.spaceUsed()
+    end,
+    remove = filesystem.remove,
+    rename = filesystem.rename,
+    cwd = shell.getWorkingDirectory,
     log = function(text)
       if #text > ERROR_LOG_MAX then
         text = sub(text, -ERROR_LOG_MAX)
