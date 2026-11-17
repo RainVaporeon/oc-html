@@ -1763,6 +1763,13 @@ local function run_session(target, ctx)
     local function stop_flag()
       return stopped
     end
+    -- The response that the job reads, so a stop can close it.
+    local live_resp = resp
+    if resp and resp.set_interrupted then
+      -- The check of the load that found the file is over. The stop of the
+      -- job takes its place.
+      resp.set_interrupted(stop_flag)
+    end
     local function body()
       local r = resp
       if not r then
@@ -1787,6 +1794,7 @@ local function run_session(target, ctx)
           return stopped and "stopped" or "error", open_why
         end
         r = opened
+        live_resp = r
       end
       if r.is_error then
         local text = r.popup or ("[HTTP " .. int_text(r.status) .. "]"
@@ -1847,6 +1855,11 @@ local function run_session(target, ctx)
         return
       end
       stopped = true
+      -- A closed response gives the read an error at once, so a slow server
+      -- does not hold the stop.
+      if live_resp then
+        pcall(live_resp.close)
+      end
       for _ = 1, 10000 do
         if coroutine.status(co) == "dead" then
           break

@@ -3152,6 +3152,26 @@ T["download: z stops and leaves no part file"] = function()
   t.eq(obs.open_end, 0, "handles closed")
 end
 
+T["download: z on a download from a link to a file leaves no part file"] = function()
+  local files = {}
+  local function z_when_part_has_bytes(rec)
+    if not rec.z_sent and #(files["/home/b.part"] or "") >= 100 then
+      rec.z_sent = true
+      return KEY_Z
+    end
+  end
+  local obs = download_run({ args = { URL_A }, files = files, step = 0.3,
+    routes = { [URL_A] = served(A_LINK, 10),
+      [URL_B] = { headers = { ["Content-Type"] = { "application/zip" } },
+        body = internet.pieces("PK" .. string.rep("z", 3000), 10, false) } },
+    ticks = { [2] = function() return { z_when_part_has_bytes } end },
+    show = events(KEY_TAB, KEY_ENTER, KEY_ENTER, status_at(1), QUIT) })
+  t.eq(obs.snaps[1], " download stopped", "notice")
+  t.eq(files["/home/b.part"], nil, "no part file")
+  t.eq(files["/home/b"], nil, "no file")
+  t.eq(obs.open_end, 0, "handles closed")
+end
+
 T["download: an existing file asks, and n keeps it"] = function()
   local files = { ["/home/b"] = "OLD" }
   local obs = download_run({ args = { URL_A }, files = files,

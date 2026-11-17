@@ -313,6 +313,12 @@ local function make_response(h, u, code, message, headers, links, info,
     close = close,
   }
 
+  -- The check of a stop. A kept file response can take another one with
+  -- resp.set_interrupted, so the job that reads it can stop the read.
+  local interrupted = links.interrupted
+  function resp.set_interrupted(fn)
+    interrupted = fn
+  end
   local ended = false
   local function finish()
     ended = true
@@ -345,7 +351,7 @@ local function make_response(h, u, code, message, headers, links, info,
         resp.bytes = resp.bytes + #s
         return convert and M.latin_to_utf8(s) or s
       end
-      if links.interrupted() then
+      if interrupted() then
         return nil, INTERRUPTED
       end
       if clock() - last > READ_TIMEOUT then

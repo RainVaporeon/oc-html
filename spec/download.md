@@ -99,7 +99,7 @@ A followed link can lead to a file. Then the program opens the save prompt and d
   - `q` shows the quit prompt, and the download goes on while it shows. A confirmed quit stops the download and deletes the part file.
   - Ctrl+C stops the download, deletes the part file and exits with code 130.
 - Success: the notice `Saved <path> (<n> KB)` shows until the next key.
-- A stop with `z`: the notice `download stopped` shows. No file and no part file remain.
+- A stop with `z`: the notice `download stopped` shows. No file and no part file remain. The program closes the response at once, also when it came from a followed link, so a slow server does not hold the stop.
 - Errors show a popup with `[OK]` and no reload line. Each error deletes the part file and keeps an existing target file:
   - every `fetch.open` error (connect, timeout, `too many open connections`, no card, HTTP disabled, redirect errors)
   - `[HTTP <code>] <phrase>` and the URL. The card gives no error body, so nothing is saved.
