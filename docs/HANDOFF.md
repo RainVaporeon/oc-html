@@ -1,6 +1,13 @@
 # Handoff: oc-html
 
-Date: 2026-11-17. Branch: `master` (the only branch). Last release: 0.6.0a. No unreleased changes.
+Date: 2026-11-17. Branch: `master` (the only branch). Last release: 0.7.0a. No unreleased changes.
+
+## Status update 2026-11-17 (release 0.7.0a)
+
+Slice S9 is done except the in-game run. `fetch.VERSION` is "0.7.0a", `releases/0.7.0a/` is built (13 files, with `tabs.lua` and `download.lua`), and `releases/latest` points to it. The in-game checklist is `docs/ingame/0.7.0a.md`. Not verified in game.
+
+Next step: Run docs/ingame/0.7.0a.md in game. It also records the open checks: `os.setenv` inheritance, Ctrl+C in the nested shell, Ctrl+S char 19 or code 31, and the `--tabs auto` limit on 1 and 2 sticks.
+
 
 ## Status update 2026-11-17 (0.7.0a spec)
 
