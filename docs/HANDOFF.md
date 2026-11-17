@@ -1,6 +1,12 @@
 # Handoff: oc-html
 
-Date: 2026-11-17. Branch: `master` (the only branch). Last release: 0.7.0a. No unreleased changes.
+Date: 2026-11-18. Branch: `main` (the only branch). Last release: 0.7.0a (in game verified 2026-11-18). Unreleased: the in-game fixes of commit 158d21a.
+
+## Status update 2026-11-18 (0.7.0a in game)
+
+0.7.0a is done: released and verified in game on 2026-11-18 (`docs/ingame/0.7.0a.md` "Results"; values in `docs/probe/FACTS.md` "0.7.0a in game"). Fixes from the run: the notices `no more tabs, use 'q' to quit` and `save: only web files can be downloaded`, a notice after the save-path popups, and the shell line of `!` (needs a recheck in game). The fixes are not in `releases/0.7.0a`: `tools/release.ps1` refuses to overwrite an existing release and has no rebuild option. They ship in the next release. Open items: 4.7 (memory during a 1 MB download) is not measurable, because `!` is blocked during a download. 4.21 (read-only filesystem wording) is not checked: no read-only disk. 4.1, 4.6 and 4.12 have no recorded values. Retune of the `--tabs auto` formula (possible later work: 8 tabs on 1 stick still left about 400K free; `docs/probe/FACTS.md` "0.7.0a in game"). Recheck 3.1 in game (the fix sets the cursor to (1, 1) and flushes stdout before the shell line).
+
+Next step: Write the 0.8.0a spec: session retention. Inputs: the tab snapshot in `spec/tabs.md` (`{ v = 1, active, list }`, a loading job saved as stopped), the cache `clear()` on exit, and the open question of where the session file lives. The 0.7.1a background loads stay planned and deferred; not before 0.8.0a unless the user asks.
 
 ## Status update 2026-11-17 (release 0.7.0a)
 
@@ -137,7 +143,7 @@ On 2026-11-14, `SPEC.md` was cut down to its normative rules. The informative pa
 
 ## Next step
 
-User approval of the 0.7.0a spec, then slice S1. The 0.7.0a spec is written (2026-11-17): `spec/tabs.md`, `spec/shell.md`, `spec/download.md`; the planned 0.7.1a spec is `spec/background.md`. No code before the approval. The slices S1 to S9 (0.7.0a) and the probes P1 to P6 with the slices B1 to B8 (0.7.1a) are in `tasks/todo.md`.
+Write the 0.8.0a spec: session retention (see the status update of 2026-11-18). The 0.7.1a background loads are deferred.
 
 ## Open questions for the user
 

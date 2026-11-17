@@ -3,7 +3,7 @@
 Spec: `SPEC.md` (index) and `spec/` (one file per component). Finished MVP plan and tasks: `tasks/archive/mvp-plan.md`, `tasks/archive/mvp-todo.md`.
 Test command for every task: `pwsh tests/docker/test.ps1`. Fuzz run: `pwsh tests/docker/test.ps1 fuzz 1000`.
 
-Current release: 0.6.0a (local and remote pages, loading screen, link following and navigation, interactive loading, disk cache). The features below come from `AGENTS.md`. `SPEC.md` "Scope" lists them as in scope. Each feature needs a short spec section and the user's approval before code starts (`SPEC.md` "Boundaries": the ask-first rule for moving an item into scope covers only CSS and JS, so these features need no ask for scope, but each still needs its spec section and approval).
+Current release: 0.7.0a (released, in game verified 2026-11-18; open items under "0.7.0a: Utility tabs"). Earlier: 0.6.0a (local and remote pages, loading screen, link following and navigation, interactive loading, disk cache). The features below come from `AGENTS.md`. `SPEC.md` "Scope" lists them as in scope. Each feature needs a short spec section and the user's approval before code starts (`SPEC.md` "Boundaries": the ask-first rule for moving an item into scope covers only CSS and JS, so these features need no ask for scope, but each still needs its spec section and approval).
 
 Sizes: S = one module and its tests, M = two or three modules, L = a new subsystem with in-game measurements.
 
@@ -120,7 +120,7 @@ Each version below needs its own short spec section and the user's approval befo
 
 **Size:** L
 
-#### 0.7.0a: Utility tabs
+#### 0.7.0a: Utility tabs (done: released, in game verified 2026-11-18)
 
 **Goal:** Three features that let the user work beside one page.
 - Browser tabs: keep several open pages with their state (URL, scroll position, history) and switch between them.
@@ -161,7 +161,9 @@ Each version below needs its own short spec section and the user's approval befo
 
 **Open questions:** none.
 
-#### 0.7.1a: Background loads (planned)
+Open items of 0.7.0a (2026-11-18): 4.7 (memory during a 1 MB download) is not measurable, because `!` is blocked during a download. 4.21 (read-only filesystem wording) is not checked: no read-only disk. 4.1, 4.6 and 4.12 have no recorded values. Retune of the `--tabs auto` formula (possible later work: 8 tabs on 1 stick still left about 400K free; `docs/probe/FACTS.md` "0.7.0a in game"). Recheck 3.1 in game (the fix sets the cursor to (1, 1) and flushes stdout before the shell line).
+
+#### 0.7.1a: Background loads (planned, deferred; not before 0.8.0a unless the user asks)
 
 **Goal:** A tab keeps loading to disk when the user leaves it, when resources allow. **Spec:** `spec/background.md` (planned, not approved). It needs the probes P1 to P6 and the user's approval before code starts. User decisions (2026-11-17): background loads pause during the shell, and a resume without `ETag` or `Last-Modified` restarts from byte 0.
 
@@ -184,7 +186,9 @@ Each version below needs its own short spec section and the user's approval befo
 
 **Main files likely touched:** `bin/html.lua` (`html` with no arguments, `-r`), a new session module, `tests/entry_test.lua`.
 
-**Dependencies:** 0.7.0a (tabs).
+**Dependencies:** 0.7.0a (tabs, done).
+
+**Inputs from 0.7.0a:** the tab snapshot in `spec/tabs.md` (`{ v = 1, active, list }`; a loading job is saved as stopped). The cache `clear()` on exit (a resumed session must not rely on cache files). Open question: where the session file lives.
 
 **Agreed design (`SPEC.md` "Later: sessions"):** an 8-digit lowercase hex ID, `html` with no arguments starts a new session, `html -r <id>` resumes that session, `html -r` resumes the last session.
 
@@ -222,7 +226,7 @@ Each version below needs its own short spec section and the user's approval befo
 
 ## Next recommended step
 
-User approval of the 0.7.0a spec, then slice S1 (`spec/tabs.md`, `spec/shell.md`, `spec/download.md`). The 0.7.0a spec is written (2026-11-17). No code before the approval.
+Write the 0.8.0a spec: session retention (`SPEC.md` "Later: sessions", "0.8.0a: Session retention" in this file). The 0.7.1a background loads are planned and deferred; they do not start before 0.8.0a unless the user asks.
 
 All in-game checks are done (2026-11-17; the user states that the 13 open 0.5.0a checks, the 0.4.0a `#fragment` check, the 0.3.0a checklist and the three real pages are done). The second netprobe run is done. Esc at the go prompt is closed: in game Minecraft catches Esc and removes focus from the screen, and a blank Enter cancels the prompt.
 

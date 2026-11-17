@@ -373,3 +373,15 @@ Measured in game with release 0.6.0a by the checklist `docs/ingame/0.6.0a.md`, r
 
 - Internet card: HTTP and TCP enabled (`extras.internet.*`).
 - No data card (`extras.data.present=false`).
+
+## 0.7.0a in game
+
+Measured 2026-11-18 from `docs/ingame/0.7.0a.md`.
+
+- A switch to a cached tab is near immediate on a 120 KB page. The `Loading` text still shows.
+- `--tabs auto` gives 3 tabs on 1 stick of tier 3 memory. Free memory: 600K at start, 400K at 3 tabs, still about 400K at 8 tabs. The auto limit looks conservative on 1 stick: 8 tabs still left about 400K free.
+- `--tabs auto` gives 13 tabs on 2 sticks. Free memory: 1403K at start, 1194K at 13 tabs.
+- Free memory over 30 switches with 8 `large.html` tabs: about 120K used at start, about 400K during the session, about 160K at the end.
+- The tab-out shell costs about 2K. With a large remote page it costs about 100K.
+- Ctrl+C in the tab-out shell acts as in a normal shell. It does not end html.
+- The nested `html` refusal works (`os.setenv` reaches the child process).

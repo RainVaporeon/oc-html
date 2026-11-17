@@ -2,7 +2,7 @@
 
 Source of intent: `docs/intent/mvp.md`.
 
-Status: release 0.7.0a renders local files, fetches remote pages, follows links, lets you browse while a page loads, and adds browser tabs, shell tab-out and downloads (`spec/tabs.md`, `spec/shell.md`, `spec/download.md`). The in-game checklist `docs/ingame/0.7.0a.md` is not run yet. The in-game checklist `docs/ingame/0.6.0a.md` is done. The MVP is finished (release 0.1.0a, fixed in 0.1.1a); its plan is in `tasks/archive/`. The roadmap is in `tasks/todo.md`.
+Status: release 0.7.0a renders local files, fetches remote pages, follows links, lets you browse while a page loads, and adds browser tabs, shell tab-out and downloads (`spec/tabs.md`, `spec/shell.md`, `spec/download.md`). The in-game checklist `docs/ingame/0.7.0a.md` is done (2026-11-18). The in-game checklist `docs/ingame/0.6.0a.md` is done. The MVP is finished (release 0.1.0a, fixed in 0.1.1a); its plan is in `tasks/archive/`. The roadmap is in `tasks/todo.md`.
 
 This file is the index. The rules of each component are in `spec/` (table below). Rationale, measurements, test coverage, the network probe plan, the project tree and examples are in `docs/` (list in `docs/HANDOFF.md` "Moved spec content").
 
@@ -22,7 +22,7 @@ In scope:
 - Scrolling viewer with a status line, a loading screen and a quit confirmation.
 - Remote fetching (`spec/fetch.md`, roadmap item 1, approved 2026-11-14).
 - Following links and navigation (link selection, back and forward, go to, reload, abort): specified in `spec/navigation.md`, approved on 2026-11-15 and done (roadmap items 2 and 2a).
-- Tabs, shell tab-out and downloads: `spec/tabs.md`, `spec/shell.md`, `spec/download.md` (0.7.0a, released, not run in game). Ctrl+S downloads, `c` asks for a confirmation, and `--tabs` (experimental) sets the tab limit. Background loads: planned (`spec/background.md`, 0.7.1a). Sessions (save and resume): planned.
+- Tabs, shell tab-out and downloads: `spec/tabs.md`, `spec/shell.md`, `spec/download.md` (0.7.0a, released, verified in game). Ctrl+S downloads, `c` asks for a confirmation, and `--tabs` (experimental) sets the tab limit. Background loads: planned (`spec/background.md`, 0.7.1a). Sessions (save and resume): planned.
 - Images. Planned, see "Roadmap" below.
 - Data Card inflate and deflate. Future work, see "Roadmap" below.
 - Correct layout of tables, lists, forms, `<input>` and `<button>`. These render as plain text and must not break anything.
@@ -123,9 +123,9 @@ Tests, tools, docs, tasks and releases: `docs/structure.md`.
 Details and tasks: `tasks/todo.md`.
 
 - 0.6.0a: Loading while you browse (`spec/loading.md`). Its in-game checklist is done.
-- 0.7.0a: Utility tabs: browser tabs, shell tab-out, download (`spec/tabs.md`, `spec/shell.md`, `spec/download.md`). Current release. Built and tested in the container. Its in-game checklist `docs/ingame/0.7.0a.md` is not run yet.
-- 0.7.1a: Background loads: a tab keeps loading to disk when the user leaves it, when resources allow (`spec/background.md`). Planned.
-- 0.8.0a: Session retention: save the browsing state and resume it after a restart ("Later: sessions").
+- 0.7.0a: Utility tabs: browser tabs, shell tab-out, download (`spec/tabs.md`, `spec/shell.md`, `spec/download.md`). Done: released and verified in game on 2026-11-18 (`docs/ingame/0.7.0a.md`; open items in `tasks/todo.md`).
+- 0.7.1a: Background loads: a tab keeps loading to disk when the user leaves it, when resources allow (`spec/background.md`). Planned, deferred; not before 0.8.0a unless the user asks.
+- 0.8.0a: Session retention: save the browsing state and resume it after a restart ("Later: sessions"). Next: write the spec. Inputs: the tab snapshot in `spec/tabs.md` (`{ v = 1, active, list }`, a loading job saved as stopped), the cache `clear()` on exit, and the open question of where the session file lives.
 - 0.9.0a: Images. PNG first. If other image formats have a similar structure, this version can include more media types.
 - 1.0.0b: Official beta release. `--stats` moves to `tools/probe2.lua`.
 - Future work: more image formats, CSS support, inflate and deflate with the Data Card.
