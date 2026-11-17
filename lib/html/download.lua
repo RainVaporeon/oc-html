@@ -15,7 +15,7 @@
 -- opts: stop() (true stops), progress(bytes, length).
 
 local M = {}
-local find, sub, byte = string.find, string.sub, string.byte
+local find, sub = string.find, string.sub
 
 local RESERVE = 64 * 1024
 local CHECK_EVERY = 64 * 1024
