@@ -77,6 +77,8 @@ local NO_SCREEN_MAX_WIDTH = 160
 local DEFAULT_TABS = 8
 local MAX_TABS = 32
 local TAB_COST = 40 * 1024
+-- The most events that the return from the shell drops (spec/shell.md).
+local DRAIN_MAX = 64
 
 M.USAGE = [[
 Usage: html [options] <file | url>
@@ -1592,13 +1594,56 @@ local function run_session(target, ctx)
     arrive(new)
   end
 
-  -- The actions of the tab keys. shell and download are not built yet: they
-  -- change nothing.
+  -- The shell tab-out (spec/shell.md "Sequence"). Returns a final result when
+  -- the screen cannot open again, else nil.
+  local function shell_out(out)
+    if not ctx.session or not deps.shell then
+      return nil
+    end
+    leave(out.top, out.sel)
+    pcall(ctx.session.close)
+    ctx.session = nil
+    deps.out("html: shell started. Type exit to return to the browser.")
+    local setenv = deps.setenv or os.setenv
+    if setenv then
+      setenv("HTML_TABOUT", "1")
+    end
+    local shell_ok, shell_why = pcall(deps.shell)
+    if setenv then
+      setenv("HTML_TABOUT", nil)
+    end
+    local opened, session = xpcall(deps.open_screen, handler,
+      { no_rescale = opts.no_rescale, status = "Returning...",
+        enter_held = true })
+    if not opened then
+      return { error = "html: cannot reopen the screen: " .. reason(session),
+        reload = false, kind = "controlled" }
+    end
+    ctx.session = session
+    ctx.width = screen_width(deps.gpu, opts.no_rescale) or ctx.width
+    if deps.pull then
+      for _ = 1, DRAIN_MAX do
+        if deps.pull(0) == nil then
+          break
+        end
+      end
+    end
+    arrive(tab)
+    if not shell_ok then
+      tab.popup = "html: shell error: " .. reason(shell_why)
+    end
+    return nil
+  end
+
+  -- The actions of the tab keys. download is not built yet: it changes
+  -- nothing.
   local TAB_ACTIONS = { tab_new = true, tab_prev = true, tab_next = true,
     tab_close = true, shell = true, download = true }
   local function tab_action(kind, out)
     tab.top, tab.sel = out.top, out.sel
-    if kind == "tab_new" then
+    if kind == "shell" then
+      return shell_out(out)
+    elseif kind == "tab_new" then
       new_tab(out)
     elseif kind == "tab_prev" or kind == "tab_next" then
       if tab_list.count() > 1 then
@@ -1655,7 +1700,10 @@ local function run_session(target, ctx)
           return final
         end
       elseif TAB_ACTIONS[kind] then
-        tab_action(kind, out)
+        local final = tab_action(kind, out)
+        if final then
+          return final
+        end
       elseif tab.bg and stop_load(kind) then
         -- The action was used up by the stop.
         kind = nil
@@ -1735,9 +1783,13 @@ end
 --                          error. Returns true, or nil and a reason
 --   gpu                    optional, the GPU proxy. Without it, or without
 --                          a screen, the page prints as text
+--   shell()                optional, runs a nested shell (the `!` key)
+--   pull(timeout)          optional, event.pull. The return from the shell
+--                          drops the queued events with it
+--   getenv(name), setenv(name, value)  optional, os.getenv and os.setenv
 --   open_screen(opts)      optional, opens the screen session with the
 --                          loading screen (see viewer.open). It takes
---                          no_rescale and status. Without it, the viewer
+--                          no_rescale, status and enter_held. Without it, the viewer
 --                          opens after the render, through view. The
 --                          session runs the load as a coroutine and reads
 --                          the keys itself (see viewer.open)
@@ -1753,6 +1805,12 @@ end
 --                          session caches nothing
 -- Returns the exit code.
 function M.main(argv, deps)
+  -- A nested start inside the tab-out shell (spec/shell.md).
+  local getenv = deps.getenv or os.getenv
+  if getenv and getenv("HTML_TABOUT") then
+    deps.err("html: already open; type exit to return to it")
+    return EXIT_ERROR
+  end
   local opts, msg = M.parse_args(argv, max_width_of(deps.gpu))
   if not opts then
     deps.err(msg .. " (see html --help)")
@@ -1890,6 +1948,8 @@ function M.game_deps()
     clock = os.clock,
     uptime = computer.uptime,
     resolve = shell.resolve,
+    shell = function() return shell.execute("sh") end,
+    pull = event.pull,
     home = os.getenv("HOME"),
     exists = filesystem.exists,
     is_dir = filesystem.isDirectory,

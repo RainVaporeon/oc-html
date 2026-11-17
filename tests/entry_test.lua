@@ -2977,4 +2977,79 @@ T["tabs: guard.MEMORY_RESERVE is read only"] = function()
   t.eq(pcall(function() guard.MEMORY_RESERVE = 1 end), false, "assign")
 end
 
+-- The shell tab-out (spec/shell.md).
+local KEY_BANG = { "key_down", "kbd", 33, 2, "player" }
+
+-- Deps for a run with a fake shell. calls lists what happened in order.
+local function shell_deps(calls, shell, extra)
+  local deps = {
+    out = function(line) calls[#calls + 1] = "out: " .. line end,
+    setenv = function(name, value)
+      calls[#calls + 1] = "setenv " .. name .. "=" .. tostring(value)
+    end,
+    shell = shell,
+  }
+  for k, v in pairs(extra or {}) do
+    deps[k] = v
+  end
+  return deps
+end
+
+T["shell: ! closes the screen, runs the shell and the same page returns"] = function()
+  local calls, blank = {}, nil
+  local rec_ref
+  local obs = cached({ args = { URL_A },
+    routes = { [URL_A] = served(A_TALL, 10) },
+    deps = shell_deps(calls, function()
+      calls[#calls + 1] = "shell"
+      blank = table.concat(rec_ref.gctl.screen()):match("%S") == nil
+    end, { pull = function(timeout)
+      calls[#calls + 1] = "pull " .. tostring(timeout)
+      return nil
+    end }),
+    show = events(KEY_TAB, function(rec) rec_ref = rec end, KEY_BANG, QUIT) })
+  t.eq(calls, { "out: html: shell started. Type exit to return to the browser.",
+    "setenv HTML_TABOUT=1", "shell", "setenv HTML_TABOUT=nil", "pull 0" },
+    "the sequence")
+  t.eq(blank, true, "the screen was closed during the shell")
+  t.eq(obs.requests, { URL_A }, "no new request")
+  t.eq(obs.titles, { "A", "A" }, "titles")
+  t.eq(obs.tops, { 1, 23 }, "the same top returns")
+  t.eq(obs.sels, { false, 1 }, "the same selection returns")
+  t.eq(obs.code, 0, "code")
+end
+
+T["shell: the return drops the queued events"] = function()
+  local queue, pulls = { 1, 2, 3 }, 0
+  local obs = cached({ args = { URL_A },
+    routes = { [URL_A] = served(A_TALL, 10) },
+    deps = shell_deps({}, function() end, { pull = function()
+      pulls = pulls + 1
+      return table.remove(queue, 1)
+    end }),
+    show = events(KEY_BANG, QUIT) })
+  t.eq(pulls, 4, "three events and the empty pull")
+  t.eq(obs.code, 0, "code")
+end
+
+T["shell: an error in the shell shows a popup"] = function()
+  local seen
+  local function snap(rec) seen = table.concat(rec.gctl.screen(), "\n") end
+  local obs = cached({ args = { URL_A },
+    routes = { [URL_A] = served(A_TALL, 10) },
+    deps = shell_deps({}, function() error("boom", 0) end),
+    show = events(KEY_BANG, snap, KEY_ENTER, QUIT) })
+  t.eq(seen:find("html: shell error: boom", 1, true) ~= nil, true, "popup")
+  t.eq(obs.titles, { "A", "A" }, "the page returns")
+  t.eq(obs.code, 0, "code")
+end
+
+T["shell: a nested start refuses"] = function()
+  local code, rec = run({ "/p.html" }, nil,
+    { getenv = function(name) return name == "HTML_TABOUT" and "1" or nil end })
+  t.eq(code, 1, "code")
+  t.eq(rec.err, { "html: already open; type exit to return to it" }, "message")
+  t.eq(#rec.views, 0, "no viewer")
+end
+
 return T

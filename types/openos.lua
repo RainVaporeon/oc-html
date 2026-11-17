@@ -20,3 +20,9 @@ local InternetCard = {}
 ---@field read fun(n?: integer): string?, string?
 ---@field close fun()
 local InternetRequest = {}
+
+-- OpenOS sets or clears an environment variable of the process. A nil value
+-- clears it.
+---@param name string
+---@param value? string
+function os.setenv(name, value) end

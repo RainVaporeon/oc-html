@@ -82,7 +82,7 @@ tab = {
   entries = { { target = <URL or absolute path>, top = <int>, sel = <int or nil> }, ... },  -- up to 32
   pos     = <int>,                        -- the current history index
   guesses = { [target] = <typed arg> },   -- keeps the " (no local file named <arg>)" suffix
-  shown   = nil | { kind = "broken" | "aborted", name = <string> },
+  shown   = nil | { kind = "broken" | "aborted", name = <string>, target = <key of the current page, or nil> },
   pending = nil | { target = <string>, mode = "first" | "link" | "go" | "back"
                     | "forward" | "reload", fragment = <string or nil>,
                     top = <int or nil>, sel = <int or nil>, arg = <string or nil> },
