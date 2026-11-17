@@ -2312,7 +2312,7 @@ nav_cases("navigation_abort", {
     { code = 130, err = { "html: interrupted" }, open_end = 0 } },
 })
 
--- Keys during a load, caught by the key listener of game_deps. The row queues
+-- Keys during a load, read by the viewer loop that drives the load coroutine. The row queues
 -- the keys in the event module of the test, and os.sleep gives them to the
 -- listeners, as OpenOS does. A key pressed while the load sleeps counts at
 -- once (spec/loading.md "Keys during load").
