@@ -2010,9 +2010,6 @@ nav_cases("navigation_phase_1_failures", {
     BAD .. "unknown host: bad: Name or service not known" .. RELOAD),
   popup_row("timeout", { connect_polls = 1e6 },
     "html: timed out connecting to http://bad/" .. RELOAD),
-  popup_row("not an HTML page", { headers =
-    { ["Content-Type"] = { "application/pdf" } } },
-    "html: not an HTML page: application/pdf"),
   popup_row("too many redirects", { code = 302,
     headers = { Location = { "http://bad/" } } },
     "html: too many redirects: http://bad/", { open_max = 1, requests = {
@@ -3050,6 +3047,123 @@ T["shell: a nested start refuses"] = function()
   t.eq(code, 1, "code")
   t.eq(rec.err, { "html: already open; type exit to return to it" }, "message")
   t.eq(#rec.views, 0, "no viewer")
+end
+
+-- Downloads (spec/download.md): Ctrl+S, a link to a file, z.
+local KEY_CTRL_S = { "key_down", "kbd", 19, 31, "player" }
+local ZIP = "PK" .. string.rep("z", 98)
+local ZIP_SCRIPT = { headers = { ["Content-Type"] = { "application/zip" } },
+  body = internet.pieces(ZIP, 10, false) }
+
+-- Runs nav over a fake file system: the writes go to o.files, so a test
+-- reads the saved bytes and the part file there.
+local function download_run(o)
+  local files = o.files
+  o.dirs = { ["/home"] = true }
+  o.deps = o.deps or {}
+  local deps = o.deps
+  deps.resolve = function(p) return p end
+  deps.home, deps.cwd = "/home", function() return "/home" end
+  deps.space = function() return 10 * 1024 * 1024 end
+  deps.remove = function(p)
+    files[p] = nil
+    return true
+  end
+  deps.rename = function(a, b)
+    files[b], files[a] = files[a], nil
+    return true
+  end
+  deps.open = function(p, mode)
+    if mode == "wb" then
+      files[p] = ""
+      local w = {}
+      function w.write(self, s)
+        files[p] = files[p] .. s
+        return self
+      end
+      function w.flush() return true end
+      function w.close() return true end
+      return w
+    end
+    if files[p] == nil then
+      return nil, p .. ": No such file or directory"
+    end
+    return (fake_file(files[p]))
+  end
+  return observe_nav(nav(o))
+end
+
+-- Keeps the text of the status row in snaps[index].
+local function status_at(index)
+  return function(rec)
+    rec.snaps[index] = (rec.gctl.row(STATUS_ROW):gsub("%s+$", ""))
+  end
+end
+
+T["download: Ctrl+S on a link saves the bytes"] = function()
+  local files = {}
+  local obs = download_run({ args = { URL_A }, files = files,
+    routes = { [URL_A] = served(A_LINK, 10), [URL_B] = ZIP_SCRIPT },
+    show = events(KEY_TAB, KEY_CTRL_S, KEY_ENTER, status_at(1), QUIT) })
+  t.eq(files["/home/b"], ZIP, "the saved bytes")
+  t.eq(files["/home/b.part"], nil, "no part file")
+  t.eq(obs.requests, { URL_A, URL_B }, "requests")
+  t.eq(obs.snaps[1], " Saved /home/b (1 KB)", "notice")
+  t.eq(obs.open_end, 0, "handles closed")
+  t.eq(obs.code, 0, "code")
+end
+
+T["download: Ctrl+S during a load is refused"] = function()
+  local files = {}
+  local obs = download_run({ args = { URL_A }, files = files, step = 0.3,
+    routes = { [URL_A] = served(A_LINK, 10), [URL_B] = served(BIG, 500) },
+    ticks = { [2] = { [3] = { KEY_CTRL_S }, [7] = { status_at(1) } } },
+    show = events(KEY_TAB, KEY_ENTER, QUIT) })
+  t.eq(obs.snaps[1], " wait for the load, or press z", "notice")
+  t.eq(next(files), nil, "nothing written")
+  t.eq(obs.requests, { URL_A, URL_B }, "requests")
+end
+
+T["download: z stops and leaves no part file"] = function()
+  local files = {}
+  local function z_when_part_has_bytes(rec)
+    if not rec.z_sent and #(files["/home/b.part"] or "") >= 100 then
+      rec.z_sent = true
+      return KEY_Z
+    end
+  end
+  local obs = download_run({ args = { URL_A }, files = files, step = 0.3,
+    routes = { [URL_A] = served(A_LINK, 10),
+      [URL_B] = served(string.rep("x", 3000), 10) },
+    ticks = { [1] = function() return { z_when_part_has_bytes } end },
+    show = events(KEY_TAB, KEY_CTRL_S, KEY_ENTER, status_at(1), QUIT) })
+  t.eq(obs.snaps[1], " download stopped", "notice")
+  t.eq(files["/home/b.part"], nil, "no part file")
+  t.eq(files["/home/b"], nil, "no file")
+  t.eq(obs.open_end, 0, "handles closed")
+end
+
+T["download: an existing file asks, and n keeps it"] = function()
+  local files = { ["/home/b"] = "OLD" }
+  local obs = download_run({ args = { URL_A }, files = files,
+    routes = { [URL_A] = served(A_LINK, 10), [URL_B] = ZIP_SCRIPT },
+    show = events(KEY_TAB, KEY_CTRL_S, KEY_ENTER, status_at(1), KEY_N, QUIT) })
+  t.eq(obs.snaps[1], " Overwrite b? (y/n)", "prompt")
+  t.eq(files["/home/b"], "OLD", "the old file stays")
+  t.eq(obs.requests, { URL_A }, "no request for the file")
+end
+
+T["download: a link to a file opens the prompt and keeps the history"] = function()
+  local files = {}
+  local obs = download_run({ args = { URL_A }, files = files,
+    routes = { [URL_A] = served(A_LINK, 10), [URL_B] = ZIP_SCRIPT },
+    show = events(KEY_TAB, KEY_ENTER, status_at(1), KEY_ENTER, status_at(2),
+      KEY_LEFT, QUIT) })
+  t.eq(obs.snaps[1]:find(" Save to: /home/b", 1, true), 1, "prompt")
+  t.eq(files["/home/b"], ZIP, "saved from the open response")
+  t.eq(obs.snaps[2], " Saved /home/b (1 KB)", "notice")
+  t.eq(obs.requests, { URL_A, URL_B }, "one request, and Back has no entry")
+  t.eq(table.concat(obs.titles, ","), "A,A,A", "the page stays on screen")
 end
 
 return T

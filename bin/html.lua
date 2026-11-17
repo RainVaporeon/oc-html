@@ -70,6 +70,8 @@ local RELOAD_LINE = "Reload to try again."
 local EXIT_USAGE = 2
 local EXIT_INTERRUPTED = 130
 local INTERRUPTED = "html: interrupted"
+-- The result of a load that found a file (see load_page).
+local FILE_MARK = {}
 -- The largest --width with no GPU or no screen (the tier 3 maximum).
 local NO_SCREEN_MAX_WIDTH = 160
 -- Tabs (spec/tabs.md "Tab limit option (experimental)"). The default limit,
@@ -545,6 +547,8 @@ end
 --   { aborted = true, committed = bool, name = text }  the load was stopped
 --   { error = text, reload = bool, kind = "controlled" or "unexpected" }
 --   { interrupted = true, message = text or nil }
+--   { file = true, resp = the open response, name = text }  a link to a file
+--     (only with ctx.file_ok): the caller offers the download
 local function load_page(target, ctx)
   local opts, deps, arg = ctx.opts, ctx.deps, ctx.arg
   local width = ctx.width
@@ -818,12 +822,18 @@ local function load_page(target, ctx)
     end
     resp, why, retry = fetch.open(url, { internet = deps.internet,
       clock = fetch_clock, sleep = sleep, interrupted = stop_flag,
-      progress = interactive and progress or nil }, info)
+      progress = interactive and progress or nil,
+      file_ok = ctx.file_ok }, info)
     if not resp then
       fetch_error(why, retry)
     end
     open_file = resp
     name, total = resp.final_url, resp.length
+    if resp.is_file then
+      -- A file, not a page (spec/download.md "Link to a file"): the open
+      -- response goes to the session loop. Nothing is cached or committed.
+      return nil
+    end
     -- Only a page with a 2xx status is stored (spec/cache.md "Storing").
     if ctx.cache and not resp.is_error and not resp.notice then
       writer = ctx.cache.begin(url)
@@ -883,6 +893,9 @@ local function load_page(target, ctx)
     if stop_flag() then
       error(INTERRUPTED, 0)
     end
+    if resp and resp.is_file then
+      return FILE_MARK
+    end
     -- The commit: phase 1 is over. The caller releases the old page here,
     -- before the size check measures the free memory. The loop then shows
     -- the new, empty live page.
@@ -936,6 +949,11 @@ local function load_page(target, ctx)
       reload = reload and true or false, name = name }
     ok, result = true, nil
   end
+  -- A file response stays open for the caller.
+  local kept_file
+  if ok and result == FILE_MARK then
+    kept_file, open_file = open_file, nil
+  end
   -- Each step runs alone, so a failure in one does not skip the other.
   pcall(stop_listening)
   pcall(close_file)
@@ -944,6 +962,9 @@ local function load_page(target, ctx)
     pcall(writer.abort)
   end
 
+  if kept_file then
+    return { file = true, resp = kept_file, committed = false, name = name }
+  end
   if not ok and result == "interrupted" then
     -- A bare "interrupted" error is Ctrl+C from the event system.
     result = INTERRUPTED
@@ -1132,6 +1153,9 @@ local function run_session(target, ctx)
     end
   end
   local tab = tabs.new_tab()
+  -- file_wait: a response that a followed link opened and the save prompt
+  -- has not used yet. arrive is defined further down.
+  local file_wait, arrive
   tab.hist = history.new(HISTORY_CAP)
   tab.top = 1
   local tab_list = tabs.new(tab_limit)
@@ -1199,6 +1223,26 @@ local function run_session(target, ctx)
     return h
   end
 
+  -- A load found a file: the old page stays, nothing is pushed, and the
+  -- save prompt opens (spec/download.md "Link to a file"). A new tab that
+  -- led to a file closes, and the tab before it shows again.
+  local function file_found(r, res, view_top, view_sel)
+    ctx.kept = res.resp
+    file_wait = { resp = res.resp, url = res.resp.final_url }
+    if r.files and tab_list.count() > 1 then
+      local before = tab_list.prev()
+      tab_list.next()
+      tab_list.close()
+      if tab_list.active() ~= before then
+        tab_list.prev()
+      end
+      arrive(before)
+    else
+      tab.top, tab.sel = view_top, view_sel
+    end
+    return nil
+  end
+
   -- Takes the result of a load. Sets held, cur, top, sel, popup and req.
   -- Returns a final result, or nil to show. view_top and view_sel are the
   -- position of the view at the end of an interactive load.
@@ -1206,6 +1250,9 @@ local function run_session(target, ctx)
     local spec = r.spec
     if res.quit or res.interrupted or res.error then
       return res
+    end
+    if res.file then
+      return file_found(r, res, view_top, view_sel)
     end
     if res.ok then
       tab.cur = spec
@@ -1284,6 +1331,10 @@ local function run_session(target, ctx)
     end
     lctx.arg = spec.arg or key_of(spec)
     lctx.nav = r.mode ~= "first" or r.from_pending == true
+    -- A link, the go prompt and the first load of a new tab can lead to a
+    -- file (spec/download.md "Link to a file").
+    lctx.file_ok = ctx.session ~= nil
+      and (r.mode == "link" or r.mode == "go" or r.files == true)
     lctx.on_commit = function()
       tab.held = nil
       tab.shown = nil
@@ -1381,7 +1432,7 @@ local function run_session(target, ctx)
       end
     end
     if b and not b.finished then
-      o.load = { drive = b.drive, status = b.status }
+      o.load = { drive = b.drive, status = b.status, kind = b.kind }
     end
     local count = tab_list.count()
     o.tab_count = count
@@ -1483,7 +1534,7 @@ local function run_session(target, ctx)
       end
       tab.pending = { target = key_of(b.spec), mode = r.mode,
         fragment = r.fragment, top = r.top, sel = r.sel, arg = b.spec.arg,
-        replay = r.replay }
+        replay = r.replay, files = r.files }
       tab.shown = nil
     elseif b and b.committed or (not b and tab.held and not tab.shown) then
       tab.hist.set_pos(top, sel)
@@ -1496,7 +1547,7 @@ local function run_session(target, ctx)
   end
 
   -- Makes the record t the active tab (spec/tabs.md "Showing a tab").
-  local function arrive(t)
+  function arrive(t)
     tab = t
     tab.hist = history.import({ entries = t.entries, pos = t.pos },
       HISTORY_CAP)
@@ -1510,7 +1561,7 @@ local function run_session(target, ctx)
       tab.shown = nil
       req = { spec = spec, mode = pend.mode, fragment = pend.fragment,
         top = pend.top, sel = pend.sel, replay = pend.replay,
-        from_pending = true }
+        files = pend.files, from_pending = true }
     elseif tab.shown then
       local shown = tab.shown
       tab.cur = shown.target and spec_of(shown.target, tab.guesses)
@@ -1590,7 +1641,7 @@ local function run_session(target, ctx)
       new.guesses[key_of(spec)] = spec.arg
     end
     new.pending = { target = key_of(spec), mode = "first",
-      fragment = fragment, arg = spec.arg, replay = replay }
+      fragment = fragment, arg = spec.arg, replay = replay, files = true }
     arrive(new)
   end
 
@@ -1635,10 +1686,239 @@ local function run_session(target, ctx)
     return nil
   end
 
-  -- The actions of the tab keys. download is not built yet: it changes
-  -- nothing.
+  -- Downloads (spec/download.md). html.download loads at the first use.
+  local download
+  local function need_download()
+    if download then
+      return download
+    end
+    local ok, mod = pcall(require, "html.download")
+    if ok then
+      download = mod
+      return mod
+    end
+    tab.popup = "html: cannot load html.download: " .. reason(mod)
+    return nil
+  end
+
+  local function download_deps()
+    return { open = deps.open, exists = deps.exists, is_dir = deps.is_dir,
+      resolve = deps.resolve, home = deps.home, cwd = deps.cwd,
+      space = deps.space, remove = deps.remove, rename = deps.rename,
+      clock = deps.uptime or deps.clock, yield = coroutine.yield }
+  end
+
+  -- Starts the download job of dl ({ url, resp = an open response or nil })
+  -- to path, as the loader of the tab. A response that is open already goes
+  -- to the job. Without one the job fetches the url with the option raw.
+  local function start_download(dl, path)
+    local name = path:match("[^/]*$")
+    local resp = dl.resp
+    local now = deps.uptime or deps.clock
+    local stopped, receiving = false, false
+    local bytes, length = 0, nil
+    local phase_text = "Loading " .. dl.url .. "..."
+    local shown_tail, shown_at
+    local b = { kind = "download", r = { mode = "download" }, spec = {},
+      had = false, state = {}, committed = false, finished = false,
+      started = false, path = path }
+    local function stop_flag()
+      return stopped
+    end
+    local function body()
+      local r = resp
+      if not r then
+        local loaded, why = load_fetch()
+        if not loaded then
+          return "error", why
+        end
+        local opened, open_why = fetch.open(dl.url, { internet = deps.internet,
+          clock = now, interrupted = stop_flag, raw = true,
+          sleep = function(seconds) coroutine.yield("wait", seconds) end,
+          progress = function(phase, u)
+            if phase == "connect" then
+              phase_text = "Connecting to " .. u.host .. "..."
+            elseif phase == "response" then
+              phase_text = "Waiting for response..."
+            elseif phase == "redirect" then
+              phase_text = "Redirect to " .. u.url .. "..."
+            end
+            coroutine.yield("slice")
+          end }, {})
+        if not opened then
+          return stopped and "stopped" or "error", open_why
+        end
+        r = opened
+      end
+      if r.is_error then
+        local text = r.popup or ("[HTTP " .. int_text(r.status) .. "]"
+          .. (r.message ~= "" and (" " .. r.message) or "") .. "\n"
+          .. r.final_url)
+        r.close()
+        return "error", text
+      end
+      length, receiving = r.length, true
+      return download.run(r, path, download_deps(), { stop = stop_flag,
+        progress = function(n, len) bytes, length = n, len end })
+    end
+    local co = coroutine.create(body)
+    function b.status()
+      if not receiving then
+        return phase_text
+      end
+      local t = now()
+      if not shown_tail or t - shown_at >= LOAD_TICK then
+        local text = kb(bytes)
+        if type(length) == "number" then
+          text = text .. " of " .. kb(math.max(length, bytes))
+        end
+        shown_tail, shown_at = text, t
+      end
+      return "Downloading " .. name, shown_tail
+    end
+    function b.drive()
+      if b.finished then
+        return "done"
+      end
+      b.started = true
+      local ok, what, value = coroutine.resume(co)
+      if not ok then
+        b.finished = true
+        what = reason(what)
+        b.result = { "error", is_controlled(what) and what
+          or ("html: download failed: " .. what) }
+        return "done"
+      elseif coroutine.status(co) == "dead" then
+        b.finished = true
+        b.result = { what, value }
+        return "done"
+      end
+      return what, value
+    end
+    -- Stops the job: the loader runs until it has closed the response and
+    -- deleted the part file.
+    function b.cancel()
+      if b.finished then
+        return
+      end
+      b.finished = true
+      if not b.started then
+        if resp then
+          resp.close()
+        end
+        return
+      end
+      stopped = true
+      for _ = 1, 10000 do
+        if coroutine.status(co) == "dead" then
+          break
+        end
+        coroutine.resume(co)
+      end
+    end
+    tab.bg = b
+  end
+
+  -- The save prompt, the checks of the path and the start of the job. Takes
+  -- ownership of dl.resp. Returns a final result (Ctrl+C), or nil.
+  local function offer_download(dl)
+    local resp = dl.resp
+    local function drop()
+      if resp then
+        resp.close()
+      end
+    end
+    local mod = need_download()
+    if not mod then
+      drop()
+      return nil
+    end
+    local ddeps = download_deps()
+    local filename = resp and resp.filename
+    local name = mod.default_name(dl.url, filename)
+    local text = ctx.session.prompt(" Save to: ",
+      mod.default_path(dl.url, filename, ddeps))
+    if text == "interrupted" then
+      drop()
+      return { interrupted = true }
+    elseif not text then
+      drop()
+      return nil
+    end
+    local path, exists = mod.resolve_path(text, name, ddeps)
+    if not path then
+      drop()
+      tab.popup = exists
+      return nil
+    end
+    if exists then
+      local answer = ctx.session.confirm_overwrite(path:match("[^/]*$"))
+      if answer == "interrupted" then
+        drop()
+        return { interrupted = true }
+      elseif answer ~= "yes" then
+        drop()
+        return nil
+      end
+    end
+    start_download(dl, path)
+    return nil
+  end
+
+  -- Ctrl+S: the target is the selected link, else the page.
+  local function download_action(out)
+    tab.top, tab.sel = out.top, out.sel
+    local url
+    if out.href then
+      local base = link_base()
+      if not base then
+        return nil
+      end
+      local r, why_not = urlmod.resolve(base, out.href)
+      if not r then
+        tab.popup = why_not
+        return nil
+      elseif r.kind == "unsupported" then
+        tab.notice = r.scheme .. ": links are not supported"
+        return nil
+      elseif r.kind == "http" then
+        url = r.url
+      elseif r.kind == "same" then
+        url = tab.cur and tab.cur.url
+      end
+    else
+      url = tab.cur and tab.cur.url
+    end
+    if not url then
+      tab.notice = "Ctrl+S: only web files can be downloaded"
+      return nil
+    end
+    return offer_download({ url = url })
+  end
+
+  -- The end of the download job: z, or the job ended.
+  local function end_download(out, stop)
+    local b = tab.bg
+    tab.bg = nil
+    tab.top, tab.sel = out.top, out.sel
+    if stop then
+      b.cancel()
+      tab.notice = "download stopped"
+      return
+    end
+    local status, value = b.result[1], b.result[2]
+    if status == "saved" then
+      tab.notice = "Saved " .. b.path .. " (" .. kb(value) .. ")"
+    elseif status == "stopped" then
+      tab.notice = "download stopped"
+    else
+      tab.popup = value
+    end
+  end
+
+  -- The actions of the tab keys.
   local TAB_ACTIONS = { tab_new = true, tab_prev = true, tab_next = true,
-    tab_close = true, shell = true, download = true }
+    tab_close = true, shell = true }
   local function tab_action(kind, out)
     tab.top, tab.sel = out.top, out.sel
     if kind == "shell" then
@@ -1664,6 +1944,14 @@ local function run_session(target, ctx)
       local r = req
       req = nil
       local final = start(r)
+      if final then
+        return final
+      end
+    end
+    if file_wait and not req and not tab.bg then
+      local waiting = file_wait
+      file_wait = nil
+      local final = offer_download(waiting)
       if final then
         return final
       end
@@ -1694,8 +1982,16 @@ local function run_session(target, ctx)
         return { interrupted = true, message = loading and INTERRUPTED or nil }
       end
       local kind = out.kind
-      if tab.bg and (kind == "commit" or kind == "done") then
+      if tab.bg and tab.bg.kind == "download" and (kind == "done"
+          or kind == "abort") then
+        end_download(out, kind == "abort")
+      elseif tab.bg and (kind == "commit" or kind == "done") then
         local final = advance(kind, out)
+        if final then
+          return final
+        end
+      elseif kind == "download" then
+        local final = download_action(out)
         if final then
           return final
         end
@@ -1879,6 +2175,9 @@ function M.main(argv, deps)
   local restored, restore_err = true, nil
   if ctx.session then
     restored, restore_err = pcall(ctx.session.close)
+  end
+  if ctx.kept then
+    pcall(ctx.kept.close)
   end
   if ctx.cache then
     pcall(ctx.cache.clear)
