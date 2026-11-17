@@ -49,7 +49,7 @@ Doc rules: Minecraft catches Esc in game, so the prompts do not use Esc. A blank
 
 A followed link can lead to a file. Then the program opens the save prompt and does not show an error.
 
-- Which navigations. Enter on a link, `t` (with a link or with the prompt text) and the `g` prompt text, to an `http://` or `https://` target. These are the load modes `link`, `go` and the first load of a new tab. Other loads keep today's rule: the start argument, `--print`, `r`, Back, Forward, a tab switch and a pending load of a history entry give `html: not an HTML page: <type>`, because such an entry was a page once.
+- Which navigations. Enter on a link, `t` (with a link or with the prompt text) and the `g` prompt text, to an `http://` or `https://` target. These are the load modes `link` and `go`. The load of `t` runs as a `link` load until its commit (`spec/tabs.md` "Behavior"). Other loads keep today's rule: the start argument, `--print`, `r`, Back, Forward, a tab switch and a pending load of a history entry give `html: not an HTML page: <type>`, because such an entry was a page once.
 - A file download is a response with a 2xx status and one of:
   - a content type that the viewer does not render (any type outside the accepted types of `spec/fetch.md` "HTTP status and content type": `text/*`, `application/xhtml+xml`, or no type), or
   - the header `Content-Disposition` with the disposition type `attachment` (compared without case), also with an accepted type.
@@ -57,7 +57,7 @@ A followed link can lead to a file. Then the program opens the save prompt and d
 - The load gives the response to the session loop and does not read the body. The program keeps this open response and does not fetch again. `fetch.open` takes the option `file_ok = true` for these loads and gives the response `is_file = true` and `filename` (`spec/fetch.md` "HTTP status and content type").
 - The default file name comes from `Content-Disposition` when it exists, else from the URL: the final URL of the response, after the redirects ("Default path").
 - The navigation does not change the history and does not change the current page. The current page, `top`, `sel` and the history stay as they were. The current page stays on screen during the prompt and the download. No history entry is pushed. The load starts no cache writer, and nothing is cached.
-  - With `t`, no new tab stays open: the tab that was active shows again (`spec/tabs.md` "Showing a tab") and the prompt opens in it.
+  - With `t`, no tab opens, because the new tab opens only at the commit of a page. The prompt opens over the current page, and the current tab does not load again.
 - The save prompt then shows (` Save to: <default path>`, "Prompt"). It opens at once, with the response still open.
   - A blank Enter cancels. The response handle closes. The page and the status line are as before.
   - Ctrl+C at the prompt closes the handle and exits with code 130.

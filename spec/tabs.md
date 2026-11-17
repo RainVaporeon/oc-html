@@ -29,7 +29,8 @@ The new keys are lowercase only, like `g`. The uppercase letters stay free for l
 
 - A session starts with 1 tab. The limit is 8 tabs, or the value of the experimental option `--tabs` (see "Tab limit option (experimental)" and "Tab state model").
 - `t` with a visible selected link. The link resolves as it does for Enter.
-  - A new tab opens directly after the current tab and becomes the active tab. The link loads in the new tab with the mode `first`: the new tab has a new, empty history.
+  - The link loads like Enter in phase 1: the current tab stays active and its page stays on screen (`had` is true, as for a `link` load). The new tab opens at the commit, when the first response is known to be a page. It opens directly after the current tab and becomes the active tab. The departing tab keeps its state with the rules of "A load at a tab switch or at `!`". The new tab has a new, empty history, and the commit pushes the entry.
+  - Before the commit, no tab exists. A phase 1 failure shows the popup over the current page, and no tab opens. `z`, Left and Backspace abort as for a `link` load, and no tab opens. A leave action (`<`, `>`, `c`, `g`, another `t`, `!`) stops the load, and no tab opens and nothing stays as `pending`.
   - A same-document link (`#fragment`) opens a tab with the current page URL and that fragment. The load can use the cache.
   - A link that does not resolve shows its popup. A link with an unsupported scheme shows `<scheme>: links are not supported`. A link stored as false shows `link too long`. In these cases no tab opens.
 - `t` with no visible selected link. The status row shows the prompt ` New tab: ` (the prompt of `spec/viewer.md` "Status-row prompt").
@@ -38,7 +39,8 @@ The new keys are lowercase only, like `g`. The uppercase letters stay free for l
   - The submitted text uses the CLI classification (local path, URL, or guessed URL). A bad entry shows a popup, and no tab opens.
 - `t` with as many open tabs as the limit. The status notice `tab limit: <n> tabs` shows until the next key (`<n>` is the limit). Nothing opens.
 - `t` with the option `--tabs` (a number or `auto`) and low memory. See "Tab limit option (experimental)": the notice `not enough memory for a new tab` shows, and nothing opens.
-- `t` with a link that leads to a file download (`spec/download.md` "Link to a file"). The new tab does not stay open: the tab that was active shows again and the save prompt opens in it.
+- `t` with a link that leads to a file download (`spec/download.md` "Link to a file"). No tab opens: the save prompt opens over the current page, and the history does not change.
+- `t` while the current tab loads. The load of the current tab stops first, with the rules of a leave action. Only the limit checks come before the stop.
 - `<` and `>` select the previous or the next tab, and the order wraps. With 1 tab they do nothing.
 - `c` asks for a confirmation, then closes the current tab. There is no undo.
   - The status row shows the prompt ` Close tab? (y/n)`. The answer rules are those of the quit prompt (`spec/viewer.md` "Quit"): `y`, `Y` or Enter confirms. Any other key cancels. A `key_up` event does not answer. Ctrl+C exits at once. A "no" does nothing: the tab, its page and its load stay as they were.
@@ -136,7 +138,7 @@ Each of these actions stops a load that runs: `<`, `>`, `t` (after the link reso
 
 - Stop before the commit (phase 1). The departing tab keeps the old page entry. The tab also keeps the stopped load as `pending`, with its target, mode, fragment, `top`, `sel` and arg.
   - A Back or Forward that the switch stops keeps its history index move, so the pending load loads the target entry.
-  - A `first` load of a new tab keeps `pending` too. Its history is empty, so the commit of the pending load pushes the entry.
+  - A `first` load keeps `pending` too (the load of the start argument). Its history is empty, so the commit of the pending load pushes the entry. The load of a `t` is not kept: its tab does not exist before the commit, so a stop in phase 1 drops it.
 - Return to a tab with `pending`. The program starts the pending load with its mode, and then clears `pending`.
   - A `link` or `go` load pushes its entry at the commit. A `reload` fetches. A `back` or `forward` uses the cache first.
   - A phase 1 failure of a pending load shows the popup. Then the tab loads its current history entry with the mode `switch`. When the history is empty, the broken page shows instead.

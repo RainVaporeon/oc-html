@@ -1155,7 +1155,7 @@ local function run_session(target, ctx)
   local tab = tabs.new_tab()
   -- file_wait: a response that a followed link opened and the save prompt
   -- has not used yet. arrive is defined further down.
-  local file_wait, arrive
+  local file_wait, arrive, open_tab
   tab.hist = history.new(HISTORY_CAP)
   tab.top = 1
   local tab_list = tabs.new(tab_limit)
@@ -1224,22 +1224,12 @@ local function run_session(target, ctx)
   end
 
   -- A load found a file: the old page stays, nothing is pushed, and the
-  -- save prompt opens (spec/download.md "Link to a file"). A new tab that
-  -- led to a file closes, and the tab before it shows again.
-  local function file_found(r, res, view_top, view_sel)
+  -- save prompt opens (spec/download.md "Link to a file"). A new tab load
+  -- (r.newtab) has opened no tab yet, so no tab opens.
+  local function file_found(res, view_top, view_sel)
     ctx.kept = res.resp
     file_wait = { resp = res.resp, url = res.resp.final_url }
-    if r.files and tab_list.count() > 1 then
-      local before = tab_list.prev()
-      tab_list.next()
-      tab_list.close()
-      if tab_list.active() ~= before then
-        tab_list.prev()
-      end
-      arrive(before)
-    else
-      tab.top, tab.sel = view_top, view_sel
-    end
+    tab.top, tab.sel = view_top, view_sel
     return nil
   end
 
@@ -1252,7 +1242,7 @@ local function run_session(target, ctx)
       return res
     end
     if res.file then
-      return file_found(r, res, view_top, view_sel)
+      return file_found(res, view_top, view_sel)
     end
     if res.ok then
       tab.cur = spec
@@ -1278,6 +1268,12 @@ local function run_session(target, ctx)
       elseif r.mode == "forward" then
         tab.hist.back()
       end
+    end
+    if r.newtab and not res.committed then
+      -- A new tab load that stopped in phase 1: no tab opened, and the
+      -- current page stays as it is.
+      tab.popup = res.failed and res.text or nil
+      return nil
     end
     if res.failed then
       tab.popup = res.text
@@ -1334,8 +1330,13 @@ local function run_session(target, ctx)
     -- A link, the go prompt and the first load of a new tab can lead to a
     -- file (spec/download.md "Link to a file").
     lctx.file_ok = ctx.session ~= nil
-      and (r.mode == "link" or r.mode == "go" or r.files == true)
+      and (r.mode == "link" or r.mode == "go")
     lctx.on_commit = function()
+      if r.newtab then
+        -- The tab opens at the commit (open_tab). The old tab keeps its page
+        -- until then.
+        return
+      end
       tab.held = nil
       tab.shown = nil
       if r.mode == "link" or r.mode == "go" or tab.hist.size() == 0 then
@@ -1487,12 +1488,20 @@ local function run_session(target, ctx)
   local function advance(kind, out)
     local b = tab.bg
     if kind == "commit" then
+      if b.r.newtab then
+        open_tab(b, out.top, out.sel)
+        return nil
+      end
       -- The old page is gone. The new page starts at the top.
       tab.held = nil
       tab.top, tab.sel = 1, nil
       return nil
     end
     tab.bg = nil
+    if b.r.newtab and b.result and b.result.ok then
+      open_tab(b, out.top, out.sel)
+      tab.bg = nil
+    end
     return settle(b.r, b.had, b.result, out.top, out.sel)
   end
 
@@ -1510,6 +1519,11 @@ local function run_session(target, ctx)
     local b = tab.bg
     tab.bg = nil
     local r
+    if b and b.r.newtab then
+      -- A pending new tab load has no tab: it stops and leaves nothing.
+      b.cancel()
+      b = nil
+    end
     if b then
       b.cancel()
       if not b.committed and PENDING_MODES[b.r.mode] then
@@ -1534,7 +1548,7 @@ local function run_session(target, ctx)
       end
       tab.pending = { target = key_of(b.spec), mode = r.mode,
         fragment = r.fragment, top = r.top, sel = r.sel, arg = b.spec.arg,
-        replay = r.replay, files = r.files }
+        replay = r.replay }
       tab.shown = nil
     elseif b and b.committed or (not b and tab.held and not tab.shown) then
       tab.hist.set_pos(top, sel)
@@ -1561,7 +1575,7 @@ local function run_session(target, ctx)
       tab.shown = nil
       req = { spec = spec, mode = pend.mode, fragment = pend.fragment,
         top = pend.top, sel = pend.sel, replay = pend.replay,
-        files = pend.files, from_pending = true }
+        from_pending = true }
     elseif tab.shown then
       local shown = tab.shown
       tab.cur = shown.target and spec_of(shown.target, tab.guesses)
@@ -1575,6 +1589,26 @@ local function run_session(target, ctx)
         tab.held = { lines = {}, title = "", name = "" }
       end
     end
+  end
+
+  -- The commit of a new tab load: the departing tab keeps its state (leave),
+  -- and the new tab becomes active with the load b and its first entry.
+  function open_tab(b, top, sel)
+    local spec = b.spec
+    tab.bg = nil
+    leave(top, sel)
+    local new = tabs.new_tab()
+    tab_list.add_after(new)
+    if tab.guesses[key_of(spec)] then
+      new.guesses[key_of(spec)] = tab.guesses[key_of(spec)]
+    end
+    tab = new
+    tab.hist = history.new(HISTORY_CAP)
+    tab.hist.push(key_of(spec))
+    tab.held, tab.cur, tab.popup = nil, nil, nil
+    tab.top, tab.sel = 1, nil
+    b.r.newtab = nil
+    tab.bg = b
   end
 
   -- The base that a link of the page on screen resolves against.
@@ -1634,15 +1668,19 @@ local function run_session(target, ctx)
         return
       end
     end
-    leave(out.top, out.sel)
-    local new = tabs.new_tab()
-    tab_list.add_after(new)
-    if spec.guessed then
-      new.guesses[key_of(spec)] = spec.arg
+    -- A load that runs stops first (one connection at a time).
+    if tab.bg and tab.bg.kind == "download" then
+      tab.bg.cancel()
+      tab.bg = nil
+    elseif tab.bg then
+      stop_load("tab_new")
     end
-    new.pending = { target = key_of(spec), mode = "first",
-      fragment = fragment, arg = spec.arg, replay = replay, files = true }
-    arrive(new)
+    -- The current tab stays active. The tab opens at the commit (open_tab).
+    if spec.guessed then
+      tab.guesses[key_of(spec)] = spec.arg
+    end
+    req = { spec = spec, mode = "link", fragment = fragment, replay = replay,
+      newtab = true }
   end
 
   -- The shell tab-out (spec/shell.md "Sequence"). Returns a final result when

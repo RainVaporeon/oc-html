@@ -1818,7 +1818,8 @@ local function nav(o)
         end
         rec.shows[#rec.shows + 1] = { title = opts.title or false,
           file = opts.file, error = opts.error or false, top = opts.top,
-          sel = opts.sel or false, n = #lines, entry = gctl.screen() }
+          sel = opts.sel or false, n = #lines, entry = gctl.screen(),
+          tabs = opts.tab_count }
         rec.opens[#rec.opens + 1] = ctl.open
         local res = table.pack(pcall(show, lines, opts))
         if not res[1] then
@@ -1868,12 +1869,13 @@ local function observe_nav(rec)
     open_max = rec.ctl.max_open, open_end = rec.ctl.open,
     opens = rec.opens, files_open = rec.files_open, snaps = rec.snaps,
     shows = #rec.shows, titles = {}, files = {}, errors = {}, tops = {},
-    sels = {}, ns = {}, entries = {}, key_listeners = rec.key_listeners,
+    sels = {}, ns = {}, entries = {}, tabs = {}, key_listeners = rec.key_listeners,
     os_sleeps = rec.os_sleeps, live_shows = rec.live_shows,
     events_left = require("event").test.size() }
   for i, s in ipairs(rec.shows) do
     out.titles[i], out.files[i], out.errors[i] = s.title, s.file, s.error
     out.tops[i], out.sels[i], out.ns[i] = s.top, s.sel, s.n
+    out.tabs[i] = s.tabs
     out.entries[i] = s.entry[1]:match("^%S+ %S+") or false
   end
   return out
@@ -2880,20 +2882,27 @@ T["tabs: a switch returns at the saved top with no request"] = function()
   t.eq(obs.code, 0, "code")
 end
 
-T["tabs: a switch in phase 1 keeps the link as pending"] = function()
+T["tabs: a leave action in phase 1 of t opens no tab"] = function()
   local obs = cached({ args = { URL_A },
     routes = { [URL_A] = served(A_LINK, 10),
       [URL_B] = { connect_polls = 1e6 } },
-    on_request = function(rec, url, routes)
-      if url == URL_B then
-        routes[URL_B] = served(B, 10)
-      end
-    end,
-    ticks = { [2] = { { KEY_LT } } },
-    show = events(KEY_TAB, KEY_T, KEY_GT, QUIT) })
-  t.eq(obs.requests, { URL_A, URL_B, URL_B },
-    "the return loads the pending link")
-  t.eq(obs.titles, { "A", "A", "B" }, "titles")
+    ticks = { [2] = { { KEY_R } } },
+    show = events(KEY_TAB, KEY_T, QUIT) })
+  t.eq(obs.requests, { URL_A, URL_B, URL_A },
+    "r stops the new tab load, and reloads the page")
+  t.eq(obs.titles, { "A", "A" }, "titles")
+  t.eq(obs.tabs, { 1, 1 }, "no tab opened")
+  t.eq(obs.code, 0, "code")
+end
+
+T["tabs: a phase 1 failure on t opens no tab"] = function()
+  local obs = cached({ args = { URL_A },
+    routes = { [URL_A] = served(A_LINK, 10),
+      [URL_B] = { connect_error = "refused" } },
+    show = events(KEY_TAB, KEY_T, KEY_ENTER, QUIT) })
+  t.eq(obs.titles, { "A", "A" }, "the page stays on screen")
+  t.eq(obs.tabs, { 1, 1 }, "no tab opened")
+  t.eq(obs.errors[2] ~= false, true, "the popup shows")
   t.eq(obs.code, 0, "code")
 end
 
@@ -3164,6 +3173,19 @@ T["download: a link to a file opens the prompt and keeps the history"] = functio
   t.eq(obs.snaps[2], " Saved /home/b (1 KB)", "notice")
   t.eq(obs.requests, { URL_A, URL_B }, "one request, and Back has no entry")
   t.eq(table.concat(obs.titles, ","), "A,A,A", "the page stays on screen")
+end
+
+T["download: t on a link to a file opens the prompt and no tab"] = function()
+  local files = {}
+  local obs = download_run({ args = { URL_A }, files = files,
+    routes = { [URL_A] = served(A_LINK, 10), [URL_B] = ZIP_SCRIPT },
+    show = events(KEY_TAB, KEY_T, status_at(1), KEY_ENTER, status_at(2),
+      QUIT) })
+  t.eq(obs.snaps[1]:find(" Save to: /home/b", 1, true), 1, "prompt")
+  t.eq(files["/home/b"], ZIP, "saved from the open response")
+  t.eq(obs.requests, { URL_A, URL_B }, "one request for the file")
+  t.eq(obs.tabs, { 1, 1 }, "the tab count stays 1")
+  t.eq(obs.open_max, 1, "one connection at a time")
 end
 
 return T
