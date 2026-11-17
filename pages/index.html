@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>oc-html - a web browser for OpenComputers</title>
+<meta name="description" content="oc-html is a minimal HTML viewer and browser for OpenComputers, written for Lua 5.3.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="wrap">
+
+<div id="header">
+  <h1>oc-html</h1>
+  <p>computerception browser for a block game</p>
+</div>
+
+<div id="nav">
+  [ <a href="#about">About</a> ]
+  [ <a href="#features">Features</a> ]
+  [ <a href="#requirements">Requirements</a> ]
+  [ <a href="#install">Install</a> ]
+  [ <a href="#notes">Notes</a> ]
+  [ <a href="https://github.com/RainVaporeon/oc-html/releases">Download</a> ]
+  [ <a href="https://github.com/RainVaporeon/oc-html">GitHub</a> ]
+</div>
+
+<div id="content">
+
+<div id="getit">
+  <span class="big"><a href="https://github.com/RainVaporeon/oc-html/releases">Download</a></span><br>
+  Get <code>html-install.lua</code> from the latest release.<br>
+  Source code: <a href="https://github.com/RainVaporeon/oc-html">GitHub</a>
+</div>
+
+<h2 id="about">About</h2>
+<p>
+<b>oc-html</b> is a minimalistic and lightweight HTML viewer and browser for
+<a href="https://ocdoc.cil.li/">OpenComputers</a>, a Minecraft mod. It runs on
+the Lua 5.3 architecture and lets you view local HTML files and browse the web
+from inside the game.
+</p>
+
+<h2 id="features">Features</h2>
+<ul>
+  <li>Web browsing</li>
+  <li>Page navigation</li>
+  <li>Smart page caches</li>
+  <li>SSL support</li>
+  <li>Image viewing</li>
+</ul>
+<p>In a little more detail:</p>
+<ul>
+  <li>The smart cache lets you go back to a previous page without
+      fetching the entire file again.</li>
+  <li>Link navigation support.</li>
+  <li>Browser tab support.</li>
+  <li>Image viewing (for now PNGs; other extensions will be supported in a
+      future version).</li>
+</ul>
+
+<h2 id="requirements">Requirements</h2>
+<p>
+The script is tested against a machine with 4MB of storage and 2MB of memory.
+The script itself takes up about 200kb of space.
+</p>
+<table class="req">
+  <tr><th>Component</th><th>Needed for</th></tr>
+  <tr><td>Internet card</td><td>Viewing online websites</td></tr>
+  <tr><td>Graphics card</td><td>Viewing images</td></tr>
+  <tr><td>2M disk space</td><td>The smart page cache saves viewed sites to disk
+      temporarily, and benefits from having more free space.</td></tr>
+  <tr><td>1M memory</td><td>Loading large websites may take especially much;
+      keep this in mind!</td></tr>
+</table>
+
+<h2 id="install">Install and usage</h2>
+<p>
+Check the <a href="https://github.com/RainVaporeon/oc-html/releases">releases</a>
+page and navigate to the latest version. Pull <code>html-install.lua</code> onto
+your OpenComputers instance and run it.
+</p>
+<p>To install to the root directory of the machine:</p>
+<pre>html-install --prefix /</pre>
+<p>Then view a local file or a web page:</p>
+<pre>html ./index.html
+html https://example.com/</pre>
+<p>Run <code>html --help</code> for more information.</p>
+
+<h2 id="notes">Notes</h2>
+<p>
+This was built for OpenComputers under GregTech: New Horizons (1.7.10) with
+Lua 5.3 architecture.
+</p>
+
+<h2 id="ai">AI disclosure</h2>
+<p>This project uses Claude Code to accelerate the development workflow and testing.</p>
+
+</div>
+
+<div id="footer">
+  <a href="https://github.com/RainVaporeon/oc-html">GitHub</a> |
+  <a href="https://github.com/RainVaporeon/oc-html/releases">Download</a>
+  <hr>
+  Last updated: 17 November 2026
+</div>
+
+</div>
+</body>
+</html>
