@@ -1391,6 +1391,12 @@ local function run_session(target, ctx)
     -- closed everything. The yields in between are not waited for.
     function b.cancel()
       if b.finished then
+        -- A load that ended as a file while a prompt was open: nobody takes
+        -- the open response, so it closes here.
+        local res = b.result
+        if res and res.file and res.resp then
+          pcall(res.resp.close)
+        end
         return
       end
       b.finished = true
@@ -1663,7 +1669,17 @@ local function run_session(target, ctx)
     end
     if opts.tabs then
       local g = guard_lib()
-      if g and g.settled_free() < g.MEMORY_RESERVE + TAB_COST then
+      -- A load that runs sets the yield of the guard to its own loop, and
+      -- that yield is not allowed on this thread.
+      local saved = g and g.get_yield()
+      if saved then
+        g.set_yield(nil)
+      end
+      local free = g and g.settled_free()
+      if saved then
+        g.set_yield(saved)
+      end
+      if g and free < g.MEMORY_RESERVE + TAB_COST then
         tab.notice = "not enough memory for a new tab"
         return
       end

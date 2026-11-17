@@ -198,6 +198,11 @@ function M.set_yield(fn)
   yield_fn = fn
 end
 
+-- Returns the function that set_yield set, or nil.
+function M.get_yield()
+  return yield_fn
+end
+
 -- The layout calls this when its link or anchor arrays pass a power of
 -- two. count is the larger of 2 * link count and anchor count, or their
 -- capacity. The guard rounds it up to a power of two, at least 1024.
