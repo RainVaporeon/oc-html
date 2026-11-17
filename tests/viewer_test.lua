@@ -101,7 +101,7 @@ local function run(o)
   end
   local result = viewer.run(o.lines, o.opts or {}, {
     gpu = gpu, pull = (queue(list, ctl)), term = term,
-    shift_down = o.shift_down,
+    shift_down = o.shift_down, control_down = o.control_down,
   })
   return result, ctl, term, gpu
 end
@@ -1731,10 +1731,11 @@ end
 local function help_state(ctl, h)
   local joined = table.concat(ctl.screen(), "\n", 1, h - 1)
   local shown = {}
-  for _, word in ipairs({ "Tab", "Shift+Tab", "Enter", "Left", "Backspace",
-      "Right", "r: reload", "g: go", "Up, Down: move between links",
-      "PgUp, PgDn, Home, End: scroll",
-      "q: quit", "?: this list", "[OK]" }) do
+  for _, word in ipairs({ "Tab", "Shift+Tab", "Enter", "Left, Bksp, Right",
+      "r: reload", "g: go", "Up, Down: move between links",
+      "PgUp, PgDn, Home, End: scroll", "t, c: new tab, close tab",
+      "<, >: previous, next tab", "Ctrl+S: download, !: shell",
+      "q: quit, ?: this list", "[OK]" }) do
     shown[#shown + 1] = joined:find(word, 1, true) ~= nil
   end
   return shown
@@ -2305,6 +2306,226 @@ function T.live_phase_1_keeps_the_old_page_usable()
   t.eq(result.top, 17)
   t.eq(line_at(ctl, 1), 17)
   t.eq(ctl.row(10):match("^ Connecting to x%.%.%.") ~= nil, true)
+end
+
+-- The keys of 0.7.0a (spec/viewer.md "Keys", "Status-row prompt",
+-- "Confirm prompt").
+local KEY_T, KEY_C, KEY_LT, KEY_GT, KEY_BANG = key(20, 116), key(46, 99),
+  key(51, 60), key(52, 62), key(2, 33)
+local CTRL_S = key(31, 19)
+
+local function link_opts(extra)
+  local o = { title = "T", links = fixture(), resolve = resolve }
+  for k, v in pairs(extra or {}) do
+    o[k] = v
+  end
+  return o
+end
+
+t.cases(T, "new_keys", {
+  { "t with a selected link", { TAB, KEY_T },
+    { kind = "tab_new", href = "a3.html", text = "R:a3.html", top = 1,
+      sel = 1 } },
+  { "t with no selection opens the prompt and submits",
+    cat({ KEY_T }, chars("x.org"), { ENTER }),
+    { kind = "tab_new", text = "x.org", top = 1 } },
+  { "c then y", { KEY_C, Y }, { kind = "tab_close", top = 1 } },
+  { "<", { KEY_LT }, { kind = "tab_prev", top = 1 } },
+  { ">", { KEY_GT }, { kind = "tab_next", top = 1 } },
+  { "!", { KEY_BANG }, { kind = "shell", top = 1 } },
+  { "Ctrl+S with char 19", { CTRL_S }, { kind = "download", top = 1 } },
+  { "Ctrl+S with a selected link", { TAB, CTRL_S },
+    { kind = "download", href = "a3.html", text = "R:a3.html", top = 1,
+      sel = 1 } },
+}, function(events)
+  return (run({ lines = make_lines(100), opts = link_opts(),
+    events = events }))
+end)
+
+function T.ctrl_s_with_code_31_needs_ctrl()
+  local function go(pre, control_down)
+    local list = cat(pre, { key(31, 0), Q, Y })
+    return (run({ lines = make_lines(10), events = list,
+      control_down = control_down }))
+  end
+  t.eq(go({}, function() return true end).kind, "download")
+  t.eq(go({}, function() return false end), "quit")
+  -- Without the dep the viewer tracks the Ctrl codes.
+  t.eq(go({ key(29, 0) }).kind, "download")
+  t.eq(go({ key(29, 0), key_up(29, 0) }), "quit")
+end
+
+function T.d_has_no_action()
+  t.eq((run({ lines = make_lines(10), events = { key(32, 100), Q, Y } })),
+    "quit")
+end
+
+local function new_session(events)
+  local gpu, ctl = fake_gpu.new(size(80, 25))
+  local s = viewer.open({ gpu = gpu, pull = (queue(events, ctl)),
+    term = fake_term() }, {})
+  return s, ctl
+end
+
+local function status_cursor(ctl)
+  for x = 1, 80 do
+    local _, _, bg = ctl.cell(x, 25)
+    if bg == 0 then
+      return x
+    end
+  end
+end
+
+function T.save_prompt_shows_the_default_path()
+  local row, cursor
+  local s = new_session({ function(ctl)
+    row = (ctl.row(25):gsub("%s+$", ""))
+    cursor = status_cursor(ctl)
+  end, ESC })
+  t.eq(s.prompt(" Save to: ", "/home/a.zip"), nil)
+  t.eq(row, " Save to: /home/a.zip")
+  t.eq(cursor, 10 + 11 + 1)
+  s.close()
+end
+
+function T.save_prompt_backspace_deletes_one_character()
+  local row
+  local s = new_session({ BS, function(ctl)
+    row = (ctl.row(25):gsub("%s+$", ""))
+  end, ESC })
+  s.prompt(" Save to: ", "/home/a.zip")
+  t.eq(row, " Save to: /home/a.zi")
+  s.close()
+end
+
+function T.save_prompt_blank_enter_cancels()
+  local events = {}
+  for _ = 1, 11 do
+    events[#events + 1] = BS
+  end
+  events[#events + 1] = ENTER
+  local s = new_session(events)
+  t.eq(s.prompt(" Save to: ", "/home/a.zip"), nil)
+  s.close()
+end
+
+function T.save_prompt_enter_accepts_the_text()
+  local s = new_session({ ENTER })
+  t.eq(s.prompt(" Save to: ", "/home/a.zip"), "/home/a.zip")
+  s.close()
+end
+
+t.cases(T, "overwrite_confirm", {
+  { "y", Y, "yes" },
+  { "Y", key(21, 89), "yes" },
+  { "Enter cancels", ENTER, false },
+  { "n cancels", N, false },
+  { "Ctrl+C", CTRL_C, "interrupted" },
+}, function(answer)
+  local s, ctl = new_session({ key_up(21, 121), answer })
+  local result = s.confirm_overwrite("a.zip")
+  t.eq(ctl.row(25):match("^ Overwrite a%.zip%? %(y/n%)") ~= nil, true)
+  s.close()
+  return result or false
+end)
+
+function T.tab_prefix_shows_before_the_title()
+  local row
+  run({ lines = make_lines(10), opts = { title = "Page", tab_label = "[2/3]" },
+    events = { function(ctl) row = ctl.row(25) end, Q, Y } })
+  t.eq(row:sub(1, 13), " [2/3] Page  ")
+end
+
+function T.notice_replaces_the_prefix()
+  local row
+  run({ lines = make_lines(10), opts = { title = "Page", tab_label = "[2/3]",
+    notice = "tab limit: 8 tabs" },
+    events = { function(ctl) row = ctl.row(25) end, Q, Y } })
+  t.eq(row:sub(1, 19), " tab limit: 8 tabs ")
+end
+
+function T.close_prompt_text_and_answers()
+  local row
+  local result = run({ lines = make_lines(10), opts = { tab_count = 2 },
+    events = { KEY_C, function(ctl) row = ctl.row(25) end, key_up(21, 121),
+      N, Q, Y } })
+  t.eq(result, "quit")
+  t.eq(row:match("^ Close tab%? %(y/n%)") ~= nil, true)
+  t.eq((run({ lines = make_lines(10), events = { KEY_C, ENTER } })).kind,
+    "tab_close")
+end
+
+function T.close_on_the_last_tab_shows_a_notice()
+  local row
+  run({ lines = make_lines(10), opts = { tab_count = 1 },
+    events = { KEY_C, function(ctl) row = ctl.row(25) end, Q, Y } })
+  t.eq(row:match("^ last tab: q quits") ~= nil, true)
+end
+
+function T.quit_text_option()
+  local row
+  run({ lines = make_lines(10),
+    opts = { quit_text = " Quit and close 3 tabs? (y/n)" },
+    events = { Q, function(ctl) row = ctl.row(25) end, Y } })
+  t.eq(row:match("^ Quit and close 3 tabs%? %(y/n%)") ~= nil, true)
+end
+
+function T.enter_held_option_ignores_enter_until_key_up()
+  local o = link_opts({ enter_held = true })
+  t.eq((run({ lines = make_lines(100), opts = o,
+    events = { TAB, ENTER, key_up(28, 13), ENTER } })).kind, "link")
+  t.eq((run({ lines = make_lines(100), opts = o,
+    events = { TAB, ENTER, Q, Y } })), "quit")
+end
+
+function T.download_job_blocks_every_key_but_z()
+  local seen = {}
+  local function check(ctl)
+    seen[#seen + 1] = ctl.row(25):match("^ download running: z stops it")
+      ~= nil
+  end
+  local keys = { BS, key(203, 0), key(205, 0), KEY_T, KEY_C, KEY_LT, KEY_GT,
+    KEY_BANG, CTRL_S, KEY_G, key(19, 114) }
+  local events = { TAB }
+  for _, k in ipairs(keys) do
+    events[#events + 1] = k
+    events[#events + 1] = check
+  end
+  events[#events + 1] = ENTER
+  events[#events + 1] = check
+  events[#events + 1] = key(44, 122)
+  local s = new_session(events)
+  local result = s.show(make_lines(100), { links = fixture(),
+    resolve = resolve, load = { kind = "download",
+      drive = function() return "wait", 0.05 end,
+      status = function() return "Downloading a.zip", "1 KB" end } })
+  t.eq(result.kind, "abort")
+  t.eq(#seen, #keys + 1)
+  for i = 1, #seen do
+    t.eq(seen[i], true, "key " .. i)
+  end
+  s.close()
+end
+
+function T.ctrl_s_during_a_page_load_shows_a_notice()
+  local row
+  local s = new_session({ CTRL_S, function(ctl) row = ctl.row(25) end,
+    key(44, 122) })
+  local result = s.show(make_lines(10), { load = {
+    drive = function() return "wait", 0.05 end,
+    status = function() return "Loading x", nil end } })
+  t.eq(result.kind, "abort")
+  t.eq(row:match("^ wait for the load, or press z") ~= nil, true)
+  s.close()
+end
+
+function T.tab_full_notice_stops_t()
+  local row
+  local result = run({ lines = make_lines(10),
+    opts = { tab_full = "tab limit: 8 tabs" },
+    events = { KEY_T, function(ctl) row = ctl.row(25) end, Q, Y } })
+  t.eq(result, "quit")
+  t.eq(row:match("^ tab limit: 8 tabs") ~= nil, true)
 end
 
 return T
