@@ -1279,7 +1279,9 @@ local function run_session(target, ctx)
       tab.popup = res.text
       if r.from_pending and not res.committed and tab.hist.size() > 0 then
         -- spec/tabs.md "A load at a tab switch": the popup shows, then the
-        -- tab loads its current entry.
+        -- tab loads its current entry. A pending back or forward moves the
+        -- index back first, so the entry is the old page.
+        undo()
         local entry = tab.hist.current()
         req = { spec = spec_of(entry.target, tab.guesses), mode = "switch",
           top = entry.top, sel = entry.sel }

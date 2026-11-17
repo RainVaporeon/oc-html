@@ -141,7 +141,7 @@ Each of these actions stops a load that runs: `<`, `>`, `t` (after the link reso
   - A `first` load keeps `pending` too (the load of the start argument). Its history is empty, so the commit of the pending load pushes the entry. The load of a `t` is not kept: its tab does not exist before the commit, so a stop in phase 1 drops it.
 - Return to a tab with `pending`. The program starts the pending load with its mode, and then clears `pending`.
   - A `link` or `go` load pushes its entry at the commit. A `reload` fetches. A `back` or `forward` uses the cache first.
-  - A phase 1 failure of a pending load shows the popup. Then the tab loads its current history entry with the mode `switch`. When the history is empty, the broken page shows instead.
+  - A phase 1 failure of a pending load shows the popup. A pending `back` or `forward` moves the history index back first (`spec/navigation.md` "History"), so the entry is the old page and not the failed target. Then the tab loads its current history entry with the mode `switch`. When the history is empty, the broken page shows instead.
 - Stop after the commit. The departing tab keeps the new history entry (the commit appended it), with the `top` and `sel` of that moment. The page did not finish, so it is not in the cache. When the tab shows again, the `switch` load looks in the cache first, finds nothing, and fetches.
 - `c` on a tab with a load. The load goes on while the prompt shows. After the user confirms, the load stops and the tab closes with its state. After a "no", the load goes on.
 - The departing document. It is released before the arriving tab loads.
