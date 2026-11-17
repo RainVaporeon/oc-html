@@ -1615,6 +1615,7 @@ end
 
 local HOST = "http://x.org/"
 local URL_A, URL_B = HOST .. "a", HOST .. "b"
+local URL_Z = HOST .. "z"
 
 -- Runs main over the fake machine. o: args, routes (card routes, a table that
 -- on_request(rec, url, routes) can change), default (card script for other
@@ -3169,6 +3170,32 @@ T["download: z on a download from a link to a file leaves no part file"] = funct
   t.eq(obs.snaps[1], " download stopped", "notice")
   t.eq(files["/home/b.part"], nil, "no part file")
   t.eq(files["/home/b"], nil, "no file")
+  t.eq(obs.open_end, 0, "handles closed")
+end
+
+T["download: a pending link load that finds a file shows the page again"] = function()
+  local files = {}
+  local obs = download_run({ args = { URL_A }, files = files,
+    deps = { cache = fake_cache_fs().deps },
+    routes = { [URL_A] = served(doc("A", link(URL_B) .. link(URL_Z)), 10),
+      [URL_B] = served(B, 10), [URL_Z] = { connect_polls = 1e6 } },
+    on_request = function(rec, url, routes)
+      if url == URL_Z then
+        if rec.z_seen then
+          routes[URL_Z] = ZIP_SCRIPT
+        end
+        rec.z_seen = true
+      end
+    end,
+    ticks = { [4] = { { KEY_GT } } },
+    show = events(KEY_TAB, KEY_T, KEY_LT, KEY_TAB, KEY_ENTER, KEY_LT, KEY_ESC,
+      KEY_R, QUIT) })
+  t.eq(obs.code, 0, "no crash")
+  t.eq(table.concat(obs.titles, ","), "A,B,A,B,A,A",
+    "the page shows again after the prompt, and again after r")
+  t.eq(obs.requests, { URL_A, URL_B, URL_Z, URL_Z, URL_A },
+    "the page returns from the cache, and r fetches it")
+  t.eq(next(files), nil, "nothing saved")
   t.eq(obs.open_end, 0, "handles closed")
 end
 

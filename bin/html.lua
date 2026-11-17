@@ -1226,10 +1226,16 @@ local function run_session(target, ctx)
   -- A load found a file: the old page stays, nothing is pushed, and the
   -- save prompt opens (spec/download.md "Link to a file"). A new tab load
   -- (r.newtab) has opened no tab yet, so no tab opens.
-  local function file_found(res, view_top, view_sel)
+  -- A tab with no page on screen (the load was its pending load) shows its
+  -- current entry again when the prompt and the download are over
+  -- (restore_page).
+  local function file_found(res, view_top, view_sel, had)
     ctx.kept = res.resp
     file_wait = { resp = res.resp, url = res.resp.final_url }
     tab.top, tab.sel = view_top, view_sel
+    if not had then
+      tab.resume = true
+    end
     return nil
   end
 
@@ -1242,7 +1248,7 @@ local function run_session(target, ctx)
       return res
     end
     if res.file then
-      return file_found(res, view_top, view_sel)
+      return file_found(res, view_top, view_sel, had)
     end
     if res.ok then
       tab.cur = spec
@@ -1527,6 +1533,7 @@ local function run_session(target, ctx)
     local b = tab.bg
     tab.bg = nil
     local r
+    tab.resume = nil
     if b and b.r.newtab then
       -- A pending new tab load has no tab: it stops and leaves nothing.
       b.cancel()
@@ -1575,6 +1582,7 @@ local function run_session(target, ctx)
       HISTORY_CAP)
     tab.held, tab.cur, tab.popup, tab.bg = nil, nil, nil, nil
     tab.top, tab.sel = 1, nil
+    tab.resume = nil
     local pend = tab.pending
     tab.pending = nil
     if pend then
@@ -1740,6 +1748,23 @@ local function run_session(target, ctx)
       tab.popup = "html: shell error: " .. reason(shell_why)
     end
     return nil
+  end
+
+  -- After a file prompt or a download: a tab that has no page shows its
+  -- current history entry again with a switch load, or an empty page when
+  -- the history is empty. The file response is closed by then.
+  local function restore_page()
+    if not tab.resume then
+      return
+    end
+    tab.resume = nil
+    local entry = tab.hist.size() > 0 and tab.hist.current()
+    if entry then
+      req = { spec = spec_of(entry.target, tab.guesses), mode = "switch",
+        top = entry.top, sel = entry.sel }
+    else
+      tab.held = { lines = {}, title = "", name = "" }
+    end
   end
 
   -- Downloads (spec/download.md). html.download loads at the first use.
@@ -1973,6 +1998,7 @@ local function run_session(target, ctx)
     if stop then
       b.cancel()
       tab.notice = "download stopped"
+      restore_page()
       return
     end
     local status, value = b.result[1], b.result[2]
@@ -1983,6 +2009,7 @@ local function run_session(target, ctx)
     else
       tab.popup = value
     end
+    restore_page()
   end
 
   -- The actions of the tab keys.
@@ -2023,6 +2050,9 @@ local function run_session(target, ctx)
       local final = offer_download(waiting)
       if final then
         return final
+      end
+      if not tab.bg then
+        restore_page()
       end
     end
     if not req then
@@ -2091,6 +2121,9 @@ local function run_session(target, ctx)
                 fragment = r.fragment }
             end
           end
+        elseif (kind == "back" or kind == "forward") and not tab.cur then
+          -- No page is on screen: nothing to leave.
+          kind = nil
         elseif kind == "back" or kind == "forward" then
           local entry
           if kind == "back" then
@@ -2107,10 +2140,12 @@ local function run_session(target, ctx)
             end
           end
         elseif kind == "reload" then
-          req = { spec = tab.cur, mode = "reload", top = tab.top,
-            sel = tab.sel }
-          if tab.shown then
-            req.top, req.sel = 1, nil
+          if tab.cur then
+            req = { spec = tab.cur, mode = "reload", top = tab.top,
+              sel = tab.sel }
+            if tab.shown then
+              req.top, req.sel = 1, nil
+            end
           end
         elseif kind == "go" then
           local spec, msg = M.classify(out.text, deps)

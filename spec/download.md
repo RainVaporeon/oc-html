@@ -58,6 +58,7 @@ A followed link can lead to a file. Then the program opens the save prompt and d
 - The default file name comes from `Content-Disposition` when it exists, else from the URL: the final URL of the response, after the redirects ("Default path").
 - The navigation does not change the history and does not change the current page. The current page, `top`, `sel` and the history stay as they were. The current page stays on screen during the prompt and the download. No history entry is pushed. The load starts no cache writer, and nothing is cached.
   - With `t`, no tab opens, because the new tab opens only at the commit of a page. The prompt opens over the current page, and the current tab does not load again.
+  - A tab that has no page on screen (the load was its `pending` load, `spec/tabs.md`) shows an empty page during the prompt and the download. When the prompt ends without a download, or the download ends, the tab shows its current history entry again with the mode `switch`. When its history is empty, it shows an empty page. The program starts this load only after the open response is closed. `r`, Back and Forward do nothing while the tab has no page.
 - The save prompt then shows (` Save to: <default path>`, "Prompt"). It opens at once, with the response still open.
   - A blank Enter cancels. The response handle closes. The page and the status line are as before.
   - Ctrl+C at the prompt closes the handle and exits with code 130.
