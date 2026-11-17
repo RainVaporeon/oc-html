@@ -74,7 +74,7 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 - [x] S5: refactor `bin/html.lua`.
 - [x] S6: the navigation loop with reload, back, forward, abort and anchors.
 - [ ] In game: follow links, back, forward, reload, `g`, `z` and anchors on real pages (`docs/ingame/0.4.0a.md`).
-- [x] Released in 0.4.0a (2026-11-15). Next: the in-game checklist, then item 3 (tabs).
+- [x] Released in 0.4.0a (2026-11-15). Next: the in-game checklist, then 0.7.0a (utility tabs).
 
 **Result (2026-11-15):** Released in 0.4.0a. Built and tested in the container (the suite and fuzz pass). The in-game check is open. The open design questions below are answered by `spec/navigation.md`, `spec/url.md` and `spec/viewer.md`.
 
@@ -109,60 +109,58 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 
 **Size:** S
 
-### 3. Tabs
+### 3. Roadmap to 1.0.0b
 
-**Goal:** Keep several open pages with their state (URL, scroll position) and switch between them.
+Each version below needs its own short spec section and the user's approval before code starts. Sizes: S, M, L as above.
 
-**Main files likely touched:** `lib/html/viewer.lua`, `bin/html.lua`, a new tab state module.
+#### 0.6.0a: Loading while you browse (current release)
 
-**Dependencies:** 2 (navigation).
+**Goal:** Scroll, select and follow links in the part of a page that is already laid out, while the rest loads. See "Interactive loading" below. Built and tested in the container. The in-game check is open.
+
+**Size:** L
+
+#### 0.7.0a: Utility tabs
+
+**Goal:** Three features that let the user work beside one page.
+- Browser tabs: keep several open pages with their state (URL, scroll position, history) and switch between them.
+- Shell tab-out: leave the browser to use the shell, then return to the same state.
+- Download: save a page or a linked file to disk.
+
+**Main files likely touched:** `lib/html/viewer.lua`, `bin/html.lua`, a new tab state module, a new download module that uses the write checks of `M.write_text` (`close` with no return values is a success).
+
+**Dependencies:** navigation (item 2).
 
 **Open design questions:**
 - Memory: does each tab keep its lines, or only its URL and position, and render again on switch?
 - Keys and the status line for tabs.
 - The internet card allows 4 open connections (measured, netprobe v1). Tabs must not hold a handle open while they are idle. Close a handle before the next request, or the 5th request fails with `too many open connections`.
 - A tab that fails to load keeps the session: errors after the frame show a popup and do not end the program (`spec/loading.md` "Errors after the frame").
-
-**Size:** M
-
-### 4. Shell tab-out and download
-
-**Goal:** Leave the viewer for the shell and come back to the same state. Save a page or a linked file to disk.
-
-**Main files likely touched:** `lib/html/viewer.lua` (screen save and restore), `bin/html.lua`, a new download module that uses the write checks of `M.write_text` (`close` with no return values is a success).
-
-**Dependencies:** 3 (tabs).
-
-**Open design questions:**
-- How to keep the state while the shell runs: a background process, or save and resume through sessions (5)?
+- How to keep the state while the shell runs: a background process, or save and resume (0.8.0a)?
 - Download target path, overwrite rule and free-space check (the installer has a free-space check to reuse).
 
-**Size:** M
+**Size:** L
 
-### 5. Session retention
+#### 0.8.0a: Session retention
 
 **Goal:** Save the browsing state and resume it after a restart.
 
 **Main files likely touched:** `bin/html.lua` (`html` with no arguments, `-r`), a new session module, `tests/entry_test.lua`.
 
-**Dependencies:** 4 (shell tab-out and download), 3 (tabs).
+**Dependencies:** 0.7.0a (tabs).
 
 **Agreed design (`SPEC.md` "Later: sessions"):** an 8-digit lowercase hex ID, `html` with no arguments starts a new session, `html -r <id>` resumes that session, `html -r` resumes the last session.
 
-**Open design questions:**
-- The stored content and the storage location (not decided).
-- The file format (for example `serialization`) and what happens with a damaged session file.
-- Cleanup of old sessions on a small disk.
+**Open design questions:** the stored content and the storage location, the file format (for example `serialization`), what happens with a damaged session file, and cleanup of old sessions on a small disk.
 
 **Size:** M
 
-### 6. Images (PNG first)
+#### 0.9.0a: Images
 
-**Goal:** Show images on a Tier 2 or Tier 3 GPU, as close to the source as possible. PNG comes first.
+**Goal:** Show images on a Tier 2 or Tier 3 GPU, as close to the source as possible. PNG comes first. If other image formats have a similar structure, this version can include more media types.
 
 **Main files likely touched:** new modules for PNG decode and drawing, `lib/html/layout.lua` (an image placeholder with a size), `lib/html/viewer.lua`.
 
-**Dependencies:** 1 (remote fetching). A PNG decoder needs inflate: in Lua, or with the Data Card (see the side item below).
+**Dependencies:** remote fetching (item 1). A PNG decoder needs inflate: in Lua, or with the Data Card (future work below).
 
 **Open design questions:**
 - Memory and time budget for the decode in game.
@@ -171,22 +169,31 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 
 **Size:** L
 
-### Side item: Data Card inflate and deflate
+#### 1.0.0b: Official beta release
 
-**Goal:** Use the Data Card, when present, to inflate compressed responses and to save traffic.
-
-**Main files likely touched:** `lib/html/fetch.lua` (from 1), a shim for the data component.
-
-**Dependencies:** 1 (remote fetching). Optional hardware: the program must work without a Data Card.
-
-**Open design questions:** which `Content-Encoding` values the Data Card can inflate, and the limits on input size.
+**Goal:** The first beta. Move `--stats` away from `html` to `tools/probe2.lua` (`spec/probe.md`).
 
 **Size:** S
 
-## Low priority
+#### Future work
 
-- [ ] Move stats collection from html into tools/probe2.lua (spec/probe.md). Low priority.
+- More image formats.
+- CSS support (planned, `AGENTS.md` "future goals").
+- Inflate and deflate with the Data Card (optional hardware: the program must work without it). Open: which `Content-Encoding` values the card can inflate, and the limits on input size.
 
 ## Next recommended step
 
-Run the in-game checklist `docs/ingame/0.5.0a.md` and the coroutine probe (`docs/ingame/coprobe.md`). Then interactive loading step 6. Then start item 3 (tabs).
+Run the in-game checklist `docs/ingame/0.5.0a.md`. Then release 0.6.0a (interactive loading) and run its checklist. Then start 0.7.0a (utility tabs).
+
+### Interactive loading (user request, 2026-11-15, design C1)
+
+**Goal:** While a page loads, the user can scroll, select and follow links in the part that is already laid out.
+
+- [x] The coroutine probe ran in game (`docs/probe/FACTS.md` "Coroutines (coprobe v1)").
+- [x] Spec: `spec/loading.md` "Content during load" and "Keys during load", `spec/navigation.md` "During a load", `spec/viewer.md` "Live source", `spec/guard.md` "Yield hook", `spec/fetch.md`; reasons in `docs/rationale.md` "Interactive loading".
+- [x] The loader is a coroutine that the viewer loop drives. Nothing calls `os.sleep` during a load. The viewer loop is the only reader of events (no key listener).
+- [x] The live page: rows draw as lines complete, the selection list grows, the view never scrolls by itself, the status line shows `<label> - Loading <n> KB of <m> KB`.
+- [x] Phase 1 runs in the coroutine: the old page stays usable while the program connects. The commit shows the new empty live page at once.
+- [x] Enter on a link, `g`, `r` and Forward stop the load and act. Back, Left, Backspace and `z` keep the abort rules.
+- [x] Tests in the container (`docs/testing.md` "Interactive loading").
+- [ ] In-game check: the first screen is usable at a realistic 3 KB/s; keys respond during a render (the 0.1 s slice); no key is lost; the memory guard still works with the slices (GC from the 11 slice yields of a settle); Ctrl+C, `q` and `z` during phase 1 and during the body.

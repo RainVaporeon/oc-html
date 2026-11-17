@@ -4,7 +4,7 @@ A minimalistic and lightweight HTML viewer, intended for OpenComputers running o
 
 ## status
 
-Release 0.5.0a renders local and remote pages (`http://` and `https://`, Internet Card) and follows links with history, reload, a go prompt and abort. Navigation is not yet verified in game. The subfeatures below are planned; see `tasks/todo.md`. Specification: `SPEC.md` (index) and `spec/` (one file per component). Handoff for a new session: `docs/HANDOFF.md`.
+Release 0.5.0a renders local and remote pages (`http://` and `https://`, Internet Card) and follows links with history, reload, a go prompt and abort. Navigation is not yet verified in game. The subfeatures below are planned; see `tasks/todo.md`. Specification: `SPEC.md` (index) and `spec/` (one file per component).
 
 ## scope
 
@@ -12,7 +12,7 @@ Local files can be rendered by: `html ./index.html`
 
 Remote files can be rendered by: `html http(s)://example.com/`
 
-Note: Javascript and CSS is not considered when rendering, this intends to be a minimalistic implementation of a HTML viewer/browser.
+Note: Javascript and CSS is not considered when rendering in alpha phase, this intends to be a minimalistic implementation of a HTML viewer/browser.
 
 ## subagents
 
@@ -23,6 +23,21 @@ Prioritize using Sonnet for code writing and other mechanical work. Opus should 
 This script aims to be capable of rendering basic HTML pages, make web requests and browse the web (internet card needed.)
 
 Navigation of the web is supported as well; in short, this is a best-effort approach to implement `links` in OpenComputers. 
+
+## testing
+
+tests should be created sparingly, only when potentially breaking changes are made or new additions are introduced.
+
+when writing tests, consider:
+- tests cover individual methods and not massive feature functions
+- tests should be made against user-facing methods, not internal methods.
+- tests are made to ensure methods match its behavior.
+
+user-facing methods mean methods users can indirectly modify (for example: scrolling, navigation, button-pressing...)
+
+internal methods mean methods users cannot modify (for example: fetching system status, internal method helpers...)
+
+tests are considered complete if all the above is fulfilled. 
 
 ### subfeatures
 
@@ -50,3 +65,5 @@ The computer is expected to have sufficient storage to store temporary caches as
 In the future, this script aims to be able to display images (requiring a Tier 2 or 3 Graphics Card.)
 
 This is a rather far-fetched goal but has been proven to work; the goal aims to render as closely as possible to the provided images. PNGs would be prioritized over other extensions if the expected workload is too big.
+
+CSS is planned to be supported in the near future.

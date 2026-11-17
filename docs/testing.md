@@ -15,6 +15,30 @@ Moved from `SPEC.md` "Testing Strategy" and from `SPEC.md` "Remote fetching", se
 - Fuzz tests: `tests/fuzz.lua` generates random tag soup and mutates files from the corpus (cuts, duplicated tags, random bytes). Every document must finish with lines or a controlled error. Any other error fails the run and saves the input to `tests/fuzz-failures/`.
 - In-game checks (manual, on a depth-8, a depth-4 and a depth-1 screen): the real-world pages, scrolling, quit prompt, resume, the low-memory error and the screen restore after an error.
 
+## Interactive loading (from b5b061c and deb27c7)
+
+Spec: `spec/loading.md` "Content during load" and "Keys during load", `spec/navigation.md` "During a load", `spec/viewer.md` "Live source". The loader is a coroutine, and the viewer loop is the only reader of events during a load. No test uses a key listener.
+
+- `tests/run.lua` takes an optional file filter and an optional test name filter: `lua5.3 tests/run.lua FILE [NAME]`. Both are plain substrings. Use them while a change is in progress. The full suite still runs with no argument.
+- `tests/viewer_test.lua` "A page that loads" (the live source). The test is the loader: each call of `drive` runs one step that grows the page, and the test feeds one event for each pass of the loop.
+  - Rows draw as lines complete, inside the window.
+  - Links join the selection when their start line is complete. The last link span grows while its line grows.
+  - End and PgDn stop at the last complete screen. The view never scrolls by itself.
+  - The status row shows `<label> - Loading <n> KB of <m> KB`. A title replaces the name once it is known. A page with no title keeps the name.
+  - The pull timeout follows the loader answer: a `wait` uses its seconds, a `slice` uses 0.
+  - A `commit` that comes while the quit prompt is open waits until the prompt closes. The loader goes on behind the prompt.
+  - Phase 1: the old page stays on screen and scrolls, and the status row shows the phase.
+  - z, Z, Left, NumPad Left (char 0) and Backspace give `abort` while a load runs. With no load they are Back or do nothing. Quit prompt keys: `y` or Enter quits, other keys cancel.
+- `tests/entry_test.lua` "Interactive loading" rows. The harness serves a slow page from the fake card (pieces of 40 bytes, a wait after each), and `ticks` put events into the queue at chosen polls.
+  - Scroll, Tab and Up and Down on the loaded part, and a selection that moves while the page grows.
+  - Enter on a loaded link stops the load and follows it. Back after that fetches the page that was left, because a page left before it finished is not cached.
+  - `r` during the load stops it and loads the page again.
+  - `g` keeps the load going while the prompt is open. `g` with a text stops the load and goes there.
+  - Right during connect and during the body does nothing, and the load finishes (Forward at the last history entry).
+  - A memory stop during an interactive load gives the broken page and the popup.
+  - Nothing calls `os.sleep` during a load, and every key that the user pressed is pulled by the loop (no key is lost). The first screen draws when the lines fill it. A page with fewer lines than rows draws once, at the end.
+- Not covered by the container: the real reaction time of a key during a render, and the memory guard with the slices. These are in-game checks (`docs/ingame/0.6.0a.md`).
+
 ## Remote fetching (from "Remote fetching", section "Tests")
 
 - `tests/shim/internet.lua`: a fake card. A script describes each request: connect polls before success or an error, `response()` polls, code, message and headers, the list of body chunks with `""` gaps, a mid-stream error, a never-ending body, and a raised error from `request`. The fake records `close()` calls and the open count, and enforces a connection limit.

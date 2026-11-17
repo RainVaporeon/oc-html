@@ -21,15 +21,16 @@ In scope:
 - Text rendering with block structure, emphasis and visible links.
 - Scrolling viewer with a status line, a loading screen and a quit confirmation.
 - Remote fetching (`spec/fetch.md`, roadmap item 1, approved 2026-11-14).
-- Following links and navigation (link selection, back and forward, go to, reload, abort): specified in `spec/navigation.md`, awaiting approval (roadmap items 2 and 2a).
-- Tabs, shell tab-out, downloads, sessions (save and resume). Planned, see `tasks/todo.md`.
-- Images. Planned, see `tasks/todo.md`.
-- Data Card inflate and deflate. Planned, see `tasks/todo.md`.
+- Following links and navigation (link selection, back and forward, go to, reload, abort): specified in `spec/navigation.md`, approved on 2026-11-15 and done (roadmap items 2 and 2a).
+- Tabs, shell tab-out, downloads, sessions (save and resume). Planned, see "Roadmap" below.
+- Images. Planned, see "Roadmap" below.
+- Data Card inflate and deflate. Future work, see "Roadmap" below.
 - Correct layout of tables, lists, forms, `<input>` and `<button>`. These render as plain text and must not break anything.
 - Visible cursor to let the user see what is being selected or being input into.
 
 Out of scope:
-- CSS, JS.
+- JS.
+- CSS is future work (planned, `AGENTS.md` "future goals"). It is not in scope until the user moves it in.
 
 ## Tech stack
 
@@ -101,7 +102,7 @@ Tests, tools, docs, tasks and releases: `docs/structure.md`.
   - Add a failing input to the tests when a bug is found.
 - Ask first:
   - Add any library outside OpenOS.
-  - Move an item from "Out of scope" (CSS, JS) into scope.
+  - Move an item from "Out of scope" (JS) or a future work item (CSS) into scope.
 - Never:
   - Assume input is valid HTML or valid UTF-8.
   - Read the whole file into memory before checking its size.
@@ -110,6 +111,17 @@ Tests, tools, docs, tasks and releases: `docs/structure.md`.
   - Run test code on the host outside the container.
   - Remove a sandbox flag or widen the Lua environment without asking.
   - Change or delete a published release folder. (One exception: release.tar.gz was added to 0.0.1a after publishing, at the user's request.)
+
+## Roadmap
+
+Details and tasks: `tasks/todo.md`.
+
+- 0.6.0a: Loading while you browse (`spec/loading.md`). Current release when it is built.
+- 0.7.0a: Utility tabs: browser tabs (open tabs and their state), shell tab-out (leave the browser for the shell, then return) and download (save a page or a file).
+- 0.8.0a: Session retention: save the browsing state and resume it after a restart ("Later: sessions").
+- 0.9.0a: Images. PNG first. If other image formats have a similar structure, this version can include more media types.
+- 1.0.0b: Official beta release. `--stats` moves to `tools/probe2.lua`.
+- Future work: more image formats, CSS support, inflate and deflate with the Data Card.
 
 ## Later: sessions
 

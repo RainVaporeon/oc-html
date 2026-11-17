@@ -104,9 +104,9 @@ Commit. When the stop check passes, the program commits:
 - Enter on a visible link, `g` (once a text is submitted), Forward and `r` first stop the load: the loop closes the handle, ends the coroutine and aborts the cache writer. Then the action goes to the session loop as if no load had run. A page left before it finished is not cached, so Back to it fetches.
   - The page that was left after the commit keeps its history entry (the commit appended it), with the `top` and `sel` of the moment. The loaded lines, links and base serve as the page for the action, so a link of the loaded part resolves against the base of that page.
   - A stop before the commit leaves the old page as it was. A Back or Forward load that was in phase 1 moves the history index back, as an abort does.
-  - Forward with no page on screen and no commit yet (the first load) does nothing and the load goes on.
+  - Forward at the last history entry does nothing (`## History`), so it does not stop the load. This includes the first load of the session.
 - Enter on a link that is not complete yet is not possible: a link joins the selection when its start line is complete.
-- An action that stops a load behaves as in the rows above for each kind: Back, Left, Backspace and `z` use the rules of `## Abort`.
+- Back, Left, Backspace and `z` use the rules of `## Abort`. Enter on a link, `g`, `r` and Forward (with a later entry) leave the page: the loaded part is the page for the action, and the history entry that the commit appended stays.
 - A memory stop during the render (`guard.tick` raises inside the coroutine) ends the coroutine with an error. The session loop makes the broken page and the popup, as for any failure after the commit.
 - At most one connection is open at any time. Each phase 1 failure closes its handle. Each end of a load closes its handle. The card allows 4 open connections (`spec/fetch.md` "Internet card API"), so a leaked handle would break later loads.
 
