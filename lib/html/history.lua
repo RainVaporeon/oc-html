@@ -15,6 +15,9 @@
 --                        the previous entry becomes current and is returned,
 --                        or nil when no entry is left
 --   h.size()             number of entries
+--   h.export()           { entries = <copy>, pos = <int> } (plain data)
+--   history.import(data, cap)   new history from an export; bad data gives an
+--                        empty history, entries over cap are dropped (oldest first)
 
 local M = {}
 
@@ -100,6 +103,39 @@ function M.new(cap)
     return #entries
   end
 
+  function h.export()
+    local out = {}
+    for i, entry in ipairs(entries) do
+      out[i] = copy(entry)
+    end
+    return { entries = out, pos = pos }
+  end
+
+  -- Used by M.import only.
+  function h.load(list, at)
+    entries = {}
+    for i, entry in ipairs(list) do
+      entries[i] = copy(entry)
+    end
+    while #entries > cap do
+      table.remove(entries, 1)
+      at = at - 1
+    end
+    if #entries == 0 then
+      pos = 0
+    else
+      pos = math.max(1, math.min(at, #entries))
+    end
+  end
+
+  return h
+end
+
+function M.import(data, cap)
+  local h = M.new(cap)
+  if type(data) == "table" and type(data.entries) == "table" then
+    h.load(data.entries, math.tointeger(data.pos) or #data.entries)
+  end
   return h
 end
 

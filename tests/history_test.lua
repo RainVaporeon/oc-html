@@ -154,4 +154,21 @@ T["two instances do not share state"] = function()
   t.eq(a.size(), 2, "a keeps its size")
 end
 
+T["export and import round trip"] = function()
+  local h = history.new()
+  h.push("a")
+  h.push("b")
+  h.set_pos(5, 2)
+  h.back()
+  local data = h.export()
+  data.entries[1].top = 99
+  t.eq(h.current(), e("a", 1), "export is a copy")
+  local r = history.import(h.export())
+  t.eq(r.size(), 2, "size")
+  t.eq(r.current(), e("a", 1), "position")
+  t.eq(r.forward(), e("b", 5, 2), "entry")
+  t.eq(history.import(nil).size(), 0, "bad data gives an empty history")
+  t.eq(history.import(h.export(), 1).size(), 1, "cap drops entries")
+end
+
 return T
