@@ -113,6 +113,44 @@ local function header(headers, name)
   return nil
 end
 
+-- Reads Content-Disposition. Returns the disposition type (lower case) and
+-- the value of the filename parameter (quoted or not), or nil. The
+-- filename* parameter is ignored.
+local function disposition(value)
+  if not value then
+    return nil, nil
+  end
+  local kind = lower(trim(value:match("^[^;]*")))
+  local name
+  local rest = value:match("^[^;]*;(.*)$")
+  local pos = 1
+  while rest and pos <= #rest do
+    local key, after = rest:match("^%s*([^=;%s]+)%s*=%s*()", pos)
+    if not key then
+      local nxt = find(rest, ";", pos, true)
+      if not nxt then
+        break
+      end
+      pos = nxt + 1
+    else
+      local val
+      if sub(rest, after, after) == '"' then
+        val, pos = rest:match('^"([^"]*)"?()', after)
+        local nxt = find(rest, ";", pos, true)
+        pos = nxt and nxt + 1 or #rest + 1
+      else
+        val = rest:match("^[^;]*", after)
+        pos = after + #val + 1
+        val = trim(val)
+      end
+      if lower(key) == "filename" and not name then
+        name = val
+      end
+    end
+  end
+  return kind, name
+end
+
 local latin_map
 
 -- Converts Latin-1 or Windows-1252 text to UTF-8. Bytes 0x80 to 0x9F use the
@@ -246,13 +284,19 @@ local function make_response(h, u, code, message, headers, links, info,
     return nil, "html: compressed response not supported: "
       .. why_text(encoding)
   end
-  if not is_error and not accepted(media) then
+  local kind, filename = disposition(header(headers, "content-disposition"))
+  local is_file = false
+  if not is_error and links.file_ok
+      and (not accepted(media) or kind == "attachment") then
+    is_file = true
+  elseif not is_error and not links.raw and not accepted(media) then
     close()
     return nil, "html: not an HTML page: " .. why_text(media)
   end
   local charset = ctype and ctype:match(";%s*[Cc][Hh][Aa][Rr][Ss][Ee][Tt]"
     .. "%s*=%s*\"?([^;\"%s]+)")
   local convert = charset and LATIN_CHARSETS[lower(charset)]
+    and not links.raw and not is_file
   local length = header(headers, "content-length")
   local resp = {
     status = code,
@@ -263,6 +307,8 @@ local function make_response(h, u, code, message, headers, links, info,
     final_url = u.url,
     redirects = info.redirects,
     is_error = is_error,
+    is_file = is_file or nil,
+    filename = is_file and filename or nil,
     bytes = 0,
     close = close,
   }
@@ -272,12 +318,14 @@ local function make_response(h, u, code, message, headers, links, info,
     ended = true
     info.ended = clock()
   end
-  local last = clock()
+  -- A kept file response starts its read timer at the first read.
+  local last = not is_file and clock() or nil
   -- Returns a chunk, nil at the end, or nil and a controlled message.
   local function body_read()
     if ended or closed then
       return nil
     end
+    last = last or clock()
     while true do
       local ok, s, why = pcall(h.read, CHUNK)
       if not ok then
@@ -362,6 +410,8 @@ end
 -- progress(phase, u): "connect" (u is the parsed URL), "redirect" (u is the
 -- parsed target), "response" (the connection is up) and "wait" (a wait loop
 -- is about to sleep). It does not stop the fetch: use interrupted() for that.
+-- Options in links: raw (accept every type, no Latin-1 step) and file_ok
+-- (a file response comes back open with is_file and filename, unread).
 -- info is filled as the request goes: url, redirects, status, started and
 -- ended (clock values).
 -- Returns a response (status, message, is_error, length, content_type,

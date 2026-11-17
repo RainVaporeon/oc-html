@@ -944,4 +944,55 @@ t.cases(T, "progress_phases", progress_rows, function(input)
   return seen
 end)
 
+-- raw and file_ok options (spec/fetch.md "HTTP status and content type") ------
+
+-- Opens url with extra link fields. Returns the response, the message and
+-- the controller.
+local function open_with(script, fields)
+  local card, ctl = internet.new({ default = script })
+  local l = links(card)
+  for k, v in pairs(fields) do
+    l[k] = v
+  end
+  local resp, why = fetch.open(URL, l, {})
+  return resp, why, ctl
+end
+
+function T.raw_accepts_png_without_latin_step()
+  local body = "éPNG"
+  local resp, _, ctl = open_with({ headers = { ["Content-Type"] =
+    "image/png; charset=iso-8859-1" }, body = { body } }, { raw = true })
+  assert(resp, "open failed")
+  t.eq(read_all(resp), body, "bytes unchanged")
+  finish(resp, ctl)
+  local resp2, why = open_with({ headers = { ["Content-Type"] = "image/png" },
+    body = { body } }, {})
+  t.eq(resp2, nil, "without raw")
+  t.eq(why, "html: not an HTML page: image/png", "message")
+end
+
+function T.file_ok_keeps_a_file_response_open()
+  local resp, _, ctl = open_with({ headers = { ["Content-Type"] =
+    "application/zip", ["Content-Disposition"] =
+    "Attachment; filename=\"a b.zip\"; filename*=UTF-8''x.zip" },
+    body = { "PK" } }, { file_ok = true })
+  assert(resp, "open failed")
+  t.eq(resp.is_file, true, "is_file")
+  t.eq(resp.filename, "a b.zip", "filename")
+  t.eq(ctl.handles[1].reads, 0, "no body read")
+  t.eq(ctl.handles[1].closed, 0, "still open")
+  t.eq(read_all(resp), "PK", "bytes")
+  finish(resp, ctl)
+  local page_resp, _, ctl2 = open_with({ headers = { ["Content-Type"] =
+    "text/html", ["Content-Disposition"] = "attachment; filename=x.html" },
+    body = { "<p>x</p>" } }, { file_ok = true })
+  t.eq(page_resp.is_file, true, "attachment of an HTML type")
+  t.eq(page_resp.filename, "x.html", "unquoted name")
+  finish(page_resp, ctl2)
+  local plain, _, ctl3 = open_with({ headers = { ["Content-Type"] =
+    "text/html" }, body = { "<p>x</p>" } }, { file_ok = true })
+  t.eq(plain.is_file, nil, "a page is no file")
+  finish(plain, ctl3)
+end
+
 return T
