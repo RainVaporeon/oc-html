@@ -14,7 +14,7 @@ M.scheme, M.parse_url, M.looks_like_host = urlmod.scheme, urlmod.parse_url,
 -- Request and body ----------------------------------------------------------
 
 -- The release version. It goes into the User-Agent header.
-M.VERSION = "0.6.0a"
+M.VERSION = "0.7.0a"
 
 -- The same chunk size as a file read.
 local CHUNK = 4096
