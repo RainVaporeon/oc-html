@@ -51,12 +51,12 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 - [x] The user approves the spec section and answers Q5 and Q6 (2026-11-14).
 - [x] Write `tools/netprobe.lua` (`docs/netprobe-plan.md` "Probe script plan"; tests in `tests/netprobe_test.lua`, in-game steps in `docs/ingame/netprobe.md`) (2026-11-15, done).
 - [x] The loading screen: the TUI opens at once, with phases and a byte count, and an invalid URL fails before it (`spec/loading.md`, 2026-11-15, released in 0.3.0a).
-- [ ] Run the in-game checklist `docs/ingame/0.3.0a.md` (the 0.4.0a checklist covers the same paths).
+- [x] Run the in-game checklist `docs/ingame/0.3.0a.md` (the 0.4.0a checklist covers the same paths) (2026-11-17, the user states it is done).
 - [x] Run `tools/netprobe.lua` in game and copy the report to `datacollection/netprobe.txt`. Record N1 to N15 in `docs/probe/FACTS.md` (2026-11-15, netprobe v1: the measured values are in `docs/probe/FACTS.md` "Internet card (netprobe v1)").
 - [x] Update the spec with the measured values (redirects, error statuses, limit, API shape). The error status is mapped from the connect failure, and errors after the frame keep the session (`spec/fetch.md`, `spec/loading.md`).
-- [ ] A second netprobe run after the push: N4 to N7 (large reads, memory, 1 MB page), N8, N12 under the default address config, N13 with `--leak`, and an https to https redirect. The probe now records `response()` after a connect error and the value of `n3.before_connect`.
+- [x] A second netprobe run after the push (2026-11-17, `datacollection/netprobe-2.txt`; it confirms the first run and N4 to N7, N13 and the https to https redirect are still not measured, see `docs/probe/FACTS.md` "Internet card (netprobe run 2)"): N4 to N7 (large reads, memory, 1 MB page), N8, N12 under the default address config, N13 with `--leak`, and an https to https redirect. The probe now records `response()` after a connect error and the value of `n3.before_connect`.
 - [x] Implement `fetch.lua`, the fake card and the tests (2026-11-14, committed in 010a24e, released in 0.2.0a). `spec/fetch.md` "Implementation notes" lists the choices. The measured values can still change the timeouts, the chunk size and the wait order.
-- [ ] In game: fetch the three real pages (`tests/real/`). Open.
+- [x] In game: fetch the three real pages (`tests/real/`) (2026-11-17, the user states it is done).
 - [x] In game: the 1 MB page while you scroll it (2026-11-17, `docs/ingame/0.6.0a.md` check 5.1).
 
 **Size:** L
@@ -74,7 +74,7 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 - [x] S4: viewer keys, cursor, reload, go prompt and the `?` popup.
 - [x] S5: refactor `bin/html.lua`.
 - [x] S6: the navigation loop with reload, back, forward, abort and anchors.
-- [ ] In game: follow links, back, forward, reload, `g`, `z` and anchors on real pages (`docs/ingame/0.4.0a.md`).
+- [x] In game: follow links, back, forward, reload, `g`, `z` and anchors on real pages (`docs/ingame/0.4.0a.md`) (2026-11-17, the user states it is done).
 - [x] Released in 0.4.0a (2026-11-15). Next: the in-game checklist, then 0.7.0a (utility tabs).
 
 **Result (2026-11-15):** Released in 0.4.0a. Built and tested in the container (the suite and fuzz pass). The in-game check is open. The open design questions below are answered by `spec/navigation.md`, `spec/url.md` and `spec/viewer.md`.
@@ -116,7 +116,7 @@ Each version below needs its own short spec section and the user's approval befo
 
 #### 0.6.0a: Loading while you browse (current release, built 2026-11-17)
 
-**Goal:** Scroll, select and follow links in the part of a page that is already laid out, while the rest loads. See "Interactive loading" below. Built and tested in the container. The in-game check ran on 2026-11-17: all expected results match (`docs/ingame/0.6.0a.md`; the measured values are in `docs/probe/FACTS.md` "Interactive loading (0.6.0a in game)"). One note is open: Esc at the go prompt (see "Next recommended step").
+**Goal:** Scroll, select and follow links in the part of a page that is already laid out, while the rest loads. See "Interactive loading" below. Built and tested in the container. The in-game check ran on 2026-11-17: all expected results match (`docs/ingame/0.6.0a.md`; the measured values are in `docs/probe/FACTS.md` "Interactive loading (0.6.0a in game)"). Esc at the go prompt: Minecraft catches Esc in game and removes focus from the screen, so a blank Enter is the in-game cancel (decided 2026-11-17; the Esc code stays).
 
 **Size:** L
 
@@ -185,17 +185,9 @@ Each version below needs its own short spec section and the user's approval befo
 
 ## Next recommended step
 
-The in-game check of 0.6.0a is done (2026-11-17). Its checks cover part of the older checklists. Remaining in-game checks, first:
+Write the 0.7.0a spec (utility tabs: browser tabs, shell tab-out, download). **In progress** (2026-11-17). It needs the user's approval before any code.
 
-1. Esc at the go prompt (`docs/ingame/0.6.0a.md` check 3.4). The user wrote: "`Esc` exits the screen, instead a blank input is used to substitute exit, which works." The code and `spec/navigation.md` say Esc cancels the prompt (`lib/html/viewer.lua` `go_prompt`, tested). It is not clear what "exits the screen" means. Ask the user: did the whole program quit, or only the prompt close? Run it again and write down what the screen shows after Esc.
-2. 0.5.0a checks that 0.6.0a does not cover: 1.2 (upgrade over 0.4.0a), 2.1 to 2.3 and 2.5 (Tab wrap and Up and Down on `c.html`, a page with no link), 3.1 and 3.3 (`z` and Left during a load, with reaction times), 4.3 (no history entry after an abort), 5.4 (`r` on a finished page fetches again), 5.5 (Forward after Back shows without a download), 5.6 (cache limits), 6.1 (the `?:keys` hint on 80 columns).
-3. 0.4.0a: anchors (`#fragment` links). The other 0.4.0a paths are covered (see below). The 0.3.0a checklist is not covered: its loading screen and error popup steps are not compared yet.
-4. The three real pages fetched over the network (`tests/real/`).
-5. The second netprobe run (N4 to N7, N8, N12, N13 with `--leak`, https to https redirect).
-
-Covered by 0.6.0a (2026-11-17), 0.5.0a check -> 0.6.0a check: 1.1 -> 1.1; 2.4 -> 2.6; 3.2 -> 3.2; 3.4 -> 3.5; 3.5 -> 3.7; 3.6 -> 2.8 and 3.2; 4.1 -> 5.3 and 2.9; 4.2 -> 5.3; 5.1 -> 4.2; 5.2 and 5.3 -> 4.3; 7 (coroutine probe) ran on 2026-11-15 (`docs/probe/FACTS.md`). 0.4.0a: Enter on a link -> 3.1; Back -> 3.2; reload -> 3.3; `g` -> 3.4; Forward -> 3.6; `z` -> 5.3.
-
-After these, start 0.7.0a (utility tabs: browser tabs, shell tab-out, download). It needs its spec section and the user's approval first. The 0.7.0a spec does not need the remaining checks, so it can start in parallel.
+All in-game checks are done (2026-11-17; the user states that the 13 open 0.5.0a checks, the 0.4.0a `#fragment` check, the 0.3.0a checklist and the three real pages are done). The second netprobe run is done. Esc at the go prompt is closed: in game Minecraft catches Esc and removes focus from the screen, and a blank Enter cancels the prompt.
 
 ### Interactive loading (user request, 2026-11-15, design C1)
 

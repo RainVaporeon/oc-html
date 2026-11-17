@@ -120,7 +120,7 @@ Commit. When the stop check passes, the program commits:
 
 - `g` opens the go prompt on the status row: `Go to: <text>`. The text starts empty.
 - Printable ASCII 0x20 (space) to 0x7E appends the character, so a local path may hold spaces. Backspace deletes the last character. A clipboard event appends its text.
-- Enter submits. An empty Enter cancels. Esc cancels. Esc is an input here, not a popup.
+- Enter submits. An empty Enter cancels. This is the way to cancel in game. Esc also cancels in the code (an input here, not a popup), but Minecraft catches Esc in game and removes focus from the screen, so the program does not get it.
 - Ctrl+C exits at once.
 - The text uses the CLI classification: local path or URL, or a guessed URL. A bad entry (an invalid URL, an unsupported scheme) gives a popup and the session stays on the current page.
 - The input cursor is a reverse-video cell at the end of the text.

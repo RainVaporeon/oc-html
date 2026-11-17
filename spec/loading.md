@@ -46,7 +46,7 @@ Source: `bin/html.lua`, `lib/html/viewer.lua`, `lib/html/guard.lua`. Index: `SPE
   - Keys are handled at once, from the events that the loop pulls. Only the loop reads events. There is no key listener (`deps.on_key`) and no intent queue: a second source would handle a key twice. The "interrupted" listener (`deps.on_interrupt`) stays: it only sets the stop flag.
 - Scroll keys, Tab, Shift+Tab, Up and Down, and the selection work on the loaded part (`spec/viewer.md`).
 - Enter on a visible link, `g` (after the user confirms the text), Forward and `r` stop the load first: the loop closes the handle, ends the coroutine and aborts the cache writer. Then the action goes to the session loop as when no load runs (`spec/navigation.md` "During a load"). The page that was left is not cached, so Back to it fetches. Forward at the last history entry does nothing, so it does not stop the load.
-  - `g` opens the prompt, and the load goes on while the prompt is open. The load stops when the user submits a text. Esc or an empty Enter cancels the prompt and the load goes on.
+  - `g` opens the prompt, and the load goes on while the prompt is open. The load stops when the user submits a text. An empty Enter cancels the prompt (Esc also cancels, but Minecraft catches Esc in game) and the load goes on.
 - `z`, `Z`, Backspace and Left (also NumPad Left with char 0) keep the abort meaning (`spec/navigation.md` "Abort"): the load stops and the program goes back as before.
 - `q` shows the quit prompt (`spec/viewer.md` "Quit") and loading goes on while it shows. `y`, `Y` or Enter confirms: the load stops and the program exits with code 0. Any other key cancels.
 - Ctrl+C during a load exits at once: `html: interrupted`, exit code 130. The loop stops the load first.

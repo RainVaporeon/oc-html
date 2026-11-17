@@ -329,6 +329,17 @@ Measured in game with `tools/netprobe.lua` v1: one run, a GT:NH server, user age
 
 Not measured yet: large reads (N4 to N6), the 1 MB page (N7), N8, N12 under the default address config, N13 with `--leak`, and an https to https redirect.
 
+## Internet card (netprobe run 2)
+
+Second run, 2026-11-17: `datacollection/netprobe-2.txt` (args `--out netprobe-2.txt`, `leak=false`). It confirms run 1: the same keys, the same results, only timings and ids differ. New or changed facts:
+
+- Server config: still permissive (`fail.blocked_localhost` gives 200), so N12 under the default address config is still not measured.
+- N4 to N7: not measured. All four fetches of `raw.githubusercontent.com/.../tests/pages/large.html` fail with `connect.error=<the URL>` (the 404 form), as in run 1. The file is probably not served from `main` at that URL (inferred). Fix the URL or push the file, then rerun.
+- N13 (`--leak`) and an https to https redirect: not run. `probe.leak=false`, and the key set has no https to https entry.
+- Total memory is 67108864 here (2097152 in run 1): the machine had more RAM, so memory values differ between runs and are not comparable.
+- `wikipedia.com` answered with `transfer-encoding: chunked` and no `content-length` (run 1: `content-length: 457252`). The first reads are 26 and 2048 bytes, with one empty read, not a single 2048-byte read. A response may be chunked, so code must not need `Content-Length`.
+- `finishConnect()` polls vary by 1 between runs (0 or 1 poll at 50 ms), so timing values are noise at the tick level.
+
 ## Coroutines (coprobe v1)
 
 Measured in game with `tools/coprobe.lua` v1 on 2026-11-15: Lua 5.3, 2 MiB, one run. Raw data: `datacollection/coprobe.txt`. The probe checks whether a user coroutine can do the load work while the main loop owns the events.
