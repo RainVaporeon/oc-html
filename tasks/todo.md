@@ -3,7 +3,7 @@
 Spec: `SPEC.md` (index) and `spec/` (one file per component). Finished MVP plan and tasks: `tasks/archive/mvp-plan.md`, `tasks/archive/mvp-todo.md`.
 Test command for every task: `pwsh tests/docker/test.ps1`. Fuzz run: `pwsh tests/docker/test.ps1 fuzz 1000`.
 
-Current release: 0.5.0a (local and remote pages, loading screen, link following and navigation, key handling during a load, disk cache). The features below come from `AGENTS.md`. `SPEC.md` "Scope" lists them as in scope. Each feature needs a short spec section and the user's approval before code starts (`SPEC.md` "Boundaries": the ask-first rule for moving an item into scope covers only CSS and JS, so these features need no ask for scope, but each still needs its spec section and approval).
+Current release: 0.6.0a (local and remote pages, loading screen, link following and navigation, interactive loading, disk cache). The features below come from `AGENTS.md`. `SPEC.md` "Scope" lists them as in scope. Each feature needs a short spec section and the user's approval before code starts (`SPEC.md` "Boundaries": the ask-first rule for moving an item into scope covers only CSS and JS, so these features need no ask for scope, but each still needs its spec section and approval).
 
 Sizes: S = one module and its tests, M = two or three modules, L = a new subsystem with in-game measurements.
 
@@ -113,7 +113,7 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 
 Each version below needs its own short spec section and the user's approval before code starts. Sizes: S, M, L as above.
 
-#### 0.6.0a: Loading while you browse (current release)
+#### 0.6.0a: Loading while you browse (current release, built 2026-11-17)
 
 **Goal:** Scroll, select and follow links in the part of a page that is already laid out, while the rest loads. See "Interactive loading" below. Built and tested in the container. The in-game check is open.
 
@@ -183,7 +183,7 @@ Each version below needs its own short spec section and the user's approval befo
 
 ## Next recommended step
 
-Run the in-game checklist `docs/ingame/0.5.0a.md`. Then release 0.6.0a (interactive loading) and run its checklist. Then start 0.7.0a (utility tabs).
+Run the in-game checklist `docs/ingame/0.6.0a.md` (interactive loading; the 0.5.0a checklist is still open too). Then start 0.7.0a (utility tabs).
 
 ### Interactive loading (user request, 2026-11-15, design C1)
 
@@ -196,4 +196,4 @@ Run the in-game checklist `docs/ingame/0.5.0a.md`. Then release 0.6.0a (interact
 - [x] Phase 1 runs in the coroutine: the old page stays usable while the program connects. The commit shows the new empty live page at once.
 - [x] Enter on a link, `g`, `r` and Forward stop the load and act. Back, Left, Backspace and `z` keep the abort rules.
 - [x] Tests in the container (`docs/testing.md` "Interactive loading").
-- [ ] In-game check: the first screen is usable at a realistic 3 KB/s; keys respond during a render (the 0.1 s slice); no key is lost; the memory guard still works with the slices (GC from the 11 slice yields of a settle); Ctrl+C, `q` and `z` during phase 1 and during the body.
+- [ ] In-game check (`docs/ingame/0.6.0a.md`): the first screen is usable at a realistic 3 KB/s; keys respond during a render (the 0.1 s slice); no key is lost; the memory guard still works with the slices (GC from the 11 slice yields of a settle); Ctrl+C, `q` and `z` during phase 1 and during the body.

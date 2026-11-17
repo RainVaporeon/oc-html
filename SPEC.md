@@ -2,7 +2,7 @@
 
 Source of intent: `docs/intent/mvp.md`.
 
-Status: release 0.5.0a renders local files, fetches remote pages and follows links. The MVP is finished (release 0.1.0a, fixed in 0.1.1a); its plan is in `tasks/archive/`. The roadmap is in `tasks/todo.md`.
+Status: release 0.6.0a renders local files, fetches remote pages, follows links and lets you browse while a page loads. The next step is the in-game checklist `docs/ingame/0.6.0a.md`, then 0.7.0a ("Roadmap"). The MVP is finished (release 0.1.0a, fixed in 0.1.1a); its plan is in `tasks/archive/`. The roadmap is in `tasks/todo.md`.
 
 This file is the index. The rules of each component are in `spec/` (table below). Rationale, measurements, test coverage, the network probe plan, the project tree and examples are in `docs/` (list in `docs/HANDOFF.md` "Moved spec content").
 
@@ -116,7 +116,7 @@ Tests, tools, docs, tasks and releases: `docs/structure.md`.
 
 Details and tasks: `tasks/todo.md`.
 
-- 0.6.0a: Loading while you browse (`spec/loading.md`). Current release when it is built.
+- 0.6.0a: Loading while you browse (`spec/loading.md`). Current release. Next: its in-game checklist.
 - 0.7.0a: Utility tabs: browser tabs (open tabs and their state), shell tab-out (leave the browser for the shell, then return) and download (save a page or a file).
 - 0.8.0a: Session retention: save the browsing state and resume it after a restart ("Later: sessions").
 - 0.9.0a: Images. PNG first. If other image formats have a similar structure, this version can include more media types.
