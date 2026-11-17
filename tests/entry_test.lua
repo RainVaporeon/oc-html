@@ -2991,6 +2991,7 @@ local KEY_BANG = { "key_down", "kbd", 33, 2, "player" }
 local function shell_deps(calls, shell, extra)
   local deps = {
     out = function(line) calls[#calls + 1] = "out: " .. line end,
+    home_cursor = function() calls[#calls + 1] = "home" end,
     setenv = function(name, value)
       calls[#calls + 1] = "setenv " .. name .. "=" .. tostring(value)
     end,
@@ -3015,7 +3016,7 @@ T["shell: ! closes the screen, runs the shell and the same page returns"] = func
       return nil
     end }),
     show = events(KEY_TAB, function(rec) rec_ref = rec end, KEY_BANG, QUIT) })
-  t.eq(calls, { "out: html: shell started. Type exit to return to the browser.",
+  t.eq(calls, { "home", "out: html: shell started. Type exit to return to the browser.",
     "setenv HTML_TABOUT=1", "shell", "setenv HTML_TABOUT=nil", "pull 0" },
     "the sequence")
   t.eq(blank, true, "the screen was closed during the shell")

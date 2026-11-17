@@ -12,7 +12,7 @@ Source: `lib/html/viewer.lua`. Index: `SPEC.md`. The startup and the loading scr
 - Status texts: `<scheme>: links are not supported` (`spec/url.md` "Link resolution") and `[aborted] <target>` (`spec/navigation.md` "Abort"). The first one stays until the next key.
 - During a load the left part shows the phase or `<label> - Loading <n> KB of <m> KB` (exact texts and the rate limit: `spec/loading.md` "Status line during load"). The percent and the hint on the right stay. The percent counts the loaded part. A visible selected link still shows `-> <target>`.
 - Tab prefix. With 2 or more tabs open, the left part starts with `[<i>/<n>] ` (`spec/tabs.md` "Behavior"). It also comes before `-> <url>`, the loading texts, `[error]` and `[aborted]`. A notice replaces the whole left part, including the prefix. `TITLE_MIN` counts the prefix. The viewer gets the prefix as `opts.tab_label`.
-- Notices of 0.7.0a. They show in the left part until the next key, like `<scheme>: links are not supported`. The viewer gets one as `opts.notice`: `tab limit: <n> tabs`, `not enough memory for a new tab`, `last tab: q quits`, `Ctrl+S: only web files can be downloaded`, `wait for the load, or press z`, `download running: z stops it`, `Saved <path> (<n> KB)` and `download stopped` (`spec/tabs.md`, `spec/download.md`).
+- Notices of 0.7.0a. They show in the left part until the next key, like `<scheme>: links are not supported`. The viewer gets one as `opts.notice`: `tab limit: <n> tabs`, `not enough memory for a new tab`, `no more tabs, use 'q' to quit`, `save: only web files can be downloaded`, `wait for the load, or press z`, `download running: z stops it`, `Saved <path> (<n> KB)` and `download stopped` (`spec/tabs.md`, `spec/download.md`).
 - During a download the left part shows `Downloading <name> - <n> KB of <m> KB` (`spec/download.md` "Progress, keys and end").
 - A long title is cut so the status line fits the screen width. A wide character never goes past the right edge.
 - Control bytes in the title show as spaces.
@@ -103,7 +103,7 @@ q: quit, ?: this list
 ## Confirm prompt
 
 - ` Overwrite <name>? (y/n)` (the save prompt, `spec/download.md` "Prompt") answers `y` or `Y` only. Enter and every other key cancel. This differs from the quit prompt, where Enter confirms. Reason: a held Enter must not overwrite a file.
-- ` Close tab? (y/n)` (the `c` key, `spec/tabs.md` "Behavior") follows the rules of the quit prompt ("Quit"): `y`, `Y` or Enter confirms, any other key cancels, a `key_up` does not answer, and Ctrl+C exits at once. A "no" does nothing. The load goes on while it shows. The prompt does not show on the last tab (the notice `last tab: q quits` shows) and not during a download (the notice `download running: z stops it` shows). The viewer returns the action `tab_close` only after the user confirms.
+- ` Close tab? (y/n)` (the `c` key, `spec/tabs.md` "Behavior") follows the rules of the quit prompt ("Quit"): `y`, `Y` or Enter confirms, any other key cancels, a `key_up` does not answer, and Ctrl+C exits at once. A "no" does nothing. The load goes on while it shows. The prompt does not show on the last tab (the notice `no more tabs, use 'q' to quit` shows) and not during a download (the notice `download running: z stops it` shows). The viewer returns the action `tab_close` only after the user confirms.
 
 ## Job kind
 

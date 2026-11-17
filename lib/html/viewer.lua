@@ -80,7 +80,7 @@ local GO_PROMPT = " Go to: "
 local TAB_PROMPT = " New tab: "
 local RUNNING_NOTICE = "download running: z stops it"
 local WAIT_NOTICE = "wait for the load, or press z"
-local LAST_TAB_NOTICE = "last tab: q quits"
+local LAST_TAB_NOTICE = "no more tabs, use 'q' to quit"
 local GO_MAX = 2048
 local POPUP_BUTTON = "[OK]"
 local HELP_TEXT = table.concat({
@@ -937,8 +937,13 @@ local function view(lines, opts, gpu, pull, base)
 
   draw_rows(1, rows)
   draw_status()
-  if opts.error and show_popup(opts.error) then
-    return "interrupted"
+  if opts.error then
+    if show_popup(opts.error) then
+      return "interrupted"
+    end
+    if opts.error_notice then
+      set_notice(opts.error_notice)
+    end
   end
   local pending
   while true do
@@ -1254,12 +1259,13 @@ end
 --   tab_label  the prefix "[i/n]" of the status row (2 or more tabs)
 --   notice     a notice that shows until the next key
 --   quit_text  the quit prompt text (default " Quit? (y/n)")
---   tab_count  the number of tabs. With 1, c shows "last tab: q quits"
+--   tab_count  the number of tabs. With 1, c shows "no more tabs, use 'q' to quit"
 --   tab_full   a notice text. When set, t shows it and opens nothing
 --   enter_held (M.open) ignore Enter until its key_up
 --   load.kind  "page" (default) or "download" (only z stops a download)
 -- opts.error is a text shown in a popup over the first screen. Only Enter
--- closes it, then the user browses as usual.
+-- closes it, then the user browses as usual. opts.error_notice is a text
+-- that shows as a notice (until the next key) after the popup closes.
 -- deps.shift_down and deps.control_down (optional) tell whether Shift and
 -- Ctrl are down. Without them the viewer tracks the key codes.
 -- An error inside restores the screen and is raised again.

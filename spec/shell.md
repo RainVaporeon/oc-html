@@ -16,7 +16,7 @@ Status: roadmap item 0.7.0a, spec written, waiting for the user's approval. In 0
 
 1. Stop the load that runs, with the rules of `spec/tabs.md`. Write `top` and `sel` into the active tab's history entry. Drop `held`.
 2. Call `ctx.session.close()`. This restores the resolution and the colors from when the viewer opened, calls `term.clear()` and sets the cursor (`spec/viewer.md` "Exit").
-3. Print one line on stdout: `html: shell started. Type exit to return to the browser.`
+3. Set the cursor to (1, 1) (an optional dep `home_cursor`, `term.setCursor`). Print one line on stdout and flush stdout: `html: shell started. Type exit to return to the browser.`
 4. Call `os.setenv("HTML_TABOUT", "1")`, then `pcall(deps.shell)`, then `os.setenv("HTML_TABOUT", nil)`. In `game_deps`, `deps.shell` is `function() return shell.execute("sh") end`.
 5. Call `deps.open_screen{ no_rescale = opts.no_rescale, status = "Returning..." }`. The new session saves the screen state of that moment, so a change that the user made in the shell (for example `resolution`) is the state that the final exit restores. Compute the layout width again with `screen_width`.
 6. Pull and drop the queued events with `pull(0)`, up to 64 events. Set `enter_held = true` (a new option of `viewer.open`). Then the `key_up` of the Enter that typed `exit` cannot follow a link, and a stale "interrupted" event cannot end the program.

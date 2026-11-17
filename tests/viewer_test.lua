@@ -838,6 +838,15 @@ t.cases(T, "popup", POPUP, function(events)
   return out
 end)
 
+function T.error_notice_shows_after_the_popup_closes()
+  local row, gone
+  run({ lines = make_lines(100),
+    opts = { title = "T", error = ERROR_TEXT, error_notice = ERROR_TEXT },
+    events = { ENTER, function(ctl) row = ctl.row(25) end, key(208, 0),
+      function(ctl) gone = ctl.row(25) end, Q, Y } })
+  t.ok(row:find("^ " .. ERROR_TEXT), row)
+  t.eq(gone:find(ERROR_TEXT, 1, true), nil, "the next key clears it")
+end
 -- The popup covers part of the page. The page and the status line stay
 -- visible around it.
 function T.popup_shows_over_the_page()
@@ -2459,7 +2468,7 @@ function T.close_on_the_last_tab_shows_a_notice()
   local row
   run({ lines = make_lines(10), opts = { tab_count = 1 },
     events = { KEY_C, function(ctl) row = ctl.row(25) end, Q, Y } })
-  t.eq(row:match("^ last tab: q quits") ~= nil, true)
+  t.eq(row:match("^ no more tabs, use 'q' to quit") ~= nil, true)
 end
 
 function T.quit_text_option()

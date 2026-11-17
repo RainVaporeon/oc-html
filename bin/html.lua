@@ -1467,6 +1467,10 @@ local function run_session(target, ctx)
       o.tab_full = "tab limit: " .. tab_limit .. " tabs"
     end
     o.notice = tab.notice
+    if tab.echo and tab.popup then
+      o.error_notice = tab.popup
+    end
+    tab.echo = nil
     tab.notice = nil
     tab.popup = nil
     local session = ctx.session
@@ -1746,6 +1750,9 @@ local function run_session(target, ctx)
     leave(out.top, out.sel)
     pcall(ctx.session.close)
     ctx.session = nil
+    if deps.home_cursor then
+      pcall(deps.home_cursor)
+    end
     deps.out("html: shell started. Type exit to return to the browser.")
     local setenv = deps.setenv or os.setenv
     if setenv then
@@ -1975,7 +1982,7 @@ local function run_session(target, ctx)
     local path, exists = mod.resolve_path(text, name, ddeps)
     if not path then
       drop()
-      tab.popup = exists
+      tab.popup, tab.echo = exists, true
       return nil
     end
     if exists then
@@ -2017,7 +2024,7 @@ local function run_session(target, ctx)
       url = tab.cur and tab.cur.url
     end
     if not url then
-      tab.notice = "Ctrl+S: only web files can be downloaded"
+      tab.notice = "save: only web files can be downloaded"
       return nil
     end
     return offer_download({ url = url })
@@ -2041,6 +2048,8 @@ local function run_session(target, ctx)
       tab.notice = "download stopped"
     else
       tab.popup = value
+      tab.echo = value:find("^html: cannot write ") ~= nil
+        or value:find("^html: not enough disk space") ~= nil
     end
     restore_page()
   end
@@ -2376,7 +2385,11 @@ function M.game_deps()
     internet = component.internet
   end
   return {
-    out = function(line) io.write(line, "\n") end,
+    out = function(line)
+      io.write(line, "\n")
+      pcall(io.stdout.flush, io.stdout)
+    end,
+    home_cursor = function() term.setCursor(1, 1) end,
     err = function(line) io.stderr:write(line, "\n") end,
     width = width,
     open = io.open,

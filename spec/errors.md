@@ -32,7 +32,7 @@ Messages of 0.7.0a (`spec/tabs.md`, `spec/shell.md`, `spec/download.md`).
 |---|---|
 | `tab limit: <n> tabs` | notice |
 | `not enough memory for a new tab` | notice (only with `--tabs`) |
-| `last tab: q quits` | notice |
+| `no more tabs, use 'q' to quit` | notice |
 | ` Close tab? (y/n)` | prompt |
 | ` New tab: ` | prompt |
 | ` Quit and close <n> tabs? (y/n)` | prompt |
@@ -42,7 +42,7 @@ Messages of 0.7.0a (`spec/tabs.md`, `spec/shell.md`, `spec/download.md`).
 | `html: cannot reopen the screen: <reason>` | stderr, exit code 1 |
 | ` Save to: ` | prompt |
 | ` Overwrite <name>? (y/n)` | prompt |
-| `Ctrl+S: only web files can be downloaded` | notice |
+| `save: only web files can be downloaded` | notice |
 | `wait for the load, or press z` | notice |
 | `download running: z stops it` | notice |
 | `Downloading <name> - <n> KB of <m> KB` / `Downloading <name> - <n> KB` | status |

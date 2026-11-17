@@ -46,7 +46,7 @@ The new keys are lowercase only, like `g`. The uppercase letters stay free for l
   - The status row shows the prompt ` Close tab? (y/n)`. The answer rules are those of the quit prompt (`spec/viewer.md` "Quit"): `y`, `Y` or Enter confirms. Any other key cancels. A `key_up` event does not answer. Ctrl+C exits at once. A "no" does nothing: the tab, its page and its load stay as they were.
   - A load in the tab goes on while the prompt shows, as for the quit prompt. The load stops only after the user confirms (see "A load at a tab switch or at `!`").
   - The tab to the right becomes active. When there is none, the tab to the left becomes active.
-  - On the last tab, `c` shows the notice `last tab: q quits` and no prompt, and does nothing else.
+  - On the last tab, `c` shows the notice `no more tabs, use 'q' to quit` and no prompt, and does nothing else.
   - The closed tab's history and pending load are dropped.
 - Status line. When 2 or more tabs are open, the left part has the prefix `[<i>/<n>] `, for example `[2/3] Example Domain`.
   - The prefix also comes before `-> <url>`, before the loading texts and before `[error]` and `[aborted]`.
@@ -153,7 +153,7 @@ Each of these actions stops a load that runs: `<`, `>`, `t` (after the link reso
 |---|---|
 | `tab limit: <n> tabs` | notice |
 | `not enough memory for a new tab` | notice (only with `--tabs`) |
-| `last tab: q quits` | notice |
+| `no more tabs, use 'q' to quit` | notice |
 | ` Close tab? (y/n)` | prompt |
 | ` New tab: ` | prompt |
 | ` Quit and close <n> tabs? (y/n)` | prompt |

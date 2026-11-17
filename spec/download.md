@@ -18,7 +18,7 @@ Doc rules: Minecraft catches Esc in game, so the prompts do not use Esc. A blank
 - Ctrl+S with a visible selected link downloads the link target.
 - Ctrl+S with no visible selection downloads the URL of the current page. A broken or aborted page has a URL too. The program always fetches again, because the cache holds charset-converted bytes and not the raw bytes.
 - Refused cases. Each one shows a status notice until the next key:
-  - a local target: `Ctrl+S: only web files can be downloaded`
+  - a local target: `save: only web files can be downloaded`
   - an unsupported scheme: `<scheme>: links are not supported`
   - a link stored as false: `link too long`
   - Ctrl+S during a page load: `wait for the load, or press z`
@@ -31,7 +31,7 @@ Doc rules: Minecraft catches Esc in game, so the prompts do not use Esc. A blank
 - Enter accepts the text. A blank Enter cancels.
 - The path accepts `~` (`M.expand_home`) and relative paths, which `shell.resolve` resolves against the working directory.
 - When the path is an existing directory, the program adds the default file name to it.
-- When the parent directory does not exist, the popup `html: no such directory: <dir>` shows.
+- When the parent directory does not exist, the popup `html: no such directory: <dir>` shows. After the popup closes, the same text shows as a notice until the next key. The job popups `html: cannot write <path>: <reason>` and `html: not enough disk space: ...` do the same (viewer option `error_notice`).
 - When the file exists, the status row shows ` Overwrite <name>? (y/n)`. Only `y` or `Y` overwrites. Enter and every other key cancel. Enter is not "yes" here, so a held Enter cannot overwrite a file.
 
 ## Default path
@@ -117,7 +117,7 @@ A followed link can lead to a file. Then the program opens the save prompt and d
 |---|---|
 | ` Save to: ` | prompt |
 | ` Overwrite <name>? (y/n)` | prompt |
-| `Ctrl+S: only web files can be downloaded` | notice |
+| `save: only web files can be downloaded` | notice |
 | `wait for the load, or press z` | notice |
 | `download running: z stops it` | notice |
 | `Downloading <name> - <n> KB of <m> KB` / `Downloading <name> - <n> KB` | status |
