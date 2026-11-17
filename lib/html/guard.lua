@@ -317,4 +317,19 @@ function M.tick(lines)
   end
 end
 
+-- MEMORY_RESERVE is exported read only, so bin/html.lua uses the one value.
+setmetatable(M, {
+  __index = function(_, k)
+    if k == "MEMORY_RESERVE" then
+      return MEMORY_RESERVE
+    end
+  end,
+  __newindex = function(t, k, v)
+    if k == "MEMORY_RESERVE" then
+      error("guard.MEMORY_RESERVE is read only", 2)
+    end
+    rawset(t, k, v)
+  end,
+})
+
 return M

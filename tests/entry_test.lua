@@ -2856,4 +2856,125 @@ T["cache: <base> of a cached page resolves against the URL"] = function()
   t.eq(obs.titles, { "A", "B", "A", "C" }, "titles")
 end
 
+-- Tabs (spec/tabs.md): t, <, >, c, the switch load mode and --tabs.
+local KEY_T = { "key_down", "kbd", 116, 20, "player" }
+local KEY_C = { "key_down", "kbd", 99, 46, "player" }
+local KEY_LT = { "key_down", "kbd", 60, 51, "player" }
+local KEY_GT = { "key_down", "kbd", 62, 52, "player" }
+local URL_C, URL_D = HOST .. "c", HOST .. "d"
+local PAGE_C, PAGE_D = doc("C", "<p>ccc</p>"), doc("D", "<p>ddd</p>")
+
+-- One < for each load, after the first read of the load.
+local function lt_after_read(rec)
+  if rec.reads_in_load >= 1 and rec.lt_sent ~= rec.loads then
+    rec.lt_sent = rec.loads
+    return KEY_LT
+  end
+end
+
+T["tabs: a switch returns at the saved top with no request"] = function()
+  local obs = cached({ args = { URL_A },
+    routes = { [URL_A] = served(A_TALL, 10), [URL_B] = served(B, 10) },
+    show = events(KEY_TAB, KEY_T, KEY_LT, QUIT) })
+  t.eq(obs.requests, { URL_A, URL_B }, "requests")
+  t.eq(obs.titles, { "A", "B", "A" }, "titles")
+  t.eq(obs.tops, { 1, 1, 23 }, "the saved top returns")
+  t.eq(obs.sels, { false, false, 1 }, "the saved selection returns")
+  t.eq(obs.code, 0, "code")
+end
+
+T["tabs: a switch in phase 1 keeps the link as pending"] = function()
+  local obs = cached({ args = { URL_A },
+    routes = { [URL_A] = served(A_LINK, 10),
+      [URL_B] = { connect_polls = 1e6 } },
+    on_request = function(rec, url, routes)
+      if url == URL_B then
+        routes[URL_B] = served(B, 10)
+      end
+    end,
+    ticks = { [2] = { { KEY_LT } } },
+    show = events(KEY_TAB, KEY_T, KEY_GT, QUIT) })
+  t.eq(obs.requests, { URL_A, URL_B, URL_B },
+    "the return loads the pending link")
+  t.eq(obs.titles, { "A", "A", "B" }, "titles")
+  t.eq(obs.code, 0, "code")
+end
+
+T["tabs: a switch after the commit fetches on return"] = function()
+  local obs = cached({ args = { URL_A }, step = 0.3,
+    routes = { [URL_A] = served(A_LINK, 10), [URL_B] = served(BIG, 500) },
+    ticks = { [2] = function() return { lt_after_read } end },
+    show = events(KEY_TAB, KEY_T, KEY_GT, QUIT) })
+  t.eq(obs.requests, { URL_A, URL_B, URL_B },
+    "the page did not finish, so the return fetches")
+  t.eq(obs.titles, { "A", "A", "Big" }, "titles")
+  t.eq(obs.code, 0, "code")
+end
+
+T["tabs: c closes after y and the right tab becomes active"] = function()
+  local obs = cached({ args = { URL_A },
+    routes = { [URL_A] = served(A_LINK, 10), [URL_C] = served(PAGE_C, 10),
+      [URL_D] = served(PAGE_D, 10) },
+    show = events(KEY_T, typed(URL_C), KEY_ENTER, KEY_T, typed(URL_D),
+      KEY_ENTER, KEY_LT, KEY_C, KEY_N, KEY_C, KEY_Y, QUIT) })
+  t.eq(obs.requests, { URL_A, URL_C, URL_D }, "requests")
+  t.eq(obs.titles, { "A", "C", "D", "C", "D" }, "titles")
+  t.eq(obs.code, 0, "code")
+end
+
+T["tabs: c on the last tab does nothing"] = function()
+  local obs = cached({ args = { URL_A }, routes = { [URL_A] = served(A_LINK, 10) },
+    show = events(KEY_C, QUIT) })
+  t.eq(obs.requests, { URL_A }, "requests")
+  t.eq(obs.titles, { "A" }, "titles")
+end
+
+T["tabs: --tabs with a bad value is a usage error"] = function()
+  for _, args in ipairs({ { "--tabs", "33", "/p.html" },
+      { "--tabs", "x", "/p.html" }, { "--tabs", "0", "/p.html" },
+      { "--tabs" } }) do
+    local code, rec = run(args)
+    t.eq(code, 2, "code for " .. table.concat(args, " "))
+    t.eq(rec.err, { "html: --tabs needs a number from 1 to 32, or auto"
+      .. " (see html --help)" }, "message")
+  end
+end
+
+T["tabs: --tabs sets the limit the viewer gets"] = function()
+  local code, rec = run({ "--tabs", "1", "/p.html" })
+  t.eq(code, 0, "code")
+  t.eq(rec.views[1].opts.tab_full, "tab limit: 1 tabs", "limit 1")
+  code, rec = run({ "--tabs", "2", "/p.html" })
+  t.eq(rec.views[1].opts.tab_full, nil, "limit 2 is not reached")
+  code, rec = run({ "/p.html" })
+  t.eq(rec.views[1].opts.tab_count, 1, "one tab")
+end
+
+T["tabs: --tabs auto computes the limit from the free memory"] = function()
+  local settled = guard.settled_free
+  local function with_free(free, args)
+    guard.settled_free = function() return free end
+    local _, rec = run(args)
+    guard.settled_free = settled
+    return rec
+  end
+  local ok, err = pcall(function()
+    local low = with_free(guard.MEMORY_RESERVE + 80 * 1024,
+      { "--tabs", "auto", "/p.html" })
+    t.eq(low.views[1].opts.tab_full, "tab limit: 1 tabs", "limit 1")
+    local high = with_free(guard.MEMORY_RESERVE + 640 * 1024,
+      { "--tabs", "auto", "/p.html" })
+    t.eq(high.views[1].opts.tab_full, nil, "a larger limit")
+  end)
+  guard.settled_free = settled
+  if not ok then
+    error(err, 0)
+  end
+end
+
+T["tabs: guard.MEMORY_RESERVE is read only"] = function()
+  t.eq(guard.MEMORY_RESERVE, 192 * 1024, "value")
+  t.eq(pcall(function() guard.MEMORY_RESERVE = 1 end), false, "assign")
+end
+
 return T

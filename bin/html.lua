@@ -72,6 +72,11 @@ local EXIT_INTERRUPTED = 130
 local INTERRUPTED = "html: interrupted"
 -- The largest --width with no GPU or no screen (the tier 3 maximum).
 local NO_SCREEN_MAX_WIDTH = 160
+-- Tabs (spec/tabs.md "Tab limit option (experimental)"). The default limit,
+-- the largest --tabs value, and the scaled memory units that one tab costs.
+local DEFAULT_TABS = 8
+local MAX_TABS = 32
+local TAB_COST = 40 * 1024
 
 M.USAGE = [[
 Usage: html [options] <file | url>
@@ -86,9 +91,12 @@ Options:
   --width <n>         wrap lines at n columns (sets --print,
                       default: the terminal width)
   --no-rescale        keep the current screen resolution in the viewer
+  --tabs <n|auto>     experimental: the tab limit, 1 to 32, or auto (from
+                      the free memory). The default is 8
   --help              show this help
 Viewer keys: Up Down PgUp PgDn Home End scroll, Tab Shift+Tab Enter links,
 Left or Bksp back, Right forward, g go to, r reload, z abort a load,
+t new tab, c close tab, < > switch tabs, Ctrl+S download, ! shell,
 ? key list, q quit, Ctrl+C exit.]]
 
 -- max_width is the largest --width (see max_width_of). Returns an options
@@ -114,6 +122,17 @@ function M.parse_args(argv, max_width)
       end
       opts.width = w
       opts.print = true
+    elseif a == "--tabs" then
+      i = i + 1
+      local v = argv[i] ~= nil and tostring(argv[i]) or ""
+      local n = find(v, "^%d+$") and tonumber(v) or nil
+      if v == "auto" then
+        opts.tabs = "auto"
+      elseif n and n >= 1 and n <= MAX_TABS then
+        opts.tabs = n
+      else
+        return nil, "html: --tabs needs a number from 1 to 32, or auto"
+      end
     elseif #a > 1 and sub(a, 1, 1) == "-" then
       return nil, "html: unknown option: " .. a
     elseif opts.file then
@@ -1089,10 +1108,31 @@ local function run_session(target, ctx)
   --   popup    the text of a popup for the next show
   --   bg       the loader that runs, or nil: { r, spec, had, state,
   --            committed, finished, result, drive(), cancel() }
+  -- The tab limit (spec/tabs.md "Tab limit option (experimental)"). Only
+  -- the option --tabs turns on the memory check of t.
+  local function guard_lib()
+    if guard then
+      return guard
+    end
+    local ok, mod = pcall(require, "html.guard")
+    return ok and mod or nil
+  end
+  local tab_limit = DEFAULT_TABS
+  if type(opts.tabs) == "number" then
+    tab_limit = opts.tabs
+  elseif opts.tabs == "auto" then
+    local g = guard_lib()
+    if g then
+      local avail = g.settled_free() - g.MEMORY_RESERVE
+      tab_limit = math.max(1, math.min(MAX_TABS,
+        (avail - avail / 2) // TAB_COST))
+      tab_limit = math.tointeger(tab_limit) or 1
+    end
+  end
   local tab = tabs.new_tab()
   tab.hist = history.new(HISTORY_CAP)
   tab.top = 1
-  local tab_list = tabs.new()
+  local tab_list = tabs.new(tab_limit)
   tab_list.add_after(tab)
   -- The next load: { spec, mode = "first" | "link" | "go" | "back" |
   -- "forward" | "reload" | "prev", top, sel, fragment }.
@@ -1104,7 +1144,7 @@ local function run_session(target, ctx)
   -- An empty page with a title: a broken or an aborted load. It sets
   -- tab.shown.
   local function empty_page(kind, name)
-    tab.shown = { kind = kind, name = name }
+    tab.shown = { kind = kind, name = name, target = tab.cur and key_of(tab.cur) }
     return { lines = {}, title = "[" .. (kind == "broken" and "error" or kind)
       .. "] " .. name, name = name }
   end
@@ -1192,7 +1232,13 @@ local function run_session(target, ctx)
     end
     if res.failed then
       tab.popup = res.text
-      if res.committed or not had then
+      if r.from_pending and not res.committed and tab.hist.size() > 0 then
+        -- spec/tabs.md "A load at a tab switch": the popup shows, then the
+        -- tab loads its current entry.
+        local entry = tab.hist.current()
+        req = { spec = spec_of(entry.target, tab.guesses), mode = "switch",
+          top = entry.top, sel = entry.sel }
+      elseif res.committed or not had then
         tab.cur = spec
         tab.held = empty_page("broken", res.name)
         tab.top, tab.sel = 1, nil
@@ -1235,7 +1281,7 @@ local function run_session(target, ctx)
       lctx[k] = v
     end
     lctx.arg = spec.arg or key_of(spec)
-    lctx.nav = r.mode ~= "first"
+    lctx.nav = r.mode ~= "first" or r.from_pending == true
     lctx.on_commit = function()
       tab.held = nil
       tab.shown = nil
@@ -1247,7 +1293,8 @@ local function run_session(target, ctx)
     end
     -- Back, forward and the load of the previous page use the cached copy.
     -- Reload, link and go fetch.
-    lctx.replay = r.mode == "back" or r.mode == "forward" or r.mode == "prev"
+    lctx.replay = r.replay or r.mode == "back" or r.mode == "forward"
+      or r.mode == "prev" or r.mode == "switch"
     lctx.state = {}
     lctx.modules_loaded = function()
       ctx.need_modules = false
@@ -1334,6 +1381,17 @@ local function run_session(target, ctx)
     if b and not b.finished then
       o.load = { drive = b.drive, status = b.status }
     end
+    local count = tab_list.count()
+    o.tab_count = count
+    if count >= 2 then
+      o.tab_label = "[" .. tab_list.index() .. "/" .. count .. "]"
+      o.quit_text = " Quit and close " .. count .. " tabs? (y/n)"
+    end
+    if count >= tab_limit then
+      o.tab_full = "tab limit: " .. tab_limit .. " tabs"
+    end
+    o.notice = tab.notice
+    tab.notice = nil
     tab.popup = nil
     local session = ctx.session
     return xpcall(session and session.show or deps.view, handler, lines, o)
@@ -1385,6 +1443,177 @@ local function run_session(target, ctx)
     return settle(b.r, b.had, b.result, out.top, out.sel)
   end
 
+  -- Tabs (spec/tabs.md). The live fields of the active tab (hist, held, cur,
+  -- popup, bg, top, sel, notice) are not part of its plain record. leave
+  -- turns the active tab into the record, and arrive makes a record the
+  -- active tab and sets req (or the broken page) to show it.
+  local PENDING_MODES = { first = true, link = true, go = true, back = true,
+    forward = true, reload = true }
+
+  -- Stops the load of the tab and stores the view position. A load that
+  -- stopped before its commit stays as tab.pending. Then it drops the live
+  -- objects.
+  local function leave(top, sel)
+    local b = tab.bg
+    tab.bg = nil
+    local r
+    if b then
+      b.cancel()
+      if not b.committed and PENDING_MODES[b.r.mode] then
+        r = b.r
+      end
+    end
+    if r then
+      -- A back or forward already moved the index. The position belongs to
+      -- the entry of the old page.
+      if r.mode == "back" then
+        tab.hist.forward()
+      elseif r.mode == "forward" then
+        tab.hist.back()
+      end
+      if tab.held and not tab.shown then
+        tab.hist.set_pos(top, sel)
+      end
+      if r.mode == "back" then
+        tab.hist.back()
+      elseif r.mode == "forward" then
+        tab.hist.forward()
+      end
+      tab.pending = { target = key_of(b.spec), mode = r.mode,
+        fragment = r.fragment, top = r.top, sel = r.sel, arg = b.spec.arg,
+        replay = r.replay }
+      tab.shown = nil
+    elseif b and b.committed or (not b and tab.held and not tab.shown) then
+      tab.hist.set_pos(top, sel)
+    end
+    local e = tab.hist.export()
+    tab.entries, tab.pos = e.entries, e.pos
+    tab.hist, tab.held, tab.cur, tab.popup, tab.notice = nil, nil, nil, nil,
+      nil
+    tab.top, tab.sel = nil, nil
+  end
+
+  -- Makes the record t the active tab (spec/tabs.md "Showing a tab").
+  local function arrive(t)
+    tab = t
+    tab.hist = history.import({ entries = t.entries, pos = t.pos },
+      HISTORY_CAP)
+    tab.held, tab.cur, tab.popup, tab.bg = nil, nil, nil, nil
+    tab.top, tab.sel = 1, nil
+    local pend = tab.pending
+    tab.pending = nil
+    if pend then
+      local spec = spec_of(pend.target, tab.guesses)
+      spec.arg = pend.arg or spec.arg
+      tab.shown = nil
+      req = { spec = spec, mode = pend.mode, fragment = pend.fragment,
+        top = pend.top, sel = pend.sel, replay = pend.replay,
+        from_pending = true }
+    elseif tab.shown then
+      local shown = tab.shown
+      tab.cur = shown.target and spec_of(shown.target, tab.guesses)
+      tab.held = empty_page(shown.kind, shown.name)
+    else
+      local entry = tab.hist.current()
+      if entry then
+        req = { spec = spec_of(entry.target, tab.guesses), mode = "switch",
+          top = entry.top, sel = entry.sel }
+      else
+        tab.held = { lines = {}, title = "", name = "" }
+      end
+    end
+  end
+
+  -- The base that a link of the page on screen resolves against.
+  local function link_base()
+    local b = tab.bg
+    if b and b.committed then
+      local live = b.state.live
+      return page_base(live.location, live.base())
+    end
+    return tab.held and tab.held.base
+  end
+
+  -- t: opens a new tab after the active one. The target is a link of the
+  -- page (out.href) or the typed text (out.text).
+  local function new_tab(out)
+    local spec, fragment, replay
+    if out.href then
+      local b = tab.bg
+      local here = (b and b.committed) and b.spec or tab.cur
+      local base = link_base()
+      if not here or not base then
+        return
+      end
+      local r, why_not = urlmod.resolve(base, out.href)
+      if not r then
+        tab.popup = why_not
+        return
+      elseif r.kind == "unsupported" then
+        return
+      elseif r.kind == "same" or (r.url or r.path) == key_of(here) then
+        -- A same-document link: the current page with the fragment. The
+        -- cache can serve it.
+        spec, fragment, replay = { url = here.url, path = here.path },
+          r.fragment, true
+        spec.arg = key_of(here)
+      else
+        spec, fragment = spec_of(r.url or r.path, {}), r.fragment
+      end
+    else
+      local msg
+      spec, msg = M.classify(out.text, deps)
+      if not spec then
+        tab.popup = msg
+        return
+      end
+      spec.arg = out.text
+      fragment = spec.fragment
+    end
+    if tab_list.count() >= tab_limit then
+      tab.notice = "tab limit: " .. tab_limit .. " tabs"
+      return
+    end
+    if opts.tabs then
+      local g = guard_lib()
+      if g and g.settled_free() < g.MEMORY_RESERVE + TAB_COST then
+        tab.notice = "not enough memory for a new tab"
+        return
+      end
+    end
+    leave(out.top, out.sel)
+    local new = tabs.new_tab()
+    tab_list.add_after(new)
+    if spec.guessed then
+      new.guesses[key_of(spec)] = spec.arg
+    end
+    new.pending = { target = key_of(spec), mode = "first",
+      fragment = fragment, arg = spec.arg, replay = replay }
+    arrive(new)
+  end
+
+  -- The actions of the tab keys. shell and download are not built yet: they
+  -- change nothing.
+  local TAB_ACTIONS = { tab_new = true, tab_prev = true, tab_next = true,
+    tab_close = true, shell = true, download = true }
+  local function tab_action(kind, out)
+    tab.top, tab.sel = out.top, out.sel
+    if kind == "tab_new" then
+      new_tab(out)
+    elseif kind == "tab_prev" or kind == "tab_next" then
+      if tab_list.count() > 1 then
+        leave(out.top, out.sel)
+        arrive(kind == "tab_prev" and tab_list.prev() or tab_list.next())
+      end
+    elseif kind == "tab_close" and tab_list.count() > 1 then
+      if tab.bg then
+        tab.bg.cancel()
+        tab.bg = nil
+      end
+      arrive(tab_list.close())
+    end
+  end
+
   while true do
     if req then
       local r = req
@@ -1425,6 +1654,8 @@ local function run_session(target, ctx)
         if final then
           return final
         end
+      elseif TAB_ACTIONS[kind] then
+        tab_action(kind, out)
       elseif tab.bg and stop_load(kind) then
         -- The action was used up by the stop.
         kind = nil
@@ -1634,6 +1865,7 @@ function M.game_deps()
   local computer = need("computer")
   local event = need("event")
   local filesystem = need("filesystem")
+  local keyboard = need("keyboard")
   local shell = need("shell")
   local term = need("term")
   local width = DEFAULT_WIDTH
@@ -1685,12 +1917,13 @@ function M.game_deps()
     },
     open_screen = function(opts)
       local viewer = need("html.viewer")
-      return viewer.open({ gpu = gpu, pull = event.pull, term = term }, opts)
+      return viewer.open({ gpu = gpu, pull = event.pull, term = term,
+        control_down = keyboard.isControlDown }, opts)
     end,
     view = function(lines, opts)
       local viewer = need("html.viewer")
       return viewer.run(lines, opts, { gpu = gpu, pull = event.pull,
-        term = term })
+        term = term, control_down = keyboard.isControlDown })
     end,
     on_interrupt = function(fn)
       event.listen("interrupted", fn)
