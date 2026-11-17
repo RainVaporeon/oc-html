@@ -1229,11 +1229,15 @@ local function run_session(target, ctx)
   -- A tab with no page on screen (the load was its pending load) shows its
   -- current entry again when the prompt and the download are over
   -- (restore_page).
-  local function file_found(res, view_top, view_sel, had)
+  -- A load of a new tab (r.newtab) that stopped a pending load of this tab
+  -- (r.kept) starts that load again at the same time.
+  local function file_found(res, view_top, view_sel, had, r)
     ctx.kept = res.resp
     file_wait = { resp = res.resp, url = res.resp.final_url }
     tab.top, tab.sel = view_top, view_sel
-    if not had then
+    if r.newtab and r.kept then
+      tab.resume = r.kept
+    elseif not had then
       tab.resume = true
     end
     return nil
@@ -1248,7 +1252,7 @@ local function run_session(target, ctx)
       return res
     end
     if res.file then
-      return file_found(res, view_top, view_sel, had)
+      return file_found(res, view_top, view_sel, had, r)
     end
     if res.ok then
       tab.cur = spec
@@ -1277,8 +1281,12 @@ local function run_session(target, ctx)
     end
     if r.newtab and not res.committed then
       -- A new tab load that stopped in phase 1: no tab opened, and the
-      -- current page stays as it is.
+      -- current page stays as it is. The pending load that it stopped
+      -- (r.kept) starts again.
       tab.popup = res.failed and res.text or nil
+      if r.kept then
+        req = r.kept.r
+      end
       return nil
     end
     if res.failed then
@@ -1533,12 +1541,19 @@ local function run_session(target, ctx)
     local b = tab.bg
     tab.bg = nil
     local r
+    -- kept: a pending load that a new tab load stopped. It stays as pending.
+    local kept = type(tab.resume) == "table" and tab.resume or nil
     tab.resume = nil
     if b and b.r.newtab then
-      -- A pending new tab load has no tab: it stops and leaves nothing.
+      -- A new tab load has no tab: it stops and leaves nothing.
+      b.cancel()
+      kept = b.r.kept
+      b = nil
+    elseif b and b.kind == "download" then
       b.cancel()
       b = nil
     end
+    b = b or kept
     if b then
       b.cancel()
       if not b.committed and PENDING_MODES[b.r.mode] then
@@ -1612,6 +1627,7 @@ local function run_session(target, ctx)
   function open_tab(b, top, sel)
     local spec = b.spec
     tab.bg = nil
+    tab.resume = b.r.kept
     leave(top, sel)
     local new = tabs.new_tab()
     tab_list.add_after(new)
@@ -1694,11 +1710,23 @@ local function run_session(target, ctx)
         return
       end
     end
-    -- A load that runs stops first (one connection at a time).
-    if tab.bg and tab.bg.kind == "download" then
-      tab.bg.cancel()
+    -- A load that runs stops first (one connection at a time). A load of
+    -- this tab that is in phase 1 stays as kept: it starts again when the new
+    -- tab load ends without a tab, and it stays as pending when the tab
+    -- opens.
+    local b, kept = tab.bg, nil
+    if b and b.kind == "download" then
+      b.cancel()
       tab.bg = nil
-    elseif tab.bg then
+    elseif b and b.r.newtab then
+      kept = b.r.kept
+      b.cancel()
+      tab.bg = nil
+    elseif b and not b.committed and PENDING_MODES[b.r.mode] then
+      kept = b
+      b.cancel()
+      tab.bg = nil
+    elseif b then
       stop_load("tab_new")
     end
     -- The current tab stays active. The tab opens at the commit (open_tab).
@@ -1706,7 +1734,7 @@ local function run_session(target, ctx)
       tab.guesses[key_of(spec)] = spec.arg
     end
     req = { spec = spec, mode = "link", fragment = fragment, replay = replay,
-      newtab = true }
+      newtab = true, kept = kept }
   end
 
   -- The shell tab-out (spec/shell.md "Sequence"). Returns a final result when
@@ -1754,10 +1782,15 @@ local function run_session(target, ctx)
   -- current history entry again with a switch load, or an empty page when
   -- the history is empty. The file response is closed by then.
   local function restore_page()
-    if not tab.resume then
+    local kept = tab.resume
+    if not kept then
       return
     end
     tab.resume = nil
+    if kept ~= true then
+      req = kept.r
+      return
+    end
     local entry = tab.hist.size() > 0 and tab.hist.current()
     if entry then
       req = { spec = spec_of(entry.target, tab.guesses), mode = "switch",
