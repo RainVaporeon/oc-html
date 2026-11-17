@@ -2,6 +2,13 @@
 
 Date: 2026-11-17. Branch: `master` (the only branch). Last release: 0.6.0a. No unreleased changes.
 
+## Status update 2026-11-17 (in-game check of 0.6.0a)
+
+The user ran `docs/ingame/0.6.0a.md` in game. All expected results match. Measured: about 9 to 10 KB/s; `wikipedia.com` needs about 90 KB of 120 KB (about 10 s) before the first screen is usable (a large head is a possible cause, not verified); keys react near immediately. See `docs/probe/FACTS.md` "Interactive loading (0.6.0a in game)". A todo item for a faster first screen is in `tasks/todo.md` Future work.
+
+- Open note: at the go prompt the user says Esc "exits the screen" and a blank Enter works. The code makes Esc cancel the prompt like a blank Enter (`go_prompt` in `lib/html/viewer.lua`, `spec/navigation.md`). The meaning is unclear. Ask the user what the screen shows after Esc.
+- 0.6.0a covers part of the older checklists. `tasks/todo.md` "Next recommended step" lists what is covered and what is still open.
+
 ## Status update 2026-11-17 (interactive loading)
 
 Interactive loading (`tasks/todo.md` "Interactive loading", step 6) is built and tested in the container. Not verified in game. Released as 0.6.0a.
@@ -48,7 +55,8 @@ oc-html is an HTML viewer for OpenComputers (Minecraft mod, GT:NH, Lua 5.3, Open
 - Works: everything in 0.1.1a (tokenizer, entities, UTF-8 cleaning, layout, viewer, `--print`, `--width`, `--no-rescale`, guard v2, Ctrl+C, error log, one-file installer), plus `lib/html/fetch.lua` (internet card client, HTTP status handling, redirects, limits).
 - Verified in the container: `pwsh tests/docker/test.ps1` gives 300 passed, 0 failed, 0 skipped. `fuzz 1000` gives 0 failures. (1000 documents) A static check with `luac5.3 -p` and `luac5.3 -l` on `bin/`, `lib/` and `tools/` found no syntax error and no global outside the standard Lua names. The tests use a fake internet card in `tests/shim/internet.lua`.
 - Verified in game: netprobe v1 (the card facts), the probes (`docs/probe/`), the tracer bullet and memory runs up to 0.0.4a, the 0.1.0a viewer and exit paths, and `html --print` on the pages in `tests/real/` (2026-11-14).
-- Not verified in game: interactive loading (0.6.0a, checklist `docs/ingame/0.6.0a.md`), the 0.5.0a changes (Tab wrap, Up and Down on links, keys during a load, the disk cache; checklist `docs/ingame/0.5.0a.md`), the coroutine probe, link following, history, reload, go, abort, the key codes (Shift+Tab, NumPad 4 and 6), memory over many navigations, the popups, the 0.4.0a installer and upgrade, the loading screen, `docs/ingame/mvp.md` sections 4 and 6, and a low-RAM machine. The checklists are `docs/ingame/0.4.0a.md` and `docs/ingame/0.5.0a.md`.
+- Verified in game on 2026-11-17 (0.6.0a checklist): interactive loading, keys during a load, Enter on a loaded link, Back, reload, `g`, Forward, `z`, `q` during a load, the disk cache (Back serves the cache, the cache folder is empty after quit), the 1 MB page popup, Ctrl+C.
+- Not verified in game: the Esc key at the go prompt (open note), the 0.5.0a checks listed in `tasks/todo.md` "Next recommended step" (Tab wrap, Up and Down on `c.html`, `z` and Left timing, no history entry after an abort, `r` and Forward on a finished page, cache limits, the `?:keys` hint), anchors, the key codes (Shift+Tab, NumPad 4 and 6), memory over many navigations, the 0.4.0a installer and upgrade, the loading screen, `docs/ingame/mvp.md` sections 4 and 6, and a low-RAM machine. The checklists are `docs/ingame/0.4.0a.md` and `docs/ingame/0.5.0a.md`.
 - Risks in the fetch code (written before netprobe v1; the three marked N1, N3 and N10 are now measured, see "Status update 2026-11-15"). The fake card follows assumptions that no in-game measurement has confirmed yet.
   - N1: the exact methods of the internet component, the request handle and the `headers` type are unknown.
   - N3: it is unknown whether `response()` gives a value before the first `read`. The wait order in `fetch.open` depends on it.
@@ -110,7 +118,7 @@ On 2026-11-14, `SPEC.md` was cut down to its normative rules. The informative pa
 
 ## Next step
 
-Run the in-game checklists `docs/ingame/0.5.0a.md` and `docs/ingame/0.6.0a.md` and paste the results back. Then fix what it finds. Then follow the roadmap in `tasks/todo.md`: 0.7.0a (utility tabs: browser tabs, shell tab-out, download). A second netprobe run is still open.
+Ask the user about the Esc note. Run the remaining in-game checks listed in `tasks/todo.md` "Next recommended step". Write the 0.7.0a spec (utility tabs: browser tabs, shell tab-out, download) and get the user's approval. A second netprobe run is still open.
 
 ## Open questions for the user
 

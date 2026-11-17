@@ -56,7 +56,8 @@ Sizes: S = one module and its tests, M = two or three modules, L = a new subsyst
 - [x] Update the spec with the measured values (redirects, error statuses, limit, API shape). The error status is mapped from the connect failure, and errors after the frame keep the session (`spec/fetch.md`, `spec/loading.md`).
 - [ ] A second netprobe run after the push: N4 to N7 (large reads, memory, 1 MB page), N8, N12 under the default address config, N13 with `--leak`, and an https to https redirect. The probe now records `response()` after a connect error and the value of `n3.before_connect`.
 - [x] Implement `fetch.lua`, the fake card and the tests (2026-11-14, committed in 010a24e, released in 0.2.0a). `spec/fetch.md` "Implementation notes" lists the choices. The measured values can still change the timeouts, the chunk size and the wait order.
-- [ ] In game: fetch the three real pages and a 1 MB page.
+- [ ] In game: fetch the three real pages (`tests/real/`). Open.
+- [x] In game: the 1 MB page while you scroll it (2026-11-17, `docs/ingame/0.6.0a.md` check 5.1).
 
 **Size:** L
 
@@ -115,7 +116,7 @@ Each version below needs its own short spec section and the user's approval befo
 
 #### 0.6.0a: Loading while you browse (current release, built 2026-11-17)
 
-**Goal:** Scroll, select and follow links in the part of a page that is already laid out, while the rest loads. See "Interactive loading" below. Built and tested in the container. The in-game check is open.
+**Goal:** Scroll, select and follow links in the part of a page that is already laid out, while the rest loads. See "Interactive loading" below. Built and tested in the container. The in-game check ran on 2026-11-17: all expected results match (`docs/ingame/0.6.0a.md`; the measured values are in `docs/probe/FACTS.md` "Interactive loading (0.6.0a in game)"). One note is open: Esc at the go prompt (see "Next recommended step").
 
 **Size:** L
 
@@ -179,11 +180,22 @@ Each version below needs its own short spec section and the user's approval befo
 
 - More image formats.
 - CSS support (planned, `AGENTS.md` "future goals").
+- Investigate a faster first screen for pages with a large head (wikipedia: about 90 KB before the first screen). Measured 2026-11-17: `docs/probe/FACTS.md` "Interactive loading (0.6.0a in game)". The cause is not verified.
 - Inflate and deflate with the Data Card (optional hardware: the program must work without it). Open: which `Content-Encoding` values the card can inflate, and the limits on input size.
 
 ## Next recommended step
 
-Run the in-game checklist `docs/ingame/0.6.0a.md` (interactive loading; the 0.5.0a checklist is still open too). Then start 0.7.0a (utility tabs).
+The in-game check of 0.6.0a is done (2026-11-17). Its checks cover part of the older checklists. Remaining in-game checks, first:
+
+1. Esc at the go prompt (`docs/ingame/0.6.0a.md` check 3.4). The user wrote: "`Esc` exits the screen, instead a blank input is used to substitute exit, which works." The code and `spec/navigation.md` say Esc cancels the prompt (`lib/html/viewer.lua` `go_prompt`, tested). It is not clear what "exits the screen" means. Ask the user: did the whole program quit, or only the prompt close? Run it again and write down what the screen shows after Esc.
+2. 0.5.0a checks that 0.6.0a does not cover: 1.2 (upgrade over 0.4.0a), 2.1 to 2.3 and 2.5 (Tab wrap and Up and Down on `c.html`, a page with no link), 3.1 and 3.3 (`z` and Left during a load, with reaction times), 4.3 (no history entry after an abort), 5.4 (`r` on a finished page fetches again), 5.5 (Forward after Back shows without a download), 5.6 (cache limits), 6.1 (the `?:keys` hint on 80 columns).
+3. 0.4.0a: anchors (`#fragment` links). The other 0.4.0a paths are covered (see below). The 0.3.0a checklist is not covered: its loading screen and error popup steps are not compared yet.
+4. The three real pages fetched over the network (`tests/real/`).
+5. The second netprobe run (N4 to N7, N8, N12, N13 with `--leak`, https to https redirect).
+
+Covered by 0.6.0a (2026-11-17), 0.5.0a check -> 0.6.0a check: 1.1 -> 1.1; 2.4 -> 2.6; 3.2 -> 3.2; 3.4 -> 3.5; 3.5 -> 3.7; 3.6 -> 2.8 and 3.2; 4.1 -> 5.3 and 2.9; 4.2 -> 5.3; 5.1 -> 4.2; 5.2 and 5.3 -> 4.3; 7 (coroutine probe) ran on 2026-11-15 (`docs/probe/FACTS.md`). 0.4.0a: Enter on a link -> 3.1; Back -> 3.2; reload -> 3.3; `g` -> 3.4; Forward -> 3.6; `z` -> 5.3.
+
+After these, start 0.7.0a (utility tabs: browser tabs, shell tab-out, download). It needs its spec section and the user's approval first. The 0.7.0a spec does not need the remaining checks, so it can start in parallel.
 
 ### Interactive loading (user request, 2026-11-15, design C1)
 
@@ -196,4 +208,4 @@ Run the in-game checklist `docs/ingame/0.6.0a.md` (interactive loading; the 0.5.
 - [x] Phase 1 runs in the coroutine: the old page stays usable while the program connects. The commit shows the new empty live page at once.
 - [x] Enter on a link, `g`, `r` and Forward stop the load and act. Back, Left, Backspace and `z` keep the abort rules.
 - [x] Tests in the container (`docs/testing.md` "Interactive loading").
-- [ ] In-game check (`docs/ingame/0.6.0a.md`): the first screen is usable at a realistic 3 KB/s; keys respond during a render (the 0.1 s slice); no key is lost; the memory guard still works with the slices (GC from the 11 slice yields of a settle); Ctrl+C, `q` and `z` during phase 1 and during the body.
+- [x] In-game check, done 2026-11-17 (`docs/ingame/0.6.0a.md`; all expected results match): the first screen is usable at a realistic 3 KB/s; keys respond during a render (the 0.1 s slice); no key is lost; the memory guard still works with the slices (GC from the 11 slice yields of a settle); Ctrl+C, `q` and `z` during phase 1 and during the body.

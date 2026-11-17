@@ -346,6 +346,18 @@ Measured in game with `tools/coprobe.lua` v1 on 2026-11-15: Lua 5.3, 2 MiB, one 
 
 Costs from other probes (used by the design): a card `request` and each `read` cost one tick (50 ms); `event.pull(0)` costs about 15 ms; `os.sleep(0)` about 10 ms; the render takes about 630 KB/s of CPU; a realistic network gives about 3 KB/s.
 
+## Interactive loading (0.6.0a in game)
+
+Measured in game with release 0.6.0a by the checklist `docs/ingame/0.6.0a.md`, run 2026-11-17. One run, user reports.
+
+| Fact | Value | Source |
+|---|---|---|
+| Download rate on a real page | about 9 to 10 KB/s (the design assumed about 3 KB/s) | check 2.2 |
+| Time to the first usable screen on `wikipedia.com` | about 10 s, until about 90 KB of 120 KB were loaded | check 2.2 |
+| Reaction time of the first key while the program renders | near immediate (expected under about 0.2 s) | check 2.7 |
+
+- Possible cause of the 90 KB wait (not verified): a large head (styles and scripts) before the body, so the layout has no visible line until most of the page is read.
+
 ## Components (t3)
 
 - Internet card: HTTP and TCP enabled (`extras.internet.*`).
